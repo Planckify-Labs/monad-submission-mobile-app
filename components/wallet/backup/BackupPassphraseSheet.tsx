@@ -185,7 +185,7 @@ export default function BackupPassphraseSheet({
                 <CloudUpload color="#c71c4b" size={28} />
               </View>
               <Text className="text-light-matte-black/70 text-center text-sm leading-5 max-w-80">
-                Your seed phrase is encrypted on this device before it's
+                Your seed phrase is encrypted on this device before it&apos;s
                 uploaded. Only this passphrase can open it, not TakumiPay, not
                 Google.
               </Text>
@@ -257,7 +257,7 @@ export default function BackupPassphraseSheet({
                 </Text>
               ) : confirm.length > 0 && !matches ? (
                 <Text className="text-light-primary-red text-xs">
-                  Passphrases don't match.
+                  Passphrases don&apos;t match.
                 </Text>
               ) : (
                 <Text className={`text-xs ${STRENGTH_STYLE[check.strength]}`}>

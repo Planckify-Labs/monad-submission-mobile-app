@@ -234,8 +234,8 @@ export default function BackupStatusSheet({
             </TouchableOpacity>
 
             <Text className="text-light-matte-black/40 text-xs text-center mt-5 max-w-80 self-center">
-              Removing the backup won't touch this wallet. You can always back
-              it up again.
+              Removing the backup won&apos;t touch this wallet. You can always
+              back it up again.
             </Text>
           </>
         )}

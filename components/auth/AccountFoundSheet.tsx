@@ -226,8 +226,8 @@ export default function AccountFoundSheet({
               </Text>
             ) : (
               <Text className="text-light-matte-black/40 text-xs text-center mt-5 max-w-80 self-center">
-                Only your backup passphrase can open it. TakumiPay can't see it
-                or restore it for you.
+                Only your backup passphrase can open it. TakumiPay can&apos;t
+                see it or restore it for you.
               </Text>
             )}
 
@@ -238,7 +238,7 @@ export default function AccountFoundSheet({
               hitSlop={8}
             >
               <Text className="text-light-matte-black/50 text-xs underline">
-                I don't have my recovery phrase or backup
+                I don&apos;t have my recovery phrase or backup
               </Text>
             </TouchableOpacity>
           </>

@@ -55,7 +55,7 @@ const StrategyConfigCard: React.FC<
         <View className="flex-row items-center gap-2">
           <Settings2 size={16} color={MUTED_GRAY} />
           <Text className="text-sm text-gray-600">
-            {"No strategy set yet — I'll use safe defaults."}
+            {"No strategy set yet. I'll use safe defaults."}
           </Text>
         </View>
       </View>

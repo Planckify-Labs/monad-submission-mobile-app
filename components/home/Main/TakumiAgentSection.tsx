@@ -535,7 +535,7 @@ const TakumiAgentSection = forwardRef<
               </View>
               <View className="flex-1">
                 <Text className="text-light-matte-black font-extrabold text-[15px]">
-                  Hi, I'm TakumiAgent 👋
+                  Hi, I&apos;m TakumiAgent 👋
                 </Text>
                 <Text className="text-light-matte-black/45 text-[11px]">
                   Swipe to see what I can do →

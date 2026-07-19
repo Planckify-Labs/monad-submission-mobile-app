@@ -65,7 +65,7 @@ function friendlyError(raw: string | undefined): string {
     return "Transaction was replaced or cancelled.";
   }
   if (lower.includes("timeout") || lower.includes("timed out")) {
-    return "Transaction timed out. It may still confirm — check the block explorer.";
+    return "Transaction timed out. It may still confirm. Check the block explorer.";
   }
   if (
     lower.includes("network") ||

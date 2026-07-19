@@ -95,7 +95,7 @@ function reasonLabel(reason?: string): string {
     case "yield_improvement":
       return "Higher yield available";
     case "depeg_emergency":
-      return "Stablecoin depeg — moving funds to safety";
+      return "Stablecoin depeg: moving funds to safety";
     case "user_initiated":
       return "You asked to rebalance";
     default:

@@ -76,7 +76,7 @@ function operationDetail(op: StellarDecodedOperation): string {
     case "accountMerge":
       return `→ ${shortAddr(op.destination)}`;
     case "invokeHostFunction":
-      return "Cannot be decoded — review carefully before signing.";
+      return "Cannot be decoded. Review carefully before signing.";
     case "other":
       return "Unrecognized operation type.";
   }

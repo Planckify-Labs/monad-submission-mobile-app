@@ -32,7 +32,7 @@ export default function NotFoundScreen() {
           Page not found
         </Text>
         <Text className="text-light-matte-black/60 text-sm text-center mt-2">
-          That link doesn't lead anywhere in TakumiPay.
+          That link doesn&apos;t lead anywhere in TakumiPay.
         </Text>
         <Pressable
           onPress={() => router.replace("/")}

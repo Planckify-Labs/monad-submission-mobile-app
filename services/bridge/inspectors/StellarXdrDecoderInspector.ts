@@ -98,7 +98,7 @@ export const StellarXdrDecoderInspector: IntentInspector = {
         severity: "danger",
         title: "Soroban contract invocation",
         detail:
-          "This transaction invokes a smart contract. TakumiPay cannot decode Soroban operations yet — review carefully before signing.",
+          "This transaction invokes a smart contract. TakumiPay cannot decode Soroban operations yet. Review carefully before signing.",
         source: "stellar-xdr-decoder",
       });
     }

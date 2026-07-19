@@ -26,7 +26,7 @@ const COPY: Record<string, string> = {
   stale_precondition:
     "Conditions changed before this could run. Let me re-check and prepare a fresh plan.",
   insufficient_funds:
-    "You don't have enough balance for this — including a little for gas.",
+    "You don't have enough balance for this, including a little for gas.",
   network_error: "The network is busy right now. Please try again in a moment.",
   unsupported_chain: "That isn't available on this network yet.",
   wallet_type_cannot_execute: "This wallet can't sign transactions.",
@@ -42,7 +42,7 @@ const COPY: Record<string, string> = {
     "The price moved while preparing this. Let me get a fresh quote.",
   // insufficient_funds family
   insufficient_balance:
-    "You don't have enough balance for this — including a little for gas.",
+    "You don't have enough balance for this, including a little for gas.",
   // invalid_input family
   invalid_intent: "I couldn't read that plan. Try rephrasing what you want.",
   unsupported_asset: "That asset isn't available on this network.",

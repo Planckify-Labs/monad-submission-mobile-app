@@ -36,9 +36,9 @@ export default function NewDeviceSheet({
 
       <View className="pb-2">
         <Text className="text-light-matte-black/70 text-sm leading-5 mb-6">
-          We couldn't find a wallet on this device or a backup in your Google
-          Drive. If you already have a wallet, restore it with your seed phrase
-          — creating a new one gives you a different, empty wallet.
+          We couldn&apos;t find a wallet on this device or a backup in your
+          Google Drive. If you already have a wallet, restore it with your seed
+          phrase. Creating a new one gives you a different, empty wallet.
         </Text>
 
         <TouchableOpacity

@@ -209,7 +209,7 @@ export const SuilendSuiAdapter: DefiProtocolAdapter = {
     // is told to withdraw on-site rather than shown a confusing on-chain abort.
     throw new DefiError(
       "withdraw_failed",
-      "suilend: in-app withdrawal isn't available yet — withdraw at suilend.fi",
+      "In-app withdrawal isn't available for Suilend yet. Withdraw at suilend.fi.",
     );
   },
 
