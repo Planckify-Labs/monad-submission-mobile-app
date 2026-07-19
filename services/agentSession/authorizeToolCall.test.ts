@@ -166,6 +166,44 @@ describe("authorizeToolCall — the Never rule (deny-overrides-allow)", () => {
   });
 });
 
+describe("authorizeToolCall — write-capability cross-check (fund safety)", () => {
+  it("known-write tool labeled read on the wire is NOT run silently", () => {
+    // A tampered / drifted stream claims `send_token` (a real write) is a
+    // read. Without the cross-check this would authorize+silent (no card).
+    const r = authorize(hotWallet(), {
+      capability: "read",
+      toolName: "send_token",
+    });
+    // Coerced to write → with a HOT wallet and no grant that means `ask`.
+    assert.equal(r.decision, "ask");
+    assert.equal(r.treatment, "ask");
+  });
+
+  it("known-write labeled read still honors an active write grant (rundown, not silent)", () => {
+    const w = hotWallet();
+    w.grantStore.add({
+      scope: { kind: "global" },
+      lifetime: { type: "permanent" },
+      wallet_address: WALLET,
+      granted_at: Date.now(),
+    });
+    const r = authorize(w, { capability: "read", toolName: "send_native" });
+    // Authorized because the user pre-granted — but a WRITE, so run-down, not
+    // the silent path a mislabeled "read" would have taken.
+    assert.equal(r.decision, "authorized");
+    assert.equal(r.treatment, "rundown");
+  });
+
+  it("a genuine read tool is unaffected by the cross-check", () => {
+    const r = authorize(hotWallet(), {
+      capability: "read",
+      toolName: "get_balance",
+    });
+    assert.equal(r.decision, "authorized");
+    assert.equal(r.treatment, "silent");
+  });
+});
+
 describe("authorizeToolCall — INV-1", () => {
   it("treatment 'rundown' is only ever produced for an authorized decision", () => {
     // Sweep the representative cases; rundown ⟹ authorized must hold.

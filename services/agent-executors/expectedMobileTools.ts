@@ -94,3 +94,69 @@ export const EXPECTED_MOBILE_TOOLS: ReadonlyArray<string> = [
   // agent-initiated x402 micropayments (spec Phase 5 §5.5)
   "x402_fetch",
 ];
+
+/**
+ * Authoritative mobile-side set of every tool the server registry declares
+ * `capability: "write"` (i.e. it can move value or change on-chain / points
+ * state). This is the mobile app's OWN notion of which tools are writes —
+ * deliberately independent of the `meta.capability` label that arrives on the
+ * wire.
+ *
+ * WHY THIS EXISTS (fund-safety, defense-in-depth): `authorizeToolCall` is the
+ * single gate that decides whether an agent tool runs silently or must show an
+ * approval card, and it keys that decision off `payload.meta.capability`. That
+ * label is produced by the server and travels over the network. If a
+ * compromised, buggy, or MITM'd stream ever labels a real write (say
+ * `send_token`) as `"read"`, the gate would run it with NO approval card and
+ * NO user in the loop — the exact "the agent moved my funds without asking"
+ * failure class. By cross-checking the tool NAME against this local set,
+ * `authorizeToolCall` treats any known write AT LEAST as restrictively as a
+ * write regardless of what the wire claims, so a mislabeled write can never
+ * execute silently.
+ *
+ * We only harden the dangerous direction (write mislabeled read). A read
+ * mislabeled write is not a fund-safety hole (it only adds friction) and is
+ * left to the wire so a real server change isn't masked here.
+ *
+ * KEEP IN SYNC with the server registry: `registryParity.test.ts` asserts this
+ * set equals exactly the `capability: "write"` mobile tools in
+ * `agent-api/src/tools/registry.ts`, so a new write tool that isn't added here
+ * fails CI rather than silently losing its cross-check.
+ */
+export const MOBILE_WRITE_TOOLS: ReadonlySet<string> = new Set<string>([
+  // chain-agnostic capability writes
+  "send_native",
+  "send_token",
+  // evm writes
+  "send_native_token",
+  "transfer_erc20",
+  "write_contract",
+  "approve_erc20",
+  // points writes
+  "deposit_points",
+  "execute_redemption",
+  // solana takumipay writes
+  "execute_booking_sol",
+  "deposit_points_sol",
+  // solana native writes
+  "send_sol",
+  "send_spl_token",
+  // sui native writes
+  "send_sui",
+  "send_sui_coin",
+  // stellar native writes
+  "send_xlm",
+  "send_stellar_asset",
+  "establish_stellar_trustline",
+  // defi writes
+  "defi_deposit",
+  "defi_withdraw",
+  "defi_claim",
+  "defi_rebalance",
+  "defi_cross_chain_deposit",
+  "defi_compound",
+  // sui intent engine write
+  "defi_intent_execute",
+  // agent-initiated x402 micropayment (spends within a pre-signed allowance)
+  "x402_fetch",
+]);

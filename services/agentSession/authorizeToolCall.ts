@@ -28,6 +28,7 @@
  *     (`approval_unavailable`): fail closed when no human can approve.
  */
 
+import { MOBILE_WRITE_TOOLS } from "../agent-executors/expectedMobileTools.ts";
 import { resolveGrant, type ToolCapability } from "../permissionGrantStore.ts";
 import {
   type ConnectedWallet,
@@ -104,7 +105,25 @@ function isReadCapability(capability: ToolCapability): boolean {
 export function authorizeToolCall(
   args: AuthorizeToolCallArgs,
 ): ToolAuthorization {
-  const { capability, toolName, wallet, sessionId, interactive } = args;
+  const { toolName, wallet, sessionId, interactive } = args;
+
+  // Fund-safety cross-check (defense-in-depth): `args.capability` is the
+  // server's `meta.capability` label, which travels over the network. NEVER
+  // let a tool the mobile KNOWS is a write (`MOBILE_WRITE_TOOLS`) be treated as
+  // a read just because the wire said so — a mislabeled write would otherwise
+  // run silently with no approval card (the "agent moved funds without asking"
+  // class). Coerce to the more restrictive capability; a mismatch is a real
+  // drift/tamper signal, so log it (dev only — raw detail never reaches users).
+  let capability = args.capability;
+  if (capability === "read" && MOBILE_WRITE_TOOLS.has(toolName)) {
+    if (typeof __DEV__ !== "undefined" && __DEV__) {
+      console.warn(
+        `[authorizeToolCall] wire labeled known-write "${toolName}" as read — ` +
+          "coercing to write (approval required). Possible registry drift or tampered stream.",
+      );
+    }
+    capability = "write";
+  }
 
   const token = mintToken();
 
