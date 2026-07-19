@@ -56,7 +56,6 @@ ALLOWLIST=(
   # compatibility messaging that is still chain-shaped. Allowlist
   # each with a TODO pointer — these remain the top refactor targets.
   "components/home/Main/RecievePaymentModal.tsx"   # TODO: kit hook for "can wallet receive on chain"
-  "components/dapps-browser/approvals/SwitchChainSheet.tsx" # EVM-only sheet by design
   "components/home/TakumiAgent/ConversationHistory.tsx"    # EVM-only chain list render
 
   # Screens that still reach into viem `nativeCurrency` / EVM-specific

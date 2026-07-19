@@ -483,7 +483,11 @@ export class EvmAdapter implements ChainAdapter {
             makeIntent(
               req,
               "switchChain",
-              { chainId: targetId } satisfies EvmSwitchChainPayload,
+              {
+                chainId: targetId,
+                fromChainId: current?.chain.id,
+                fromChainName: current?.chain.name,
+              } satisfies EvmSwitchChainPayload,
               ctx.activeWallet,
             ),
           );

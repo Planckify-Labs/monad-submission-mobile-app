@@ -1,6 +1,5 @@
 import React from "react";
 import { Text, View } from "react-native";
-import { useWallet } from "@/hooks/useWallet";
 import type {
   ApprovalDecision,
   ApprovalIntent,
@@ -19,7 +18,15 @@ export function SwitchChainSheet({
   intent,
   onDecision,
 }: Props): React.ReactElement {
-  const { activeChain } = useWallet();
+  // dApp-bridge isolation: "From" is the chain the dApp session is on,
+  // stamped into the payload by the adapter — never the home-screen
+  // `useWallet().activeChain`, which can point somewhere else entirely.
+  const { fromChainId, fromChainName } = intent.payload;
+  const from =
+    fromChainName ??
+    (fromChainId !== undefined
+      ? (UserChainStore.get(fromChainId)?.chainName ?? `Chain ${fromChainId}`)
+      : "Current network");
   const target = UserChainStore.get(intent.payload.chainId);
   return (
     <SheetModal
@@ -28,14 +35,7 @@ export function SwitchChainSheet({
       <ApprovalShell intent={intent} title="Switch network">
         <View className="bg-gray-50 rounded-xl p-3">
           <Text className="text-xs text-gray-500">From</Text>
-          <Text className="text-base text-gray-900 mb-2">
-            {/* TODO(task-17): namespace-aware chain label. */}
-            {activeChain.namespace === "eip155"
-              ? (activeChain.chain.name ?? "current")
-              : activeChain.namespace === "solana"
-                ? activeChain.cluster
-                : activeChain.network}
-          </Text>
+          <Text className="text-base text-gray-900 mb-2">{from}</Text>
           <Text className="text-xs text-gray-500">To</Text>
           <Text className="text-base text-gray-900">
             {target?.chainName ?? `Chain ${intent.payload.chainId}`}

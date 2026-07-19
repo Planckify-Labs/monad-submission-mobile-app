@@ -37,7 +37,17 @@ export type EvmSendTxPayload =
       accessList?: AccessList;
     });
 
-export type EvmSwitchChainPayload = { chainId: number };
+export type EvmSwitchChainPayload = {
+  chainId: number;
+  /**
+   * Chain the dApp session is on when the switch is requested, resolved
+   * from the bridge ctx — NOT the home-screen active chain. The approval
+   * sheet must render "From" off these fields so it stays isolated from
+   * `useWallet()` state (same rule as intent.wallet).
+   */
+  fromChainId?: number;
+  fromChainName?: string;
+};
 
 export type EvmAddChainPayload = {
   chainId: number;
