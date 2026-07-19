@@ -46,6 +46,9 @@ export default defineConfig({
       "services/agent-executors/defi/intentExecutors.test.ts",
       "services/agent-executors/defi/intentSchemaParity.test.ts",
       "services/agent-executors/parseInput.test.ts",
+      // Cross-repo registry parity (server TOOL_REGISTRY ⇄ EXPECTED_MOBILE_TOOLS).
+      // Runnable now that the expected list lives in an import-free module.
+      "services/agent-executors/registryParity.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",

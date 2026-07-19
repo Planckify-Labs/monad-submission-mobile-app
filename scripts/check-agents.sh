@@ -167,27 +167,30 @@ if [ -f "$ORCHESTRATOR" ]; then
 fi
 
 # ─── Invariant 6: EXPECTED_MOBILE_TOOLS parity ───────────────────────────────
-# Extract mobile-executor tools from the agent-api registry via TS
-if command -v node >/dev/null 2>&1; then
-  set +e
-  SERVER_MOBILE_TOOLS=$(node -e '
-    require("ts-node/register");
-    const { TOOL_REGISTRY } = require("../../agent-api/src/tools/registry");
-    console.log(Object.values(TOOL_REGISTRY).filter(t => t.executor === "mobile").map(t => t.name).sort().join("\n"));
-  ' 2>/dev/null)
-  
-  MOBILE_EXPECTED_TOOLS=$(node -e '
-    require("ts-node/register");
-    const { EXPECTED_MOBILE_TOOLS } = require("../services/agent-executors/index");
-    console.log(EXPECTED_MOBILE_TOOLS.sort().join("\n"));
-  ' 2>/dev/null)
-  set -e
-  
-  if [ -n "$SERVER_MOBILE_TOOLS" ] && [ -n "$MOBILE_EXPECTED_TOOLS" ]; then
-    if [ "$SERVER_MOBILE_TOOLS" != "$MOBILE_EXPECTED_TOOLS" ]; then
-      fail "EXPECTED_MOBILE_TOOLS out of sync with agent-api registry."
-    fi
-  fi
+# Compare the server registry's `executor: "mobile"` tool names against the
+# mobile `EXPECTED_MOBILE_TOOLS` mirror.
+#
+# Loaded with `tsx` from each repo's own root (ts-node is NOT installed, and
+# the old cwd-relative `node -e` paths were wrong — so this check had been
+# SILENTLY skipping, which let `defi_intent_*` drift in undetected). The mobile
+# list is read from its import-free module (`expectedMobileTools.ts`) so no
+# RN executor graph is pulled. Extraction failure now WARNS (visibly) instead
+# of passing silently; the authoritative enforcement is the
+# `registryParity.test.ts` vitest test (part of `pnpm test`).
+set +e
+SERVER_MOBILE_TOOLS=$(cd "$AGENT_API_ROOT" && npx tsx -e \
+  'import { TOOL_REGISTRY } from "./src/tools/registry"; console.log(Object.values(TOOL_REGISTRY).filter((t)=>t.executor==="mobile").map((t)=>t.name).sort().join("\n"));' \
+  2>/dev/null)
+MOBILE_EXPECTED_TOOLS=$(cd "$REPO_ROOT" && npx tsx -e \
+  'import { EXPECTED_MOBILE_TOOLS } from "./services/agent-executors/expectedMobileTools"; console.log([...EXPECTED_MOBILE_TOOLS].sort().join("\n"));' \
+  2>/dev/null)
+set -e
+
+if [ -z "$SERVER_MOBILE_TOOLS" ] || [ -z "$MOBILE_EXPECTED_TOOLS" ]; then
+  echo "[check:agents] WARN: invariant 6 could not extract tool lists (tsx missing?) — parity NOT verified here; relying on registryParity.test.ts." >&2
+elif [ "$SERVER_MOBILE_TOOLS" != "$MOBILE_EXPECTED_TOOLS" ]; then
+  fail "EXPECTED_MOBILE_TOOLS out of sync with agent-api registry:
+$(diff <(echo "$SERVER_MOBILE_TOOLS") <(echo "$MOBILE_EXPECTED_TOOLS"))"
 fi
 
 if [ "$violations" -gt 0 ]; then

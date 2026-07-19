@@ -30,6 +30,7 @@ import { DEFI_EXECUTORS as DEFI_TOOL_EXECUTORS } from "./defi";
 import type { MobileToolExecutor } from "./types";
 import {
   ADDRESS_BOOK_EXECUTORS,
+  CAPABILITY_EXECUTORS,
   POINTS_EXECUTORS,
   READ_EXECUTORS,
   SIMULATE_EXECUTORS,
@@ -42,6 +43,7 @@ import {
 } from "./wallet";
 
 const WALLET_EXECUTORS = composeAgentExecutors("wallet", {
+  ...CAPABILITY_EXECUTORS,
   ...READ_EXECUTORS,
   ...SIMULATE_EXECUTORS,
   ...WRITE_EXECUTORS,
@@ -74,85 +76,14 @@ export const EXECUTORS: Record<string, MobileToolExecutor> = {
 };
 
 /**
- * Expected mobile tool list — hardcoded because the server lives in a
- * sibling package that we don't import from directly at build time.
- * Kept in sync by visual review against
- *   takumi-agent-api/src/tools/registry.ts
- * and by the cross-repo `pnpm check:agents` lint (Task 18).
+ * Expected mobile tool list — the mobile mirror of every `executor: "mobile"`
+ * server tool. Lives in a dedicated import-free module
+ * (`./expectedMobileTools`) so `registryParity.test.ts` can load it under
+ * vitest without pulling this file's RN-heavy executor graph. Re-exported here
+ * for the existing `import { EXPECTED_MOBILE_TOOLS } from "./index"` callers.
  */
-export const EXPECTED_MOBILE_TOOLS: ReadonlyArray<string> = [
-  // blockchain reads
-  "get_balance",
-  "get_wallet_balance",
-  "read_contract",
-  "get_transaction",
-  "get_wallet_address",
-  "get_supported_chains",
-  "get_wallet_tokens",
-  // simulate
-  "estimate_gas",
-  // blockchain writes
-  "send_native_token",
-  "transfer_erc20",
-  "write_contract",
-  "approve_erc20",
-  // points reads — public (no JWT)
-  "get_redemption_catalog",
-  "search_redemption_catalog",
-  "get_product_details",
-  "get_product_input_fields",
-  "get_points_price",
-  // points reads — auth required
-  "get_redemption_categories",
-  "get_points_balance",
-  "get_points_history",
-  "get_redemption_status",
-  "get_redemption_history",
-  // points writes
-  "deposit_points",
-  "execute_redemption",
-  // points simulate — SIWE login flow
-  "request_authentication",
-  // address book reads
-  "get_address_book",
-  "get_address_book_entry",
-  "search_address_book",
-  // solana native
-  "get_wallet_sol_balance",
-  "get_sol_balance",
-  "send_sol",
-  "get_wallet_spl_tokens",
-  "send_spl_token",
-  // solana takumipay
-  "execute_booking_sol",
-  "deposit_points_sol",
-  // sui native
-  "get_wallet_sui_balance",
-  "get_sui_balance",
-  "send_sui",
-  "get_wallet_sui_coins",
-  "send_sui_coin",
-  // stellar native (docs/stellar-chain-support-spec.md §7.2)
-  "get_wallet_xlm_balance",
-  "get_xlm_balance",
-  "send_xlm",
-  "get_wallet_stellar_assets",
-  "send_stellar_asset",
-  "establish_stellar_trustline",
-  // defi (spec §11 — full canonical set)
-  "defi_list_opportunities",
-  "defi_list_positions",
-  "defi_get_config",
-  "defi_simulate_deposit",
-  "defi_deposit",
-  "defi_withdraw",
-  "defi_claim",
-  "defi_rebalance",
-  "defi_cross_chain_deposit",
-  "defi_compound",
-  // agent-initiated x402 micropayments (spec Phase 5 §5.5)
-  "x402_fetch",
-];
+export { EXPECTED_MOBILE_TOOLS } from "./expectedMobileTools";
+import { EXPECTED_MOBILE_TOOLS } from "./expectedMobileTools";
 
 /**
  * Runtime assertion helper called once at app bootstrap.

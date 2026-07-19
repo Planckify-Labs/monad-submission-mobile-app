@@ -1,4 +1,5 @@
 export { ADDRESS_BOOK_EXECUTORS } from "./addressBook";
+export { CAPABILITY_EXECUTORS } from "./capabilities";
 export { POINTS_EXECUTORS } from "./points";
 export { READ_EXECUTORS } from "./reads";
 export { SIMULATE_EXECUTORS } from "./simulate";

@@ -8,9 +8,11 @@ import RebalancePreviewCard from "./cards/RebalancePreviewCard";
 import RedemptionCatalogCard from "./cards/RedemptionCatalogCard";
 import SolanaPendingTxCard from "./cards/SolanaPendingTxCard";
 import SpendingApprovalCard from "./cards/SpendingApprovalCard";
+import StellarPendingTxCard from "./cards/StellarPendingTxCard";
 import StrategyConfigCard from "./cards/StrategyConfigCard";
 import SuiPendingTxCard from "./cards/SuiPendingTxCard";
 import SwapQuoteCard from "./cards/SwapQuoteCard";
+import UnifiedPendingTxCard from "./cards/UnifiedPendingTxCard";
 import X402FetchCard from "./cards/X402FetchCard";
 import type { ToolComponent } from "./types";
 
@@ -25,6 +27,9 @@ import type { ToolComponent } from "./types";
  * different address) still render separately.
  */
 export const BALANCE_TOOL_NAMES = new Set([
+  // chain-agnostic capability tools (the model-facing surface)
+  "get_native_balance",
+  "get_wallet_assets",
   "get_wallet_tokens",
   "get_wallet_spl_tokens",
   "get_wallet_sui_coins",
@@ -34,10 +39,17 @@ export const BALANCE_TOOL_NAMES = new Set([
   "get_wallet_sol_balance",
   "get_sui_balance",
   "get_wallet_sui_balance",
+  "get_wallet_stellar_assets",
+  "get_xlm_balance",
+  "get_wallet_xlm_balance",
 ]);
 
 // biome-ignore lint/suspicious/noExplicitAny: registry is intentionally open-typed
 export const toolComponents: Record<string, ToolComponent<any, any>> = {
+  // Chain-agnostic capability sends → one dispatcher card that reuses the
+  // per-namespace receipt cards (the model-facing surface).
+  send_native: UnifiedPendingTxCard,
+  send_token: UnifiedPendingTxCard,
   send_native_token: PendingTxCard,
   transfer_erc20: PendingTxCard,
   write_contract: PendingTxCard,
@@ -47,7 +59,11 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   // Single card for every namespace's balance read — list-tokens AND
   // single-native-balance lookups. New per-namespace executors plug in
   // by emitting `WalletBalancesPayload` and being added to this map —
-  // no UI work needed.
+  // no UI work needed. The chain-agnostic capability tools
+  // (`get_native_balance` / `get_wallet_assets`) are the model-facing
+  // surface; the per-namespace entries below stay for history replay.
+  get_native_balance: BalancesCard,
+  get_wallet_assets: BalancesCard,
   get_wallet_tokens: BalancesCard,
   get_wallet_spl_tokens: BalancesCard,
   get_wallet_sui_coins: BalancesCard,
@@ -57,6 +73,9 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   get_wallet_sol_balance: BalancesCard,
   get_sui_balance: BalancesCard,
   get_wallet_sui_balance: BalancesCard,
+  get_wallet_stellar_assets: BalancesCard,
+  get_xlm_balance: BalancesCard,
+  get_wallet_xlm_balance: BalancesCard,
   get_redemption_catalog: RedemptionCatalogCard,
   search_redemption_catalog: RedemptionCatalogCard,
   get_product_details: ProductDetailCard,
@@ -64,6 +83,9 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   send_spl_token: SolanaPendingTxCard,
   send_sui: SuiPendingTxCard,
   send_sui_coin: SuiPendingTxCard,
+  send_xlm: StellarPendingTxCard,
+  send_stellar_asset: StellarPendingTxCard,
+  establish_stellar_trustline: StellarPendingTxCard,
   defi_list_opportunities: OpportunityListCard,
   defi_list_positions: PositionListCard,
   defi_deposit: PendingTxCard,
