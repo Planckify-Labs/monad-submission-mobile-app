@@ -157,6 +157,9 @@ export function createSuiWalletKit(): WalletKitAdapter {
       return `https://suivision.xyz/txblock/${digest}`;
     },
 
+    // Sui addresses are 0x-hex, case-insignificant — fold to lowercase.
+    canonicalizeAddress: (address: string): string => address.toLowerCase(),
+
     // ── Wallet creation & validation ────────────────────────────────
     validateAddress: (address: string): boolean => isValidSuiAddress(address),
     validatePrivateKey: (privateKey: string): boolean =>

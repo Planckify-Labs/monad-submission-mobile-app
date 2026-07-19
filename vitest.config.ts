@@ -23,6 +23,7 @@ export default defineConfig({
   },
   test: {
     include: [
+      "services/chains/addressCompare.test.ts",
       "services/agent-executors/sui.test.ts",
       "services/chains/solana/takumiPay/pda.test.ts",
       "services/chains/stellar/takumiPay/encoding.test.ts",

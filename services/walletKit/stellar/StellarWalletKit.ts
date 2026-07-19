@@ -165,6 +165,9 @@ export function createStellarWalletKit(): WalletKitAdapter {
       return `https://stellar.expert/explorer/${net}/tx/${hash}`;
     },
 
+    // base32 StrKey is case-SIGNIFICANT (canonically uppercase) — never fold.
+    canonicalizeAddress: (address: string): string => address,
+
     // ── Wallet creation & validation ────────────────────────────────
     validateAddress: (address: string): boolean =>
       isValidStellarAddress(address),

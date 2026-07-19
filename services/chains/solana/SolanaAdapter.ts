@@ -9,6 +9,7 @@ import type {
   ChainRequest,
   ChainResult,
 } from "@/services/chains/types";
+import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { originKey } from "@/services/permissions/caip";
 import { PermissionStore } from "@/services/permissions/store";
 import { getSolanaRpc } from "@/services/rpc/solanaRpcPool";
@@ -142,8 +143,8 @@ function pickSolanaWalletForOrigin(
     return targetChain === null || g.chainId === targetChain;
   });
   for (const g of grants) {
-    const match = solanaWallets.find(
-      (w) => w.address.toLowerCase() === g.walletAddress.toLowerCase(),
+    const match = solanaWallets.find((w) =>
+      addressesEqual("solana", w.address, g.walletAddress),
     );
     if (match) return match;
   }

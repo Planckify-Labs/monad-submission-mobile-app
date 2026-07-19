@@ -17,6 +17,7 @@ import { getSmartAccountsEnvironment } from "@metamask/smart-accounts-kit";
 import {
   erc20Abi,
   formatUnits,
+  getAddress,
   isAddress,
   parseUnits,
   zeroAddress,
@@ -157,6 +158,16 @@ export function createEvmWalletKit(): WalletKitAdapter {
       if (!explorer || typeof explorer !== "string") return null;
       const base = explorer.endsWith("/") ? explorer.slice(0, -1) : explorer;
       return `${base}/tx/${txHash}`;
+    },
+
+    canonicalizeAddress(address) {
+      // EIP-55 checksum collapses case; fall back to lowercase for a
+      // malformed-but-hex string rather than throwing.
+      try {
+        return getAddress(address);
+      } catch {
+        return address.toLowerCase();
+      }
     },
 
     // ── Wallet creation & validation ────────────────────────────────

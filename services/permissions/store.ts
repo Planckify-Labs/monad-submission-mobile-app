@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import type { Namespace } from "@/services/chains/types";
+import { addressesEqual, canonicalizeAddress } from "@/services/walletKit/chainInfo";
 import { originKey } from "./caip";
 
 // Stored in AsyncStorage, not SecureStore. Grants are (origin, wallet
@@ -132,21 +133,25 @@ export const PermissionStore = {
     chainId: ChainKey;
   }): Promise<void> {
     const key = originKey(args.origin);
+    // Store the address in its chain's canonical form (checksummed EVM /
+    // verbatim Solana+Stellar) so grants survive a case-sensitive compare
+    // against a real wallet address (StellarAdapter/SolanaAdapter match
+    // `w.address` verbatim). The namespace comes from the grant's chainId.
+    const namespace = namespaceForChainKey(args.chainId);
+    const canonical = canonicalizeAddress(namespace, args.walletAddress);
     const filtered = cache.grants.filter(
       (g) =>
         !(
           g.origin === key &&
-          g.walletAddress.toLowerCase() === args.walletAddress.toLowerCase() &&
+          addressesEqual(namespace, g.walletAddress, args.walletAddress) &&
           g.chainId === args.chainId
         ),
     );
     filtered.push({
       origin: key,
-      walletAddress: args.walletAddress.toLowerCase(),
+      walletAddress: canonical,
       chainId: args.chainId,
-      caveats: [
-        { type: "restrictReturnedAccounts", value: [args.walletAddress] },
-      ],
+      caveats: [{ type: "restrictReturnedAccounts", value: [canonical] }],
       grantedAt: Date.now(),
     });
     cache = { grants: filtered };
@@ -164,8 +169,10 @@ export const PermissionStore = {
       grants: cache.grants.filter((g) => {
         if (g.origin !== key) return true;
         if (!args.walletAddress) return false;
-        return (
-          g.walletAddress.toLowerCase() !== args.walletAddress.toLowerCase()
+        return !addressesEqual(
+          namespaceForChainKey(g.chainId),
+          g.walletAddress,
+          args.walletAddress,
         );
       }),
     };
@@ -186,10 +193,11 @@ export const PermissionStore = {
 
   isGranted(origin: string, walletAddress: string, chainId: ChainKey): boolean {
     const key = originKey(origin);
+    const namespace = namespaceForChainKey(chainId);
     return cache.grants.some(
       (g) =>
         g.origin === key &&
-        g.walletAddress.toLowerCase() === walletAddress.toLowerCase() &&
+        addressesEqual(namespace, g.walletAddress, walletAddress) &&
         g.chainId === chainId,
     );
   },

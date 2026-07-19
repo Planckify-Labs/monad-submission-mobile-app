@@ -73,6 +73,38 @@ export function getNativeSymbol(chain: ChainConfig): string | null {
 }
 
 /**
+ * Canonical storage/comparison form of a wallet `address` on `namespace`,
+ * via the registered kit's `canonicalizeAddress` capability. Falls back to
+ * the address unchanged when the kit (or namespace) doesn't implement it —
+ * so shared code never has to know a chain's case rule. This is the seam
+ * that replaced blanket `address.toLowerCase()` in shared code (which
+ * corrupts case-sensitive Solana base58 / Stellar base32 addresses).
+ */
+export function canonicalizeAddress(
+  namespace: Namespace,
+  address: string,
+): string {
+  if (!walletKitRegistry.has(namespace)) return address;
+  return (
+    walletKitRegistry.get(namespace).canonicalizeAddress?.(address) ?? address
+  );
+}
+
+/**
+ * True when `a` and `b` are the same wallet address under `namespace`'s case
+ * rule. Nullish inputs are never equal. Prefer this over `===` /
+ * `.toLowerCase()` comparisons for any wallet address.
+ */
+export function addressesEqual(
+  namespace: Namespace,
+  a: string | null | undefined,
+  b: string | null | undefined,
+): boolean {
+  if (!a || !b) return false;
+  return canonicalizeAddress(namespace, a) === canonicalizeAddress(namespace, b);
+}
+
+/**
  * Sign-in protocol chain name for a wallet namespace. `eip155` → "Ethereum"
  * (SIWE / EIP-4361), `solana` → "Solana" (SIWS). Used to keep sign-in CTAs
  * ("Sign In With Ethereum" / "Sign in with Solana…") aligned to the active

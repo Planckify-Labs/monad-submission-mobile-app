@@ -143,6 +143,9 @@ export function createSolanaWalletKit(): WalletKitAdapter {
       return chain.cluster === "devnet" ? `${base}?cluster=devnet` : base;
     },
 
+    // base58 is case-SIGNIFICANT — never fold.
+    canonicalizeAddress: (address: string): string => address,
+
     // ── Wallet creation & validation ────────────────────────────────
     validateAddress: (address: string): boolean =>
       isValidSolanaAddress(address),

@@ -43,6 +43,7 @@ import type {
   ChainRequest,
   ChainResult,
 } from "@/services/chains/types";
+import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { PermissionStore } from "@/services/permissions/store";
 import { assertStellarErrorCode, STELLAR_ERROR_CODES } from "./errorCodes";
 import { resolveStellarChainConfigForPassphrase } from "./horizonClient";
@@ -147,8 +148,8 @@ function pickStellarWalletForOrigin(
     .slice()
     .sort((a, b) => (b.grantedAt ?? 0) - (a.grantedAt ?? 0));
   for (const g of grants) {
-    const m = stellar.find(
-      (w) => w.address.toLowerCase() === g.walletAddress.toLowerCase(),
+    const m = stellar.find((w) =>
+      addressesEqual("stellar", w.address, g.walletAddress),
     );
     if (m) return m;
   }
@@ -393,7 +394,7 @@ class StellarAdapter implements ChainAdapter {
     // (`[[feedback_dapp_bridge_isolation]]`).
     if (
       params.accountToSign &&
-      params.accountToSign.toLowerCase() !== wallet.address.toLowerCase()
+      !addressesEqual("stellar", params.accountToSign, wallet.address)
     ) {
       return rpcError(
         STELLAR_ERROR_CODES.USER_REJECT,
@@ -459,7 +460,7 @@ class StellarAdapter implements ChainAdapter {
 
     if (
       params.accountToSign &&
-      params.accountToSign.toLowerCase() !== wallet.address.toLowerCase()
+      !addressesEqual("stellar", params.accountToSign, wallet.address)
     ) {
       return rpcError(
         STELLAR_ERROR_CODES.USER_REJECT,

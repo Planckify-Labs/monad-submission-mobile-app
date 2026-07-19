@@ -3,6 +3,7 @@
  */
 
 import * as SQLite from "expo-sqlite";
+import { foldAddressForKey } from "@/services/chains/addressCompare";
 import type { Contact, ContactAddress } from "./types";
 
 let db: SQLite.SQLiteDatabase | null = null;
@@ -139,7 +140,10 @@ export function incrementSendCount(address: string): void {
   const database = getDb();
   database.runSync(
     "INSERT INTO send_counts (address, count) VALUES (?, 1) ON CONFLICT(address) DO UPDATE SET count = count + 1",
-    [address.toLowerCase()],
+    // Fold EVM/Sui for dedup, but keep Solana/Stellar verbatim — a lowercased
+    // base58/base32 address is a different (invalid) address, and this value
+    // is returned as a send target by getFrequentRecipients().
+    [foldAddressForKey(address)],
   );
 }
 
@@ -151,7 +155,7 @@ export function getFrequentRecipients(minCount: number = 3): string[] {
   );
   const contacts = getContacts();
   const savedAddresses = new Set(
-    contacts.flatMap((c) => c.addresses.map((a) => a.address.toLowerCase())),
+    contacts.flatMap((c) => c.addresses.map((a) => foldAddressForKey(a.address))),
   );
   return rows.map((r) => r.address).filter((addr) => !savedAddresses.has(addr));
 }

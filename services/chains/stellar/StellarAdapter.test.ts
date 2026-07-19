@@ -100,10 +100,12 @@ describe("StellarAdapter — connect default network is `mainnet` (§4.2)", () =
 });
 
 describe("StellarAdapter — accountToSign mismatch is declined, not silently signed (§1.4/§11)", () => {
-  it("handleSignTransaction validates accountToSign", () => {
+  it("handleSignTransaction validates accountToSign against the wallet", () => {
+    // Case-significant (base32) equality via the chain-agnostic seam, not a
+    // corrupting `.toLowerCase()` compare.
     assert.match(
       src,
-      /accountToSign[\s\S]{0,200}toLowerCase\(\)\s*!==\s*wallet\.address\.toLowerCase\(\)/,
+      /accountToSign[\s\S]{0,160}!addressesEqual\(\s*"stellar",\s*params\.accountToSign,\s*wallet\.address\s*\)/,
     );
   });
 });

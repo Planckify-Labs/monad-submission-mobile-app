@@ -1036,6 +1036,20 @@ export interface WalletKitAdapter {
 
   // ── Chain identification hooks (used by `services/walletKit/chainInfo.ts`) ──
   /**
+   * Canonical storage/comparison form of a wallet `address` for this chain.
+   * Address case-sensitivity is a property of the ENCODING, so each kit owns
+   * its own rule instead of shared code blanket-`.toLowerCase()`-ing:
+   *   - EVM: EIP-55 checksum (case-insignificant, but the checksum is the
+   *     display-canonical form; two casings collapse to one output).
+   *   - Sui: lowercase (`0x`-hex, case-insignificant).
+   *   - Solana (base58) / Stellar (base32 StrKey): verbatim — case is
+   *     SIGNIFICANT, and lowercasing yields a different, invalid address.
+   * Shared code compares/keys via `chainInfo#addressesEqual` /
+   * `#canonicalizeAddress`, which presence-check this method and fall back
+   * to identity when a kit (or namespace) doesn't implement it.
+   */
+  canonicalizeAddress?(address: string): string;
+  /**
    * Returns the native chain identifier for `chain`. EVM kits return the
    * viem `chain.id` (number); Solana returns the cluster string. Returns
    * `null` when the chain does not belong to this kit's namespace, so
