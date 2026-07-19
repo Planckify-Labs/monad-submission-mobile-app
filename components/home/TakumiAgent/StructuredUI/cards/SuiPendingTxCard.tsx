@@ -31,6 +31,7 @@ import {
 import type React from "react";
 import { Pressable, Text, View } from "react-native";
 import { agentErrorCopy } from "../agentErrorCopy";
+import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 
@@ -72,10 +73,30 @@ function truncateDigest(digest: string): string {
   return `${digest.slice(0, 8)}…${digest.slice(-6)}`;
 }
 
+// Facts-first (prompt-injection defense): real to/amount args win over the
+// model-authored `human_summary` — see ../approvalSummary.ts.
 function describe(input: SuiWriteInput): string {
-  if (typeof input.human_summary === "string") return input.human_summary;
-  if (typeof input.description === "string") return input.description;
-  return "Sui transaction";
+  const isNative = typeof input.amount_sui === "string";
+  const amount = isNative
+    ? input.amount_sui
+    : typeof input.token_amount === "string"
+      ? input.token_amount
+      : undefined;
+  // The coin type's trailing segment is the on-chain asset actually being
+  // moved — derived from args, not model prose.
+  const coinTail =
+    typeof input.coin_type === "string"
+      ? input.coin_type.split("::").pop()
+      : undefined;
+  return factsFirstSummary(
+    {
+      amount,
+      asset: isNative ? "SUI" : coinTail,
+      to: typeof input.to === "string" ? input.to : undefined,
+    },
+    input,
+    "Sui transaction",
+  );
 }
 
 /**

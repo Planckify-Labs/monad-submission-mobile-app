@@ -36,6 +36,7 @@ import {
 import type React from "react";
 import { Pressable, Text, View } from "react-native";
 import { agentErrorCopy } from "../agentErrorCopy";
+import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 
@@ -80,10 +81,25 @@ function truncateHash(hash: string): string {
   return `${hash.slice(0, 8)}…${hash.slice(-6)}`;
 }
 
+// Facts-first (prompt-injection defense): real to/amount args win over the
+// model-authored `human_summary` — see ../approvalSummary.ts.
 function describe(input: StellarWriteInput): string {
-  if (typeof input.human_summary === "string") return input.human_summary;
-  if (typeof input.description === "string") return input.description;
-  return "Stellar transaction";
+  const isNative = typeof input.amount_xlm === "string";
+  const amount = isNative
+    ? input.amount_xlm
+    : typeof input.amount === "string"
+      ? input.amount
+      : undefined;
+  const code = typeof input.code === "string" ? input.code : undefined;
+  return factsFirstSummary(
+    {
+      amount,
+      asset: isNative ? "XLM" : code,
+      to: typeof input.to === "string" ? input.to : undefined,
+    },
+    input,
+    "Stellar transaction",
+  );
 }
 
 /**

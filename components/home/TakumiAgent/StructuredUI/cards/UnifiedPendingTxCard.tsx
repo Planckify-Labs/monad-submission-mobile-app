@@ -22,6 +22,7 @@
  */
 
 import type React from "react";
+import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponent, ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 import PendingTxCard from "./PendingTxCard";
@@ -77,25 +78,21 @@ function resolveCard(
   return PendingTxCard;
 }
 
-function truncate(addr: string): string {
-  if (addr.length <= 12) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
-
-/** Friendly one-liner from the tool input, used for the gate + receipt. */
+/**
+ * Friendly one-liner for the gate + receipt. Facts-first: the actual
+ * to/amount/symbol args always win over the model's `human_summary` so an
+ * injected prompt can't relabel what the user is approving.
+ */
 function summarize(input: SendInput): string {
-  if (typeof input.human_summary === "string" && input.human_summary.length > 0) {
-    return input.human_summary;
-  }
-  if (typeof input.description === "string" && input.description.length > 0) {
-    return input.description;
-  }
-  const amount = typeof input.amount === "string" ? input.amount : "";
-  const symbol = typeof input.symbol === "string" ? input.symbol : "";
-  const to = typeof input.to === "string" ? truncate(input.to) : "";
-  const asset = symbol ? ` ${symbol}` : "";
-  if (amount && to) return `Send ${amount}${asset} to ${to}`;
-  return "Send transaction";
+  return factsFirstSummary(
+    {
+      amount: typeof input.amount === "string" ? input.amount : undefined,
+      asset: typeof input.symbol === "string" ? input.symbol : undefined,
+      to: typeof input.to === "string" ? input.to : undefined,
+    },
+    input,
+    "Send transaction",
+  );
 }
 
 const UnifiedPendingTxCard: React.FC<
@@ -130,7 +127,9 @@ const UnifiedPendingTxCard: React.FC<
   // Result / historical — dispatch to the namespace-specific receipt card,
   // threading the synthesized summary so its own describe() reads the same line.
   const DelegateCard = resolveCard(props.output);
-  return <DelegateCard {...props} input={{ ...input, human_summary: summary }} />;
+  return (
+    <DelegateCard {...props} input={{ ...input, human_summary: summary }} />
+  );
 };
 
 export default UnifiedPendingTxCard;

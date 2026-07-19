@@ -30,6 +30,7 @@ import {
 import type React from "react";
 import { Pressable, Text, View } from "react-native";
 import { agentErrorCopy } from "../agentErrorCopy";
+import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 
@@ -71,10 +72,30 @@ function truncateSignature(sig: string): string {
   return `${sig.slice(0, 8)}…${sig.slice(-6)}`;
 }
 
+// Facts-first (prompt-injection defense): real to/amount args win over the
+// model-authored `human_summary` — see ../approvalSummary.ts.
 function describe(input: SolanaWriteInput): string {
-  if (typeof input.human_summary === "string") return input.human_summary;
-  if (typeof input.description === "string") return input.description;
-  return "Solana transaction";
+  const amount =
+    typeof input.amount_sol === "string"
+      ? input.amount_sol
+      : typeof input.token_amount === "string"
+        ? input.token_amount
+        : undefined;
+  const asset =
+    typeof input.amount_sol === "string"
+      ? "SOL"
+      : typeof input.token_amount === "string"
+        ? "tokens"
+        : undefined;
+  return factsFirstSummary(
+    {
+      amount,
+      asset,
+      to: typeof input.to === "string" ? input.to : undefined,
+    },
+    input,
+    "Solana transaction",
+  );
 }
 
 /**

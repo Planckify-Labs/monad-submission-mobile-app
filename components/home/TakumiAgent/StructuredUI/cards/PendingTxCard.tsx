@@ -31,6 +31,7 @@ import {
 import { buildExplorerUrl } from "../../PendingTxCard/explorerUrl";
 import PendingTxCardLegacy from "../../PendingTxCard/PendingTxCard";
 import { agentErrorCopy } from "../agentErrorCopy";
+import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 
@@ -63,10 +64,17 @@ function truncateHash(hash: string): string {
   return `${hash.slice(0, 8)}…${hash.slice(-6)}`;
 }
 
+// Facts-first (prompt-injection defense): the real `to` arg wins over the
+// model-authored `human_summary` — see ../approvalSummary.ts.
 function describe(input: WriteToolInput): string {
-  if (typeof input.human_summary === "string") return input.human_summary;
-  if (typeof input.description === "string") return input.description;
-  return "Transaction";
+  return factsFirstSummary(
+    {
+      action: "Transaction",
+      to: typeof input.to === "string" ? input.to : undefined,
+    },
+    input,
+    "Transaction",
+  );
 }
 
 function HistoricalReceipt({

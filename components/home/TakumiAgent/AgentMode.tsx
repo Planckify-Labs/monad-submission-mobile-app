@@ -31,6 +31,7 @@ import {
   type GrantChoice,
   specialWarning,
 } from "@/components/agent/ApprovalSheet";
+import { approvalSummaryFromToolInput } from "@/components/home/TakumiAgent/StructuredUI/approvalSummary";
 import type {
   ConversationCache,
   ConversationListCache,
@@ -1658,7 +1659,14 @@ export default function AgentMode() {
         {approvalState ? (
           <ApprovalSheet
             title={approvalState.payload.name}
-            summary={approvalState.payload.meta.human_summary}
+            // Facts-first (prompt-injection defense): derive the summary
+            // from the tool's actual input args; the server-built
+            // `human_summary` is model prose and only a fallback for
+            // fact-less inputs. See StructuredUI/approvalSummary.ts.
+            summary={approvalSummaryFromToolInput(
+              approvalState.payload.input,
+              approvalState.payload.meta.human_summary,
+            )}
             warning={specialWarning(approvalState.payload.name)}
             grantOptions={approvalGrantOptions}
             onApprove={handleApprovalApprove}

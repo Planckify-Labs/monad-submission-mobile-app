@@ -14,6 +14,7 @@
 
 import type React from "react";
 
+import { approvalSummaryFromToolInput } from "../StructuredUI/approvalSummary";
 import PreviewCard from "./PreviewCard";
 import type {
   AgentSessionLike,
@@ -61,7 +62,10 @@ export function showPreviewCard(
   return (
     <PreviewCard
       key={payload.tool_call_id}
-      summary={payload.meta.human_summary}
+      summary={approvalSummaryFromToolInput(
+        payload.input,
+        payload.meta.human_summary,
+      )}
       autoConfirmMs={autoConfirmMs}
       isReconnecting={isReconnecting}
       onConfirm={() => {

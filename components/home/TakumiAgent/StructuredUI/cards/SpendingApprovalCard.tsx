@@ -9,6 +9,7 @@
 import { CheckCircle2, XCircle } from "lucide-react-native";
 import type React from "react";
 import { Text, View } from "react-native";
+import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 
@@ -36,15 +37,21 @@ const SUCCESS_GREEN = "#10b981";
 const BRAND_RED = "#c71c4b";
 const MUTED_GRAY = "#6b7280";
 
+// Facts-first (prompt-injection defense): the spender ADDRESS is the fact
+// the user must see — `spender_name` and `human_summary` are model prose
+// and only decorate, never replace, it. See ../approvalSummary.ts.
 function summarize(input: SpendingApprovalInput): string {
-  if (input.human_summary) return input.human_summary;
-  const amount = input.amount ?? "";
-  const token = input.token_symbol ?? input.token ?? "";
-  const parts: string[] = [];
-  if (amount) parts.push(amount);
-  if (token) parts.push(token);
-  if (input.spender_name) parts.push(`to ${input.spender_name}`);
-  return parts.join(" ").trim() || "spending request";
+  return factsFirstSummary(
+    {
+      action: "Approve",
+      amount: input.amount,
+      asset: input.token_symbol ?? input.token,
+      to: input.spender,
+      toLabel: input.spender_name,
+    },
+    input,
+    "spending request",
+  );
 }
 
 function FrozenReceipt({
