@@ -2,23 +2,23 @@ import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo } from "react";
 import { erc20Abi, formatUnits, maxUint256, parseUnits } from "viem";
+import { authApi } from "@/api/endpoints/auth";
 import type { TToken } from "@/api/types/token";
 import { useTakumiWalletContract } from "@/contracts/hooks/useTakumiWalletContract";
 import { useIsAuthenticated } from "@/hooks/queries/useAuth";
 import { useBlockchains } from "@/hooks/queries/useBlockchains";
+import { usePaymentContract } from "@/hooks/queries/usePaymentContract";
 import {
   usePointPrice,
   useSubmitPointDeposit,
 } from "@/hooks/queries/usePoints";
 import { useSmartContractByChain } from "@/hooks/queries/useSmartContracts";
-import { usePaymentContract } from "@/hooks/queries/usePaymentContract";
 import { useTokens } from "@/hooks/queries/useTokens";
 import useRQGlobalState from "@/hooks/useRQGlobalState";
 import { useWallet } from "@/hooks/useWallet";
-import { authApi } from "@/api/endpoints/auth";
-import { executePointDepositStellar } from "@/services/nanopay/pathPointDepositStellar";
 import { toChainTag } from "@/services/analytics/chainTag";
 import { track } from "@/services/analytics/posthog";
+import { executePointDepositStellar } from "@/services/nanopay/pathPointDepositStellar";
 
 const DEPOSIT_STATE_KEY = ["deposit", "state"] as const;
 const DEFAULT_CURRENCY = "IDR";
@@ -305,8 +305,7 @@ export function useDepositState() {
 
   // Native decimals: EVM = 18, Stellar (XLM) = 7 stroops (spec §3.8).
   const nativeBalanceFormatted = useMemo(
-    () =>
-      parseFloat(formatUnits(nativeBalance, isStellar ? 7 : 18)).toFixed(6),
+    () => parseFloat(formatUnits(nativeBalance, isStellar ? 7 : 18)).toFixed(6),
     [nativeBalance, isStellar],
   );
 

@@ -43,9 +43,7 @@ describe("encodeMerchantQuoteScVal", () => {
 
   it("sorts map entries alphabetically by field name regardless of input", () => {
     const scVal = encodeMerchantQuoteScVal(SAMPLE_QUOTE);
-    const keys = scVal
-      .map()!
-      .map((e) => e.key().sym().toString());
+    const keys = scVal.map()!.map((e) => e.key().sym().toString());
     expect(keys).toEqual([...keys].sort());
     expect(keys).toEqual([
       "amount",

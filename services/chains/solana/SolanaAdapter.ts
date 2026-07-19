@@ -9,10 +9,10 @@ import type {
   ChainRequest,
   ChainResult,
 } from "@/services/chains/types";
-import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { originKey } from "@/services/permissions/caip";
 import { PermissionStore } from "@/services/permissions/store";
 import { getSolanaRpc } from "@/services/rpc/solanaRpcPool";
+import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { bytesToBase64 } from "./codec";
 import { assertSolanaErrorCode } from "./errorCodes";
 import { getSolanaInjectedScript } from "./injectedScript";

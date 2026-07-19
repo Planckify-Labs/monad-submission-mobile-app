@@ -101,7 +101,9 @@ export function addressesEqual(
   b: string | null | undefined,
 ): boolean {
   if (!a || !b) return false;
-  return canonicalizeAddress(namespace, a) === canonicalizeAddress(namespace, b);
+  return (
+    canonicalizeAddress(namespace, a) === canonicalizeAddress(namespace, b)
+  );
 }
 
 /**

@@ -18,12 +18,12 @@ import { Networks } from "@stellar/stellar-base";
 
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import type { TWallet } from "@/constants/types/walletTypes";
-import type { WalletKitAdapter } from "@/services/walletKit/types";
 import {
   buildDepositPointsArgs,
   DEPOSIT_POINTS,
   resolveStellarSacId,
 } from "@/services/chains/stellar/takumiPay";
+import type { WalletKitAdapter } from "@/services/walletKit/types";
 
 export class PointDepositStellarError extends Error {
   readonly name = "PointDepositStellarError";

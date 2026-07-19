@@ -14,12 +14,12 @@
 
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import type { TWallet } from "@/constants/types/walletTypes";
-import type { WalletKitAdapter } from "@/services/walletKit/types";
 import {
   buildProcessMerchantPaymentArgs,
   type MerchantQuoteFields,
   PROCESS_MERCHANT_PAYMENT,
 } from "@/services/chains/stellar/takumiPay";
+import type { WalletKitAdapter } from "@/services/walletKit/types";
 import type { PaymentIntentResponse, QuoteCommitmentStellar } from "./types";
 
 export class OnchainSettlementStellarError extends Error {

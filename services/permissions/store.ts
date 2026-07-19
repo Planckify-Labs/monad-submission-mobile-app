@@ -1,7 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as SecureStore from "expo-secure-store";
 import type { Namespace } from "@/services/chains/types";
-import { addressesEqual, canonicalizeAddress } from "@/services/walletKit/chainInfo";
+import {
+  addressesEqual,
+  canonicalizeAddress,
+} from "@/services/walletKit/chainInfo";
 import { originKey } from "./caip";
 
 // Stored in AsyncStorage, not SecureStore. Grants are (origin, wallet

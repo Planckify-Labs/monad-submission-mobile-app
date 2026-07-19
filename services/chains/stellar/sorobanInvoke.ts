@@ -35,7 +35,10 @@ import {
   TransactionBuilder,
   xdr,
 } from "@stellar/stellar-base";
-import { type StellarHorizonClient, transactionToBase64Xdr } from "./horizonClient";
+import {
+  type StellarHorizonClient,
+  transactionToBase64Xdr,
+} from "./horizonClient";
 import { type SorobanRpcClient, SorobanRpcError } from "./sorobanRpcClient";
 
 /** Envelope timeout — a Soroban settlement should confirm in seconds; 5 min is generous. */

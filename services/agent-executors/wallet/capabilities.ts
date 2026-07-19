@@ -90,8 +90,9 @@ function routeByWalletNamespace(
 }
 
 /** `get_native_balance` — connected wallet's native coin balance, any chain. */
-export const getNativeBalance: MobileToolExecutor =
-  routeByWalletNamespace(NATIVE_BALANCE_ROUTES);
+export const getNativeBalance: MobileToolExecutor = routeByWalletNamespace(
+  NATIVE_BALANCE_ROUTES,
+);
 
 /** `get_wallet_assets` — connected wallet's token/asset list, any chain. */
 export const getWalletAssets: MobileToolExecutor =
@@ -106,7 +107,12 @@ export const getWalletAssets: MobileToolExecutor =
 // so each namespace supplies a tiny `build` adapter alongside its `exec`.
 
 type NativeSendArgs = { to: string; amount: string };
-type TokenSendArgs = { to: string; amount: string; address: string; decimals: number };
+type TokenSendArgs = {
+  to: string;
+  amount: string;
+  address: string;
+  decimals: number;
+};
 
 interface NativeSendRoute {
   build: (a: NativeSendArgs) => ToolInput;
@@ -126,7 +132,10 @@ const NATIVE_SEND_ROUTES: Record<string, NativeSendRoute> = {
   },
   solana: { build: (a) => ({ to: a.to, amount_sol: a.amount }), exec: sendSol },
   sui: { build: (a) => ({ to: a.to, amount_sui: a.amount }), exec: sendSui },
-  stellar: { build: (a) => ({ to: a.to, amount_xlm: a.amount }), exec: sendXlm },
+  stellar: {
+    build: (a) => ({ to: a.to, amount_xlm: a.amount }),
+    exec: sendXlm,
+  },
 };
 
 const TOKEN_SEND_ROUTES: Record<string, TokenSendRoute> = {
@@ -197,7 +206,10 @@ export const sendNative: MobileToolExecutor = (input, context) =>
     }
     const to = requireString(input, "to");
     const amount = requireString(input, "amount");
-    return stampNamespace(await route.exec(route.build({ to, amount }), context), namespace);
+    return stampNamespace(
+      await route.exec(route.build({ to, amount }), context),
+      namespace,
+    );
   });
 
 /**
@@ -238,7 +250,10 @@ export const sendToken: MobileToolExecutor = (input, context) =>
       rows.find((r) => !r.is_native && r.symbol.toLowerCase() === want) ??
       rows.find((r) => !r.is_native && r.symbol.toLowerCase().startsWith(want));
     if (!match || !match.address) {
-      throw new ExecutorError(ExecutorErrorCode.InvalidInput, "token_not_found");
+      throw new ExecutorError(
+        ExecutorErrorCode.InvalidInput,
+        "token_not_found",
+      );
     }
 
     return stampNamespace(

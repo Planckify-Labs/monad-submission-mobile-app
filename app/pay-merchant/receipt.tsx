@@ -177,8 +177,7 @@ const resolveChainName = (
   if (!blockchains) return undefined;
   return (
     blockchains.find((b) => b.id === intent.blockchainId)?.name ??
-    blockchains.find((b) => b.chainId === intent.nanopayUsdcSourceChainId)
-      ?.name
+    blockchains.find((b) => b.chainId === intent.nanopayUsdcSourceChainId)?.name
   );
 };
 
@@ -485,9 +484,7 @@ function DetailsSection({ intent }: { intent: PaymentIntentResponse }) {
       {open ? (
         <View className="mt-3">
           <ReceiptRow label="Status" value={intent.status} />
-          {chainName ? (
-            <ReceiptRow label="Network" value={chainName} />
-          ) : null}
+          {chainName ? <ReceiptRow label="Network" value={chainName} /> : null}
           {intent.nanopayUsdcTreasuryAddress ? (
             <ReceiptRow
               label="Treasury"

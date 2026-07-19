@@ -155,7 +155,9 @@ export function getFrequentRecipients(minCount: number = 3): string[] {
   );
   const contacts = getContacts();
   const savedAddresses = new Set(
-    contacts.flatMap((c) => c.addresses.map((a) => foldAddressForKey(a.address))),
+    contacts.flatMap((c) =>
+      c.addresses.map((a) => foldAddressForKey(a.address)),
+    ),
   );
   return rows.map((r) => r.address).filter((addr) => !savedAddresses.has(addr));
 }

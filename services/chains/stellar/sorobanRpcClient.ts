@@ -114,7 +114,9 @@ async function rpcCall<T>(
  * is read from `Networks` constants (not the config) so a mismatch can't
  * silently sign for the wrong network — same guard as `getHorizonClient`.
  */
-export function getSorobanRpcClient(chainConfig: ChainConfig): SorobanRpcClient {
+export function getSorobanRpcClient(
+  chainConfig: ChainConfig,
+): SorobanRpcClient {
   const chain = assertStellarChain(chainConfig);
   const rpcUrl = chain.rpcUrl;
   if (!rpcUrl) {
@@ -137,7 +139,11 @@ export function getSorobanRpcClient(chainConfig: ChainConfig): SorobanRpcClient 
         error?: string;
       }>(rpcUrl, "simulateTransaction", { transaction: txXdrBase64 });
       if (raw.error) {
-        throw new SorobanRpcError(`simulateTransaction: ${raw.error}`, undefined, raw);
+        throw new SorobanRpcError(
+          `simulateTransaction: ${raw.error}`,
+          undefined,
+          raw,
+        );
       }
       if (!raw.transactionData || raw.minResourceFee === undefined) {
         throw new SorobanRpcError(

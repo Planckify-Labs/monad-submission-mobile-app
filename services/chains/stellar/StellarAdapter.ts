@@ -43,8 +43,8 @@ import type {
   ChainRequest,
   ChainResult,
 } from "@/services/chains/types";
-import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { PermissionStore } from "@/services/permissions/store";
+import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { assertStellarErrorCode, STELLAR_ERROR_CODES } from "./errorCodes";
 import { resolveStellarChainConfigForPassphrase } from "./horizonClient";
 import { getStellarInjectedScript } from "./injectedScript";

@@ -26,8 +26,7 @@ import type {
 import { executeOnchainSettlementStellar } from "./pathOnchainSettlementStellar.ts";
 import type { PaymentIntentResponse, QuoteCommitmentStellar } from "./types.ts";
 
-const CONTRACT_ID =
-  "CCLFTLVPHOKKDZYTMGU6UNXKFEN6VF3QVYEAJNULGIC7ZXTETAIPKKRZ";
+const CONTRACT_ID = "CCLFTLVPHOKKDZYTMGU6UNXKFEN6VF3QVYEAJNULGIC7ZXTETAIPKKRZ";
 const PAYER = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ";
 const SIGNATURE_B64 = Buffer.from(new Uint8Array(64)).toString("base64");
 

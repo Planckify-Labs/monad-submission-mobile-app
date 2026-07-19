@@ -20,7 +20,7 @@ const BrowserAddressBar = memo<TBrowserAddressBarProps>(
     return (
       <View
         className="flex-row gap-3 px-4 pb-2 bg-light-main-container items-center"
-        style={{ paddingTop: (top > 0 ? top : 0) }}
+        style={{ paddingTop: top > 0 ? top : 0 }}
       >
         <View className="flex-1 bg-light rounded-full flex-row items-center px-4 py-1">
           <Shield

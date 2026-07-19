@@ -8,18 +8,18 @@
  * in the orchestrator + `StellarWalletKit`.
  */
 
-import { toByteArray as base64ToBytes } from "base64-js";
 import { Address, xdr } from "@stellar/stellar-base";
+import { toByteArray as base64ToBytes } from "base64-js";
 import { encodeMerchantQuoteScVal } from "./encoding";
 import type { MerchantQuoteFields } from "./types";
 
-export { encodeMerchantQuoteScVal } from "./encoding";
-export type { MerchantQuoteFields } from "./types";
 export {
-  DEPOSIT_POINTS,
   buildDepositPointsArgs,
+  DEPOSIT_POINTS,
   resolveStellarSacId,
 } from "./depositPoints";
+export { encodeMerchantQuoteScVal } from "./encoding";
+export type { MerchantQuoteFields } from "./types";
 
 /** Contract method name — the only exported function the wallet calls. */
 export const PROCESS_MERCHANT_PAYMENT = "process_merchant_payment" as const;

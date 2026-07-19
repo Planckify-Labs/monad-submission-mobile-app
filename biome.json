@@ -172,6 +172,7 @@
     ]
   },
   "files": {
-    "ignoreUnknown": true
+    "ignoreUnknown": true,
+    "includes": ["**", "!services/agent-executors/agentManifests.json"]
   }
 }
