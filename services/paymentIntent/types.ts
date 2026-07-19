@@ -12,7 +12,7 @@
 export type PayChannel =
   | {
       kind: "wallet";
-      namespace: "eip155" | "solana" | "sui";
+      namespace: "eip155" | "solana" | "sui" | "stellar";
       address: string;
       /**
        * Specific target chain when the payload carries one:
@@ -24,6 +24,9 @@ export type PayChannel =
        *    `{ namespace: "sui", network }`.
        *  - raw `0x…` 40-hex address (no chain info) → `undefined` (scanner
        *    keeps the current EVM activeChain; only the namespace is
+       *    guaranteed to switch).
+       *  - raw Stellar `G…` strkey (no network info) → `undefined` (scanner
+       *    keeps the current Stellar activeChain; only the namespace is
        *    guaranteed to switch).
        */
       target?:

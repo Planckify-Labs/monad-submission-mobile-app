@@ -297,16 +297,26 @@ export default function SendScreen() {
       didApplyScannedNamespaceRef.current = true;
       return;
     }
+    if (
+      activeChain.namespace === "stellar" &&
+      scannedNamespace === "stellar" &&
+      activeChain.network === "mainnet"
+    ) {
+      didApplyScannedNamespaceRef.current = true;
+      return;
+    }
 
     const matchesNs = (
       b: (typeof blockchains)[number] & { chainSlug?: string | null },
-      ns: "solana" | "sui",
+      ns: "solana" | "sui" | "stellar",
     ): boolean => {
       if (b.isEVM !== false) return false;
       if (typeof b.chainSlug === "string")
         return b.chainSlug.startsWith(`${ns}-`);
       const name = (b.name ?? "").toLowerCase();
       const rpc = (b.rpcUrl ?? "").toLowerCase();
+      if (ns === "stellar")
+        return name.startsWith("stellar") || rpc.includes("stellar.org");
       const looksSui = name.startsWith("sui") || rpc.includes("sui.io");
       return ns === "sui" ? looksSui : !looksSui;
     };
@@ -316,7 +326,9 @@ export default function SendScreen() {
         ? blockchains.find((b) => matchesNs(b, "sui") && !b.isTestnet)
         : scannedNamespace === "solana"
           ? blockchains.find((b) => matchesNs(b, "solana") && !b.isTestnet)
-          : blockchains.find((b) => b.isEVM !== false);
+          : scannedNamespace === "stellar"
+            ? blockchains.find((b) => matchesNs(b, "stellar") && !b.isTestnet)
+            : blockchains.find((b) => b.isEVM !== false);
 
     if (!targetRow) {
       didApplyScannedNamespaceRef.current = true;
