@@ -7,9 +7,23 @@ import type {
 } from "@/services/bridge/approval";
 import type { SuiSignPersonalMessagePayload } from "@/services/chains/sui/payloads";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
+
+/** btoa-based utf8 → base64 (no ambient Buffer — Hermes-safe). */
+function utf8ToBase64(text: string): string | null {
+  try {
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  } catch {
+    return null;
+  }
+}
 
 interface Props {
   intent: ApprovalIntent<SuiSignPersonalMessagePayload>;
@@ -46,6 +60,14 @@ export function SuiSignPersonalMessageSheet({
   const decodedUtf8 = useMemo(() => {
     if (p.display === "utf8") return p.message;
     return decodeBase64Utf8(p.message);
+  }, [p.message, p.display]);
+
+  // Task 65 — the PersonalMessage-intent digest: the exact preimage
+  // hash the wallet signs, reproducible from the copied base64.
+  const digestArgs = useMemo<ComputeSigningDigestArgs | null>(() => {
+    const messageBase64 =
+      p.display === "base64" ? p.message : utf8ToBase64(p.message);
+    return messageBase64 ? { kind: "personalMessage", messageBase64 } : null;
   }, [p.message, p.display]);
 
   const copyBase64 = async (): Promise<void> => {
@@ -98,6 +120,8 @@ export function SuiSignPersonalMessageSheet({
               </TouchableOpacity>
             </View>
           )}
+
+          <ClearSigningSection intent={intent} digestArgs={digestArgs} />
 
           <TouchableOpacity
             onPress={copyBase64}

@@ -1,4 +1,5 @@
 import type { AccessList, TypedDataDefinition } from "viem";
+import type { DecodedCalldata } from "@/services/decoders/calldata";
 
 export type EvmConnectPayload = {
   requestedAccounts: number;
@@ -25,6 +26,13 @@ type EvmTxCommon = {
   gas?: bigint;
   nonce?: number;
   chainId: number;
+  /**
+   * Structural decode patched in by `EvmCalldataDecoderInspector`
+   * (priority 15) — same contract as the Solana/Sui/Stellar payloads'
+   * `decoded` fields. Absent when the calldata is empty or the
+   * inspector pipeline didn't run.
+   */
+  decoded?: DecodedCalldata;
 };
 
 export type EvmSendTxPayload =
@@ -87,6 +95,12 @@ export type EvmBatchCallsPayload = {
     gas?: bigint;
   }>;
   capabilities?: Record<string, unknown>;
+  /**
+   * Per-call structural decode patched in by
+   * `EvmCalldataDecoderInspector` — index-aligned with `calls`
+   * (`null` where a call has no/undecodable data).
+   */
+  decodedCalls?: Array<DecodedCalldata | null>;
 };
 
 export type EvmAuthorizationPayload = {

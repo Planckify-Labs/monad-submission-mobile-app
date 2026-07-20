@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { formatEther } from "viem";
 import type {
@@ -7,8 +7,43 @@ import type {
 } from "@/services/bridge/approval";
 import type { EvmBatchCallsPayload } from "@/services/chains/evm/payloads";
 import { decodeCalldata } from "@/services/decoders";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
+
+/**
+ * Task 65 — per-call clear-signing block. Each batch entry gets its
+ * own Stage-2 descriptor + ERC-8213 Flow B calldata digest ("both,
+ * never one" applies per calldata, and a batch is N calldatas).
+ */
+function BatchCallClearSigning({
+  intent,
+  call,
+}: {
+  intent: ApprovalIntent<EvmBatchCallsPayload>;
+  call: EvmBatchCallsPayload["calls"][number];
+}): React.ReactElement | null {
+  const hasCalldata = !!call.data && call.data !== "0x";
+  const clearSigningCall = useMemo(
+    () =>
+      hasCalldata
+        ? { to: call.to, chainId: intent.payload.chainId, data: call.data }
+        : undefined,
+    [hasCalldata, call.to, call.data, intent.payload.chainId],
+  );
+  const digestArgs = useMemo<ComputeSigningDigestArgs>(
+    () => ({ kind: "calldata", calldata: call.data ?? "0x" }),
+    [call.data],
+  );
+  return (
+    <ClearSigningSection
+      intent={intent}
+      call={clearSigningCall}
+      digestArgs={digestArgs}
+    />
+  );
+}
 
 interface Props {
   intent: ApprovalIntent<EvmBatchCallsPayload>;
@@ -69,6 +104,9 @@ export function EvmBatchCallsSheet({
                     {decoded.args?.map((a) => a.name).join(", ")})
                   </Text>
                 )}
+                <View className="mt-2">
+                  <BatchCallClearSigning intent={intent} call={c} />
+                </View>
               </View>
             );
           })}

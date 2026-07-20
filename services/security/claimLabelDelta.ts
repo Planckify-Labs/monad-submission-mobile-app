@@ -17,11 +17,43 @@ import type { AssetDelta } from "./txSimulator.ts";
 // `claim rewards`, and `claimRewards` all hit, while `proclaim` does not.
 export const CLAIM_LABEL_RE = /\b(claim|harvest|collect|redeem)(\b|[A-Z])/i;
 
+// Task 65 (TWV-2026-066) Phase F — the claim-shaped intent class with a
+// well-defined delta invariant ("should be net-positive inflow").
+// Matched against the LEADING VERB of a resolved Stage-2
+// `ClearSigningDescriptor.intent` — structured, not regexed off free
+// text, so it's harder to evade than string matching. Deliberately not
+// extended to intent classes whose "correct" delta shape isn't obvious
+// (arbitrary multicalls): a wrong invariant produces false-positive
+// fatigue, which is worse than the narrower heuristic.
+const CLAIM_INTENT_VERBS: ReadonlySet<string> = new Set([
+  "claim",
+  "harvest",
+  "collect",
+  "redeem",
+]);
+
+/** True iff a resolved Stage-2 intent's leading verb is claim-shaped. */
+export function intentLooksLikeClaim(
+  resolvedIntent: string | undefined,
+): boolean {
+  if (!resolvedIntent) return false;
+  const leading = resolvedIntent.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
+  return CLAIM_INTENT_VERBS.has(leading);
+}
+
 export interface ClaimMismatchInput {
   /** dApp-supplied tx title / description, if present. */
   dappLabel?: string;
   /** Top-level decoded function name, if available. */
   functionName?: string;
+  /**
+   * Resolved Stage-2 `ClearSigningDescriptor.intent` (task 65 Phase B),
+   * when descriptor resolution succeeded. The most reliable label
+   * source: it comes from a pinned registry / on-chain spec, not from
+   * dApp-supplied free text. The regex paths below stay as fallback
+   * for calls Phase B doesn't resolve.
+   */
+  resolvedIntent?: string;
   /** Output of `predictAssetDeltasFromCalldata` / full simulator. */
   deltas: AssetDelta[];
 }
@@ -33,14 +65,18 @@ export interface ClaimMismatchVerdict {
 }
 
 /**
- * True iff label set looks like a claim flow. Function name takes
- * precedence over dApp-supplied text per the spec ("never trust dApp
- * text alone").
+ * True iff label set looks like a claim flow. The resolved Stage-2
+ * intent (structured, registry/on-chain-sourced) is checked first,
+ * then the decoded function name, then dApp-supplied text — most
+ * trustworthy source first per the spec ("never trust dApp text
+ * alone").
  */
 export function looksLikeClaim(input: {
   dappLabel?: string;
   functionName?: string;
+  resolvedIntent?: string;
 }): boolean {
+  if (intentLooksLikeClaim(input.resolvedIntent)) return true;
   if (input.functionName && CLAIM_LABEL_RE.test(input.functionName))
     return true;
   if (input.dappLabel && CLAIM_LABEL_RE.test(input.dappLabel)) return true;
@@ -76,14 +112,14 @@ export function detectClaimMismatch(
     return {
       triggered: true,
       reason:
-        "Claim flow grants the contract unlimited outbound permission — drainers exploit this. Proceed only if you are sure.",
+        "This claim grants the contract unlimited outbound permission, a pattern drainers exploit. Proceed only if you are sure.",
     };
   }
   if (net <= 0n) {
     return {
       triggered: true,
       reason:
-        "Claim flow with no net inflow — the simulator predicts you receive nothing. Proceed only if you are sure.",
+        "This claim has no net inflow: the simulator predicts you receive nothing. Proceed only if you are sure.",
     };
   }
   return { triggered: false };

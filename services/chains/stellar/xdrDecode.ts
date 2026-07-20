@@ -15,8 +15,8 @@
  * module's asset strings use — reused, not reimplemented.
  */
 
-import type { Transaction } from "@stellar/stellar-base";
-import { TransactionBuilder } from "@stellar/stellar-base";
+import type { Transaction, xdr } from "@stellar/stellar-base";
+import { Address, TransactionBuilder } from "@stellar/stellar-base";
 
 import type { StellarDecodedOperation } from "./payloads";
 
@@ -43,6 +43,45 @@ function assetString(asset: unknown): string {
     }
   }
   return "unknown";
+}
+
+/**
+ * Structural decode of a Soroban `invokeHostFunction` operation. Only
+ * the `invokeContract` host-function arm carries a contract invocation;
+ * the others (upload WASM, create contract) return the bare tag. Fully
+ * defensive: any shape surprise degrades to the bare tag rather than
+ * throwing — the raw XDR stays the signing source of truth either way.
+ */
+function decodeInvokeHostFunction(
+  o: Record<string, unknown>,
+): StellarDecodedOperation {
+  try {
+    const func = o.func as xdr.HostFunction | undefined;
+    if (!func || typeof func.switch !== "function") {
+      return { kind: "invokeHostFunction" };
+    }
+    if (func.switch().name !== "hostFunctionTypeInvokeContract") {
+      return { kind: "invokeHostFunction" };
+    }
+    const invocation = func.invokeContract();
+    const contractId = Address.fromScAddress(
+      invocation.contractAddress(),
+    ).toString();
+    const rawName = invocation.functionName();
+    const functionName =
+      typeof rawName === "string"
+        ? rawName
+        : new TextDecoder().decode(new Uint8Array(rawName));
+    const argsXdr = invocation.args().map((a) => a.toXDR("base64"));
+    return {
+      kind: "invokeHostFunction",
+      contractId,
+      function: functionName,
+      argsXdr,
+    };
+  } catch {
+    return { kind: "invokeHostFunction" };
+  }
 }
 
 /** Narrow, defensive per-operation decode — unrecognized shapes fall back to `{kind:"other"}`. */
@@ -102,10 +141,12 @@ function decodeOperation(op: unknown): StellarDecodedOperation {
         destination: String(o.destination ?? ""),
       };
     case "invokeHostFunction":
-      // Soroban — §0 non-goal. Decodes to the bare tag only; the
-      // inspector flags this loudly (`soroban.invoke-host-function`,
-      // §8.1) rather than pretending to understand it.
-      return { kind: "invokeHostFunction" };
+      // Soroban. Task 65 (TWV-2026-066): surface the structural
+      // invocation identity (contract / function / raw ScVal args) so
+      // the Stage-2 clear-signing resolver can consult the on-chain
+      // contract spec. The inspector still flags the call loudly
+      // (`soroban.invoke-host-function`, §8.1).
+      return decodeInvokeHostFunction(o);
     default:
       return { kind: "other", type: type ?? "unknown" };
   }

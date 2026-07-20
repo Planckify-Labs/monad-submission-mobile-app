@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { ScrollView, Text, View } from "react-native";
 import type {
   ApprovalDecision,
@@ -12,8 +12,10 @@ import type {
   SuiSimulationSummary,
 } from "@/services/chains/sui/payloads";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { truncateAddress } from "@/utils/walletUtils";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
 
@@ -153,6 +155,18 @@ export function SuiTransactionSheet({
   const p = intent.payload;
   const decoded = p.decoded ?? [];
 
+  // Task 65 — Stage-2 descriptor input (first MoveCall command; the
+  // other PTB command kinds are already fully legible at Stage 1) and
+  // the chain's own pre-signature tx digest.
+  const clearSigningCall = useMemo(
+    () => decoded.find((c) => c.kind === "MoveCall"),
+    [decoded],
+  );
+  const digestArgs = useMemo<ComputeSigningDigestArgs>(
+    () => ({ kind: "transaction", transaction: p.transaction }),
+    [p.transaction],
+  );
+
   const approve = useCallback(
     () => onDecision({ id: intent.id, outcome: "approve" }),
     [intent.id, onDecision],
@@ -220,6 +234,15 @@ export function SuiTransactionSheet({
               </Text>
             </View>
           )}
+
+          {/* Task 65 — descriptor + AI summary + explorer-matching
+              tx digest (visible pre-signature, base58). */}
+          <ClearSigningSection
+            intent={intent}
+            call={clearSigningCall}
+            network={p.network}
+            digestArgs={digestArgs}
+          />
 
           <SimulationSummary summary={p.simulation} />
           <GasSummary payload={p} />

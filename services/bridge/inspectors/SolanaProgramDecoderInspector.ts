@@ -49,13 +49,12 @@ export const SolanaProgramDecoderInspector: IntentInspector = {
       return { annotations: [], verdict: "allow" };
     }
 
-    const decoded = decodeInstructions(
-      parsed.instructions.map((ix) => ({
-        programId: ix.programId,
-        accounts: ix.accounts,
-        data: ix.data,
-      })),
-    );
+    const rawInstructions = parsed.instructions.map((ix) => ({
+      programId: ix.programId,
+      accounts: ix.accounts,
+      data: ix.data,
+    }));
+    const decoded = decodeInstructions(rawInstructions);
 
     const nonce = detectDurableNonce(
       parsed.instructions[0]
@@ -73,6 +72,9 @@ export const SolanaProgramDecoderInspector: IntentInspector = {
       patch: {
         ...(payload as object),
         decoded,
+        // Task 65: Stage-2 clear-signing (on-chain IDL) needs the raw
+        // instruction bytes the decoded view drops.
+        rawInstructions,
         feePayer: parsed.feePayer,
         signerAddresses: signerAccounts(parsed),
         writableAddresses: writableAccounts(parsed),

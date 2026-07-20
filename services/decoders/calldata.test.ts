@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { encodeFunctionData, parseAbiItem } from "viem";
 
-import { decodeCalldata } from "./calldata.ts";
+import { decodeCalldata, decodeCalldataAgainst } from "./calldata.ts";
 
 function encode(sig: string, args: readonly unknown[]): `0x${string}` {
   const abi = [parseAbiItem(sig)] as any[];
@@ -179,5 +179,63 @@ describe("decodeCalldata — TWV-2026-009 risk classification", () => {
     const d = decodeCalldata(data);
     assert.ok(d);
     assert.equal(d.risk, undefined);
+  });
+});
+
+describe("decodeCalldata — task 65 Phase A roundtrip fidelity gate", () => {
+  const RECIPIENT = "0x1234567890123456789012345678901234567890" as const;
+
+  it("marks a clean single-candidate decode as roundtripVerified", () => {
+    const data = encode("function transfer(address to, uint256 amount)", [
+      RECIPIENT,
+      1_000_000n,
+    ]);
+    const d = decodeCalldata(data);
+    assert.ok(d);
+    assert.equal(d.roundtripVerified, true);
+    assert.equal(d.ambiguous, false);
+  });
+
+  // Real 4-byte collision: keccak("transfer(address,uint256)")[:4] ===
+  // keccak("many_msg_babbage(bytes1)")[:4] === 0xa9059cbb. The decoy
+  // decodes transfer calldata without throwing (bytes1 reads the first,
+  // zero, byte of the padded address word) but its re-encoding is one
+  // word, not two — so it cannot round-trip.
+  const trueSig = "function transfer(address to, uint256 amount)";
+  const decoySig = "function many_msg_babbage(bytes1 data)";
+
+  it("selector collision: only the round-tripping candidate is trusted", () => {
+    // The decoy is listed FIRST to prove ordering no longer wins.
+    const data = encode(trueSig, [RECIPIENT, 1_000_000n]);
+    const d = decodeCalldataAgainst(data, [decoySig, trueSig]);
+    assert.ok(d);
+    assert.equal(d.functionName, "transfer");
+    assert.equal(d.signature, trueSig);
+    assert.equal(d.roundtripVerified, true);
+    // The roundtrip resolved the collision — not ambiguous.
+    assert.equal(d.ambiguous, false);
+  });
+
+  it("no candidate round-trips → unresolved + ambiguous, never a silent first guess", () => {
+    // Only the decoy is offered. It decodes fine but re-encodes to
+    // different bytes — must NOT be returned as a trusted decode.
+    const data = encode(trueSig, [RECIPIENT, 1_000_000n]);
+    const d = decodeCalldataAgainst(data, [decoySig]);
+    assert.ok(d);
+    assert.equal(d.signature, null);
+    assert.equal(d.functionName, undefined);
+    assert.equal(d.ambiguous, true);
+    assert.equal(d.roundtripVerified, undefined);
+  });
+
+  it("hex case never breaks the byte-equality check", () => {
+    const data = encode("function transfer(address to, uint256 amount)", [
+      RECIPIENT,
+      42n,
+    ]);
+    const upper = `0x${data.slice(2).toUpperCase()}` as `0x${string}`;
+    const d = decodeCalldata(upper);
+    assert.ok(d);
+    assert.equal(d.roundtripVerified, true);
   });
 });

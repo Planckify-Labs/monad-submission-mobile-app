@@ -1,5 +1,5 @@
 import * as Clipboard from "expo-clipboard";
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { ScrollView, Text, View } from "react-native";
 import type {
   ApprovalDecision,
@@ -7,9 +7,23 @@ import type {
 } from "@/services/bridge/approval";
 import type { StellarSignMessagePayload } from "@/services/chains/stellar/payloads";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
+
+/** btoa-based utf8 → base64 (no ambient Buffer — Hermes-safe). */
+function utf8ToBase64(text: string): string | null {
+  try {
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  } catch {
+    return null;
+  }
+}
 
 interface Props {
   intent: ApprovalIntent<StellarSignMessagePayload>;
@@ -22,6 +36,14 @@ export function StellarSignMessageSheet({
 }: Props): React.ReactElement {
   useScreenshotGuard();
   const p = intent.payload;
+
+  // Task 65 — SEP-43 message signing has no network-defined digest, so
+  // the Stellar kit currently answers null and the block stays hidden.
+  // Wired anyway: if a SEP ever defines one, only the kit changes.
+  const digestArgs = useMemo<ComputeSigningDigestArgs | null>(() => {
+    const messageBase64 = utf8ToBase64(p.message);
+    return messageBase64 ? { kind: "personalMessage", messageBase64 } : null;
+  }, [p.message]);
 
   const copyMessage = async (): Promise<void> => {
     await Clipboard.setStringAsync(p.message);
@@ -52,6 +74,8 @@ export function StellarSignMessageSheet({
               {p.message}
             </Text>
           </View>
+
+          <ClearSigningSection intent={intent} digestArgs={digestArgs} />
 
           <Text
             className="text-xs text-violet-700 self-start"

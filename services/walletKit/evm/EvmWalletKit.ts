@@ -73,6 +73,10 @@ import type {
   WalletKitAdapter,
 } from "../types.ts";
 import {
+  computeEvmSigningDigest,
+  resolveEvmClearSigningDescriptor,
+} from "./clearSigning.ts";
+import {
   buildUnsignedDelegation,
   DELEGATION_ZERO_SALT,
   encodeSignedDelegations,
@@ -644,5 +648,12 @@ export function createEvmWalletKit(): WalletKitAdapter {
         yParity: auth.yParity ?? 0,
       };
     },
+
+    // ── Clear signing (task 65 / TWV-2026-066) ──────────────────────
+    // ERC-7730 resolution against the bundled/pinned snapshot and the
+    // ERC-8213 digest pair (Flow A typed data + Flow B calldata). Both
+    // are pure/in-process — no network call on the EVM path.
+    resolveClearSigningDescriptor: resolveEvmClearSigningDescriptor,
+    computeSigningDigest: computeEvmSigningDigest,
   };
 }

@@ -64,6 +64,11 @@ import type {
   TruncateAddressOptions,
   WalletKitAdapter,
 } from "../types.ts";
+import {
+  computeSuiSigningDigest,
+  makeSuiRpcCall,
+  resolveSuiClearSigningDescriptor,
+} from "./clearSigning.ts";
 
 /**
  * Gas-budget safety reserve subtracted in `estimateMaxTransferable`.
@@ -512,5 +517,23 @@ export function createSuiWalletKit(): WalletKitAdapter {
         endLength: opts?.end ?? 4,
       });
     },
+
+    // ── Clear signing (task 65 / TWV-2026-066) ──────────────────────
+    // `sui_getNormalizedMoveFunction` — the deployed package's own
+    // parameter types via a pinned RPC read. Falls back to the public
+    // fullnodes the bridge signer already uses when no ChainConfig is
+    // bound.
+    async resolveClearSigningDescriptor(args) {
+      const rpcUrl =
+        args.chain?.namespace === SUI_NAMESPACE
+          ? args.chain.rpcUrl
+          : args.network === "testnet"
+            ? "https://fullnode.testnet.sui.io:443"
+            : args.network === "devnet"
+              ? "https://fullnode.devnet.sui.io:443"
+              : "https://fullnode.mainnet.sui.io:443";
+      return resolveSuiClearSigningDescriptor(args, makeSuiRpcCall(rpcUrl));
+    },
+    computeSigningDigest: computeSuiSigningDigest,
   };
 }

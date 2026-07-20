@@ -7,10 +7,24 @@ import type {
 } from "@/services/bridge/approval";
 import type { SolanaSignMessagePayload } from "@/services/chains/solana/payloads";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { RiskBanner } from "./RiskBanner";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
+
+/** btoa-based utf8 → base64 (no ambient Buffer — Hermes-safe). */
+function utf8ToBase64(text: string): string | null {
+  try {
+    const bytes = new TextEncoder().encode(text);
+    let bin = "";
+    for (const b of bytes) bin += String.fromCharCode(b);
+    return btoa(bin);
+  } catch {
+    return null;
+  }
+}
 
 interface Props {
   intent: ApprovalIntent<SolanaSignMessagePayload>;
@@ -56,6 +70,14 @@ export function SolanaSignMessageSheet({
     p.display === "utf8" &&
     typeof p.message === "string" &&
     SIWS_HEADER_RE.test(p.message.split("\n")[0] ?? "");
+
+  // Task 65 — SHA-256 over the exact bytes being signed, reproducible
+  // with any sha256 tool from the copied base64.
+  const digestArgs = useMemo<ComputeSigningDigestArgs | null>(() => {
+    const messageBase64 =
+      p.display === "base64" ? p.message : utf8ToBase64(p.message);
+    return messageBase64 ? { kind: "personalMessage", messageBase64 } : null;
+  }, [p.message, p.display]);
 
   const copyBase64 = async (): Promise<void> => {
     // Clipboard always carries the base64 form — never the decoded utf-8.
@@ -127,6 +149,8 @@ export function SolanaSignMessageSheet({
               </TouchableOpacity>
             </View>
           )}
+
+          <ClearSigningSection intent={intent} digestArgs={digestArgs} />
 
           <TouchableOpacity
             onPress={copyBase64}

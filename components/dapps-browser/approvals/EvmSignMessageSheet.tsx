@@ -16,7 +16,9 @@ import {
   tryParseSiwe,
 } from "@/services/decoders";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 
 type MessageIntent = ApprovalIntent<
@@ -62,6 +64,30 @@ export function EvmSignMessageSheet({
     return text ? tryParseSiwe(text) : null;
   }, [intent.payload, isTyped]);
 
+  // Task 65 — ERC-8213 Flow A digest for typed data. A personal_sign
+  // message has no domain/types/message struct and isn't calldata, so
+  // ERC-8213 defines nothing for it: the kit returns null and the
+  // digest block stays hidden (a real, documented gap).
+  const digestArgs = useMemo<ComputeSigningDigestArgs | null>(() => {
+    if (!isTyped) return null;
+    const p = intent.payload as EvmSignTypedDataPayload;
+    return {
+      kind: "typedData",
+      typedData: p.typedData as Extract<
+        ComputeSigningDigestArgs,
+        { kind: "typedData" }
+      >["typedData"],
+    };
+  }, [intent.payload, isTyped]);
+
+  // Stage-2 descriptor probe only when the sheet's own cards (SIWE /
+  // permit) found nothing — no duplicate cards for the same payload.
+  const clearSigningCall = useMemo(() => {
+    if (!isTyped || siwe || decoded) return undefined;
+    const p = intent.payload as EvmSignTypedDataPayload;
+    return { typedData: p.typedData };
+  }, [intent.payload, isTyped, siwe, decoded]);
+
   return (
     <SheetModal
       onDismiss={() => onDecision({ id: intent.id, outcome: "reject" })}
@@ -77,6 +103,14 @@ export function EvmSignMessageSheet({
         >
           {siwe && <SiweCard siwe={siwe} />}
           {decoded && <DecodedPermitCard decoded={decoded} />}
+          {/* Task 65 — descriptor (only when SIWE/permit didn't match),
+              AI summary, and the ERC-8213 typed-data digest block. The
+              digest renders regardless of descriptor resolution. */}
+          <ClearSigningSection
+            intent={intent}
+            call={clearSigningCall}
+            digestArgs={digestArgs}
+          />
           {!siwe && !decoded && (
             <RawMessageCard intent={intent} isTyped={isTyped} />
           )}

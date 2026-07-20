@@ -52,6 +52,7 @@ import {
   transactionToBase64,
 } from "../../chains/solana/codec.ts";
 import { SvmSignerUnavailableError } from "../types.ts";
+import { computeSolanaSigningDigest } from "./clearSigning.ts";
 
 /**
  * Pure signing primitive — given a kit `KeyPairSigner` and a base64
@@ -73,6 +74,21 @@ export async function signX402SvmPaymentWithSigner(
   // writes to the slot whose address matches `signer.keyPair`'s
   // public key.
   const tx: Transaction = base64ToTransaction(transactionBase64);
+
+  // Task 65 (TWV-2026-066) Phase C — defense-in-depth: log the
+  // SHA-256 of the exact message bytes being signed even though this
+  // first-party flow has no dedicated approval sheet. Cross-checkable
+  // against the facilitator's copy of the same transaction.
+  if (typeof __DEV__ !== "undefined" && __DEV__) {
+    const digest = await computeSolanaSigningDigest({
+      kind: "transaction",
+      transaction: transactionBase64,
+    });
+    console.log(
+      "[clear-signing] x402 SVM message SHA-256:",
+      digest?.values[0]?.value,
+    );
+  }
 
   // `partiallySignTransaction` (as opposed to `signTransaction`) does
   // NOT assert the transaction is fully signed afterward. This is the

@@ -62,6 +62,11 @@ import type {
 } from "../types.ts";
 import { SvmWalletNamespaceMismatchError } from "../types.ts";
 import {
+  computeSolanaSigningDigest,
+  fetchSolanaAccountData,
+  resolveSolanaClearSigningDescriptor,
+} from "./clearSigning.ts";
+import {
   assertSolanaSigner,
   signX402SvmPaymentWithSigner,
 } from "./signX402SvmPayment.ts";
@@ -450,5 +455,24 @@ export function createSolanaWalletKit(): WalletKitAdapter {
         endLength: opts?.end,
       });
     },
+
+    // ── Clear signing (task 65 / TWV-2026-066) ──────────────────────
+    // Well-known-program map + on-chain Anchor IDL account (what
+    // `Program.fetchIdl` reads) — a pinned read against the program
+    // itself. The RPC binding prefers the caller's ChainConfig and
+    // falls back to the public cluster endpoints the bridge signer
+    // already uses.
+    async resolveClearSigningDescriptor(args) {
+      const rpcUrl =
+        args.chain?.namespace === SOLANA_NAMESPACE
+          ? args.chain.rpcUrl
+          : args.network === "devnet"
+            ? "https://api.devnet.solana.com"
+            : "https://api.mainnet-beta.solana.com";
+      return resolveSolanaClearSigningDescriptor(args, (address) =>
+        fetchSolanaAccountData(rpcUrl, address),
+      );
+    },
+    computeSigningDigest: computeSolanaSigningDigest,
   };
 }

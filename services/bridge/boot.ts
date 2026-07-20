@@ -18,6 +18,7 @@ import { walletKitRegistry } from "@/services/walletKit/registry";
 import { initDappBridge } from "./DappBridge";
 import { bridgeEventBus } from "./events";
 import { InspectorRegistry } from "./inspector";
+import { EvmCalldataDecoderInspector } from "./inspectors/EvmCalldataDecoderInspector";
 import { HeuristicInspector } from "./inspectors/HeuristicInspector";
 import { HttpsInspector } from "./inspectors/HttpsInspector";
 import { SolanaProgramDecoderInspector } from "./inspectors/SolanaProgramDecoderInspector";
@@ -63,6 +64,7 @@ export function bootBridge(opts: BootOpts) {
 
   InspectorRegistry.register(HttpsInspector);
   InspectorRegistry.register(HeuristicInspector);
+  InspectorRegistry.register(EvmCalldataDecoderInspector);
   InspectorRegistry.register(SolanaProgramDecoderInspector);
   InspectorRegistry.register(SolanaSimulationInspector);
   InspectorRegistry.register(SolanaSiwsInspector);

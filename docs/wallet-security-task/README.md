@@ -159,6 +159,17 @@ Acceptance sign-off (§7.4) requires:
 | 63 | TWV-2026-063 | `63_no_clipboard_auto_read_twv063_istaken_false.md` | No clipboard auto-read; explicit "Paste" with BIP-39 warn |
 | 64 | TWV-2026-065 | `64_distribution_discipline_twv065_istaken_false.md` | Official distribution discipline; SHA-256 in About screen |
 
+### Phase 4 — Clear-signing adoption (build on shipped Phase 1/2 decoders)
+
+| # | TWV | File | Title |
+|---|---|---|---|
+| 65 | TWV-2026-066 | `65_clear_signing_ai_translation_twv066_istaken_true_isfinish_true.md` | ERC-7730/8213 clear-signing decode + AI plain-English summary |
+
+Task 65 is numbered after the Phase 3 block but isn't policy/future-gated
+like most of Phase 3 — it directly upgrades already-shipped decoders
+(`TWV-2026-008`, `TWV-2026-011`, `TWV-2026-012`). Treat it as
+Phase-2-priority when scheduling, despite the number.
+
 ## Source of truth
 
 `../wallet-security-vulnerabilities-spec.md` is the canonical spec.

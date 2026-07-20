@@ -704,6 +704,120 @@ export type SettleX402PaymentResult =
     }
   | { status: "failed"; reason: string };
 
+// ── Clear signing (task 65 / TWV-2026-066) ─────────────────────────────
+//
+// Chain-agnostic shapes for the two optional clear-signing capabilities.
+// Deliberately SDK-free and viem-free (this module runs under the Node
+// test harness): each kit narrows `ResolveClearSigningDescriptorArgs.call`
+// to its own Stage-1 structural-decode shape at the port boundary.
+
+/** One labelled, ready-to-render human field of a resolved call. */
+export interface ClearSigningField {
+  label: string;
+  value: string;
+}
+
+/**
+ * Normalized "what does this call mean" descriptor. Every namespace
+ * resolves into this one shape so the Phase D summary layer needs no
+ * per-chain branching at all.
+ */
+export interface ClearSigningDescriptor {
+  /** Verb-shaped intent, e.g. "Transfer", "Approve", "Supply". */
+  intent: string;
+  /**
+   * Trust origin of the descriptor — a pinned bundled registry
+   * (`erc7730`), an on-chain self-describing spec (`onchain-idl` /
+   * `normalized-move` / `soroban-spec`), or one of the existing
+   * hand-written decoders (`bespoke`).
+   */
+  source:
+    | "erc7730"
+    | "onchain-idl"
+    | "normalized-move"
+    | "soroban-spec"
+    | "bespoke";
+  /** Contract / program / package identity the descriptor bound to. */
+  target?: string;
+  /** Resolved function / instruction / method name. */
+  functionName?: string;
+  fields: ClearSigningField[];
+}
+
+export interface ResolveClearSigningDescriptorArgs {
+  /**
+   * Stage-1 structural decode output — whatever this kit's own
+   * structural decoder already produced (an EVM `DecodedCalldata` +
+   * `to`/`chainId`; a Solana raw instruction; a Sui `MoveCall`
+   * command; a Stellar `invokeHostFunction` operation). Never raw
+   * undifferentiated bytes. Kits narrow their own shape and return
+   * `null` for anything they don't recognize.
+   */
+  call: unknown;
+  /**
+   * Chain binding for kits whose resolution is a pinned RPC read
+   * against the deployed program/package/contract itself (Solana IDL,
+   * Sui normalized module, Soroban contract spec).
+   */
+  chain?: ChainConfig;
+  /**
+   * Namespace-interpreted network hint for callers that only carry the
+   * dApp session's network string (a Solana cluster, a Sui network
+   * name, a Stellar passphrase) rather than a full `ChainConfig` —
+   * kits map it to their public default RPC endpoint, mirroring the
+   * bridge signer's fallbacks.
+   */
+  network?: string;
+}
+
+/**
+ * Input for `computeSigningDigest`. EVM implements `typedData`
+ * (ERC-8213 Flow A) and `calldata` (Flow B); Solana / Sui / Stellar
+ * implement `transaction` over their own wire encodings (base64 wire
+ * tx / base64 BCS / base64 XDR + passphrase).
+ */
+export type ComputeSigningDigestArgs =
+  | {
+      kind: "typedData";
+      typedData: {
+        domain?: Record<string, unknown>;
+        types: Record<string, unknown>;
+        primaryType: string;
+        message: Record<string, unknown>;
+      };
+    }
+  | { kind: "calldata"; calldata: `0x${string}` }
+  | { kind: "transaction"; transaction: string; networkPassphrase?: string }
+  | {
+      /**
+       * Off-chain personal-message signing. Kits whose scheme defines a
+       * digest for this (Solana: SHA-256 of the message bytes; Sui: the
+       * PersonalMessage intent digest) return it; kits without a defined
+       * scheme (EVM `personal_sign` under ERC-8213) return `null` — a
+       * real, documented gap, not an omission.
+       */
+      kind: "personalMessage";
+      messageBase64: string;
+    };
+
+export interface SigningDigestValue {
+  /** e.g. "EIP-712 digest", "Calldata digest", "Transaction hash". */
+  label: string;
+  /** `0x`-hex (EVM / Solana / Stellar) or base58 (Sui, explorer-native). */
+  value: string;
+  encoding: "hex" | "base58";
+}
+
+export interface SigningDigest {
+  scheme:
+    | "erc8213-eip712"
+    | "erc8213-calldata"
+    | "solana-message-sha256"
+    | "sui-tx-digest"
+    | "stellar-tx-hash";
+  values: SigningDigestValue[];
+}
+
 export interface WalletKitAdapter {
   readonly namespace: Namespace;
 
@@ -1002,6 +1116,40 @@ export interface WalletKitAdapter {
   establishTrustline?(
     args: EstablishTrustlineArgs,
   ): Promise<EstablishTrustlineResult>;
+
+  // ── Clear signing (task 65 / TWV-2026-066) ──────────────────────────
+  /**
+   * Resolves a human-readable "what does this call mean" descriptor
+   * for an already structurally-decoded call. Input is whatever this
+   * kit's own Stage-1 structural decoder already produced — never raw
+   * undifferentiated bytes. Returns `null` when no descriptor /
+   * on-chain spec is found; callers fall back to the existing bespoke
+   * decoders, then to raw. EVM resolves via a bundled/pinned ERC-7730
+   * registry snapshot; Solana via the on-chain Anchor IDL account +
+   * a small bundled well-known-program map; Sui via
+   * `sui_getNormalizedMoveFunction`; Stellar via the on-chain Soroban
+   * contract spec. The on-chain reads are pinned RPC calls against the
+   * deployed program/package/contract itself — the trust category
+   * `reproducible-signer-ui.md` §3 allows — never a third-party
+   * decode service. Chains without a program/contract layer for a
+   * given call (a plain Stellar Payment op, a Solana System transfer)
+   * don't need this; Stage-1 structural decode is already legible.
+   */
+  resolveClearSigningDescriptor?(
+    args: ResolveClearSigningDescriptorArgs,
+  ): Promise<ClearSigningDescriptor | null>;
+
+  /**
+   * Computes a reproducible pre-signature digest for independent
+   * verification (ERC-8213 on EVM; each chain's own native tx-digest
+   * primitive elsewhere). Deterministic, in-process, no network call.
+   * Returns `null` only for inputs the scheme defines nothing for
+   * (e.g. a non-typed-data payload handed to an EVM kit) — callers
+   * hide the digest block rather than fabricating a value.
+   */
+  computeSigningDigest?(
+    args: ComputeSigningDigestArgs,
+  ): Promise<SigningDigest | null>;
 
   // ── Optional capability flags ───────────────────────────────────────
   /** Whether this kit supports non-native token transfers. */

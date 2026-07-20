@@ -1,4 +1,4 @@
-import React, { useCallback } from "react";
+import React, { useCallback, useMemo } from "react";
 import { ScrollView, Text, View } from "react-native";
 import type {
   ApprovalDecision,
@@ -11,8 +11,10 @@ import type {
   SolanaSignTxPayload,
   SolanaSimulationSummary,
 } from "@/services/chains/solana/payloads";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { truncateAddress } from "@/utils/walletUtils";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { RiskBanner } from "./RiskBanner";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
@@ -155,6 +157,28 @@ export function SolanaTransactionSheet({
   onDecision,
 }: Props): React.ReactElement {
   const p = intent.payload;
+
+  // Task 65 — Stage-2 descriptor input. Prefer the first
+  // unknown-program instruction (the on-chain-IDL leg needs the raw
+  // bytes the decoded view drops); otherwise the first substantive
+  // decoded instruction (well-known-program leg).
+  const clearSigningCall = useMemo(() => {
+    if (!p.decoded || p.decoded.length === 0) return undefined;
+    const unknownIdx = p.decoded.findIndex(
+      (d) => "kind" in d && d.kind === "unknown",
+    );
+    if (unknownIdx >= 0 && p.rawInstructions?.[unknownIdx]) {
+      return p.rawInstructions[unknownIdx];
+    }
+    return p.decoded.find(
+      (d) => d.program !== "compute-budget" && d.program !== "memo",
+    );
+  }, [p.decoded, p.rawInstructions]);
+  const digestArgs = useMemo<ComputeSigningDigestArgs>(
+    () => ({ kind: "transaction", transaction: p.transaction }),
+    [p.transaction],
+  );
+
   const approve = useCallback(
     () => onDecision({ id: intent.id, outcome: "approve" }),
     [intent.id, onDecision],
@@ -208,6 +232,15 @@ export function SolanaTransactionSheet({
               {p.transaction.slice(0, 120)}
               {p.transaction.length > 120 ? "…" : ""}
             </Text>
+          </View>
+          {/* Task 65 — descriptor + AI summary + message SHA-256 digest. */}
+          <View className="mt-2">
+            <ClearSigningSection
+              intent={intent}
+              call={clearSigningCall}
+              network={p.cluster}
+              digestArgs={digestArgs}
+            />
           </View>
           <DecodedList decoded={p.decoded} />
           <ComputeBudgetRow decoded={p.decoded} />

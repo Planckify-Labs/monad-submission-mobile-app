@@ -1,4 +1,4 @@
-import { decodeFunctionData, parseAbiItem } from "viem";
+import { decodeFunctionData, encodeFunctionData, parseAbiItem } from "viem";
 
 /**
  * Review gate — TWV-2026-053 (Uniswap v4 hook address + allowlist display).
@@ -96,6 +96,14 @@ export interface DecodedCalldata {
   ambiguous?: boolean;
   raw: `0x${string}`;
   /**
+   * Task 65 (TWV-2026-066) Phase A — decode-fidelity roundtrip gate.
+   * `true` iff `encode(decode(bytes)) === bytes` held for the returned
+   * candidate. A 4-byte selector collision can decode without throwing
+   * against the wrong signature; only a roundtrip-verified decode may be
+   * shown as trusted or fed into Stage-2 descriptors / the AI summary.
+   */
+  roundtripVerified?: boolean;
+  /**
    * TWV-2026-009 — high-risk variants the signer UI MUST branch on, not
    * render as generic "Contract Interaction". Kept as a discriminated
    * tag so the decoder output remains a single value rather than a
@@ -150,6 +158,79 @@ function classifyRisk(decoded: DecodedCalldata): DecodedCalldata["risk"] {
   return undefined;
 }
 
+/**
+ * Decode `data` against `candidates`, trusting only a candidate whose
+ * re-encoding reproduces the original calldata byte-for-byte (Phase A
+ * roundtrip gate). "Didn't throw" is NOT "decoded the intended
+ * function": two differently-typed signatures behind one 4-byte
+ * selector can both decode without error while only one is correct.
+ *
+ * Exported for the synthetic-collision unit tests; product code goes
+ * through `decodeCalldata`, which supplies `SELECTOR_DB` candidates.
+ */
+export function decodeCalldataAgainst(
+  data: `0x${string}`,
+  candidates: readonly string[],
+): DecodedCalldata | null {
+  // Normalize hex case exactly once, at the boundary. viem's decoder
+  // matches selectors case-sensitively, and the roundtrip comparison
+  // below must be byte equality, not "looks about right" — so every
+  // step downstream operates on the lowercased form.
+  const normalized = data.toLowerCase() as `0x${string}`;
+  const selector = normalized.slice(0, 10) as `0x${string}`;
+  let sawDecodableCandidate = false;
+  for (const sig of candidates) {
+    try {
+      const abi = [parseAbiItem(sig)] as any[];
+      const decoded = decodeFunctionData({ abi, data: normalized });
+      sawDecodableCandidate = true;
+      // Roundtrip fidelity: re-encode with the same candidate and
+      // compare byte-for-byte.
+      const reencoded = encodeFunctionData({
+        abi,
+        functionName: decoded.functionName,
+        args: decoded.args as unknown[],
+      });
+      if (reencoded.toLowerCase() !== normalized) {
+        continue; // decoded, but not the true function — try next
+      }
+      const abiFn = abi[0];
+      const inputs = abiFn.inputs ?? [];
+      // `decoded.args` is undefined for zero-arg functions (deposit()).
+      const args: DecodedArg[] = ((decoded.args ?? []) as unknown[]).map(
+        (value, i) => ({
+          name: inputs[i]?.name ?? `arg${i}`,
+          type: inputs[i]?.type ?? "unknown",
+          value,
+        }),
+      );
+      const out: DecodedCalldata = {
+        selector,
+        signature: sig,
+        functionName: decoded.functionName,
+        args,
+        // The roundtrip resolved which candidate is real — a verified
+        // decode is not ambiguous even when the selector had several.
+        ambiguous: false,
+        roundtripVerified: true,
+        raw: data,
+      };
+      out.risk = classifyRisk(out);
+      return out;
+    } catch {
+      // try next candidate
+    }
+  }
+  // No candidate round-tripped. If one decoded anyway, surface it as
+  // ambiguous/unresolved rather than silently keeping the first guess.
+  return {
+    selector,
+    signature: null,
+    ambiguous: sawDecodableCandidate ? true : undefined,
+    raw: data,
+  };
+}
+
 export function decodeCalldata(
   data: `0x${string}` | undefined | null,
 ): DecodedCalldata | null {
@@ -166,32 +247,5 @@ export function decodeCalldata(
   if (!candidates || candidates.length === 0) {
     return { selector, signature: null, raw: data };
   }
-  for (const sig of candidates) {
-    try {
-      const abi = [parseAbiItem(sig)] as any[];
-      const decoded = decodeFunctionData({ abi, data });
-      const abiFn = abi[0];
-      const inputs = abiFn.inputs ?? [];
-      const args: DecodedArg[] = (decoded.args as unknown[]).map(
-        (value, i) => ({
-          name: inputs[i]?.name ?? `arg${i}`,
-          type: inputs[i]?.type ?? "unknown",
-          value,
-        }),
-      );
-      const out: DecodedCalldata = {
-        selector,
-        signature: sig,
-        functionName: decoded.functionName,
-        args,
-        ambiguous: candidates.length > 1,
-        raw: data,
-      };
-      out.risk = classifyRisk(out);
-      return out;
-    } catch {
-      // try next candidate
-    }
-  }
-  return { selector, signature: null, raw: data };
+  return decodeCalldataAgainst(data, candidates);
 }

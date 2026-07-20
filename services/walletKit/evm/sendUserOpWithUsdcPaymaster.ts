@@ -59,6 +59,7 @@ import type {
   SendUserOpResult,
   SendUserOpWithUsdcPaymasterArgs,
 } from "../types.ts";
+import { calldataDigest } from "./clearSigning.ts";
 
 /**
  * Minimal ERC-20 ABI fragment — only `approve`, which is the one call
@@ -205,6 +206,18 @@ export async function sendUserOpWithUsdcPaymaster(
   });
 
   const calls = buildPaymasterCalls(args);
+
+  // Task 65 (TWV-2026-066) Phase C — defense-in-depth: log the
+  // ERC-8213 calldata digest of the target call even though this
+  // first-party flow has no dedicated approval sheet. The payload is
+  // app-authored; the digest is a cross-check against a compromised
+  // UI layer, not blind-signing prevention.
+  if (typeof __DEV__ !== "undefined" && __DEV__) {
+    console.log(
+      "[erc8213] paymaster target calldata digest:",
+      calldataDigest(args.callData),
+    );
+  }
 
   const bundlerClient =
     deps.bundlerClient ??

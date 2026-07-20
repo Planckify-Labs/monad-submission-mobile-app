@@ -53,7 +53,17 @@ export type StellarDecodedOperation =
       buying: string;
     }
   | { kind: "accountMerge"; destination: string }
-  | { kind: "invokeHostFunction" } // Soroban — decodes to this bare tag only, §0 non-goal
+  | {
+      // Soroban invocation. Structural fields added by task 65
+      // (TWV-2026-066) so Stage-2 can resolve the on-chain contract
+      // spec; all optional — non-invokeContract host functions (upload
+      // WASM, create contract) still decode to the bare tag.
+      kind: "invokeHostFunction";
+      contractId?: string;
+      function?: string;
+      /** base64 `ScVal` per invocation argument, order preserved. */
+      argsXdr?: string[];
+    }
   | { kind: "other"; type: string };
 
 export type StellarSignTransactionPayload = {

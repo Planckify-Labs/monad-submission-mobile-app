@@ -12,8 +12,10 @@ import type {
 } from "@/services/chains/stellar/payloads";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
 import { walletKitRegistry } from "@/services/walletKit/registry";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { truncateAddress } from "@/utils/walletUtils";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
 
@@ -116,6 +118,22 @@ export function StellarTransactionSheet({
   );
   const memo = useMemo(() => memoLabel(p.memo), [p.memo]);
 
+  // Task 65 — Stage-2 descriptor input: the one op Stage 1 flags as
+  // opaque (Soroban invokeHostFunction); classic ops are already
+  // legible. Digest: the network's own tx hash, shown pre-signature.
+  const clearSigningCall = useMemo(
+    () => decoded.find((op) => op.kind === "invokeHostFunction"),
+    [decoded],
+  );
+  const digestArgs = useMemo<ComputeSigningDigestArgs>(
+    () => ({
+      kind: "transaction",
+      transaction: p.xdr,
+      networkPassphrase: p.networkPassphrase,
+    }),
+    [p.xdr, p.networkPassphrase],
+  );
+
   const approve = useCallback(
     () => onDecision({ id: intent.id, outcome: "approve" }),
     [intent.id, onDecision],
@@ -174,6 +192,15 @@ export function StellarTransactionSheet({
               </Text>
             </View>
           )}
+
+          {/* Task 65 — Soroban contract-spec descriptor + AI summary +
+              the network tx hash (matches stellar.expert post-broadcast). */}
+          <ClearSigningSection
+            intent={intent}
+            call={clearSigningCall}
+            network={p.networkPassphrase}
+            digestArgs={digestArgs}
+          />
 
           {(fee || memo) && (
             <View className="bg-gray-50 rounded-xl p-3 mb-3">

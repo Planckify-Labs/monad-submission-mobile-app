@@ -22,11 +22,42 @@
  */
 
 import { keccak256, type PublicClient, type WalletClient } from "viem";
+import { resolveClearSigningSummary } from "@/services/decoders/clearSigning";
+import { calldataDigest } from "@/services/walletKit/evm/clearSigning";
+import type { ClearSigningDescriptor } from "@/services/walletKit/types";
 
 export interface EvmCallRequest {
   to: `0x${string}`;
   data?: `0x${string}`;
   value?: bigint;
+}
+
+/**
+ * Task 65 (TWV-2026-066) Phase E — the same Phase B/D clear-signing
+ * pipeline a dApp-initiated transaction gets, applied to an
+ * agent-constructed one. The descriptor feeds the approval-card layer
+ * (and, via Phase D, the AI summary); the ERC-8213 calldata digest is
+ * the independently-reproducible fingerprint of the exact bytes about
+ * to be signed (`clearsig calldata-digest` on a second device).
+ */
+export interface EvmCallClearSigningPreview {
+  descriptor: ClearSigningDescriptor | null;
+  calldataDigest: `0x${string}`;
+}
+
+export async function buildClearSigningPreview(
+  call: EvmCallRequest,
+  chainId: number | undefined,
+): Promise<EvmCallClearSigningPreview> {
+  // This module is EVM-specific by construction (viem clients), so the
+  // namespace literal is the honest binding, not a shared-code branch.
+  const descriptor = await resolveClearSigningSummary("eip155", {
+    call: { to: call.to, chainId, data: call.data },
+  });
+  return {
+    descriptor,
+    calldataDigest: calldataDigest(call.data ?? "0x"),
+  };
 }
 
 export type SubmitOutcome =
@@ -46,13 +77,41 @@ export async function submitEvmCall(
   walletClient: WalletClient,
   publicClient: PublicClient,
   call: EvmCallRequest,
-  opts?: { receiptTimeoutMs?: number },
+  opts?: {
+    receiptTimeoutMs?: number;
+    /**
+     * Task 65 Phase E — receives the Phase B descriptor + ERC-8213
+     * digest computed for the exact call about to be signed, so the
+     * approval-card layer can render them. Advisory: a preview
+     * failure never blocks submission.
+     */
+    onClearSigningPreview?: (preview: EvmCallClearSigningPreview) => void;
+  },
 ): Promise<SubmitOutcome> {
   const account = walletClient.account;
   // No local account / can't sign offline → we can't hold the hash, so
   // there's nothing to broadcast. Caller treats this as a safe failure.
   if (!account || typeof account.signTransaction !== "function") {
     return { kind: "not_broadcast" };
+  }
+
+  // Task 65 Phase E — run the Phase B/D pipeline over the constructed
+  // call before signing, same as any dApp-initiated transaction.
+  try {
+    const preview = await buildClearSigningPreview(
+      call,
+      walletClient.chain?.id,
+    );
+    if (typeof __DEV__ !== "undefined" && __DEV__) {
+      console.warn("[defi/submit] clear-signing preview", {
+        intent: preview.descriptor?.intent ?? null,
+        functionName: preview.descriptor?.functionName ?? null,
+        calldataDigest: preview.calldataDigest,
+      });
+    }
+    opts?.onClearSigningPreview?.(preview);
+  } catch {
+    // Advisory only — never a block on submission.
   }
 
   // 1. Prepare + sign. Any throw here is pre-broadcast (gas estimate

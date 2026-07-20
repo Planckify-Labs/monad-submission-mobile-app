@@ -165,5 +165,16 @@ export async function signTransferWithAuthorization(
     );
   }
   const typed = buildTransferWithAuthorizationTypedData(args);
+  // Task 65 (TWV-2026-066) Phase C — defense-in-depth: compute and log
+  // the ERC-8213 digest even though this first-party flow has no
+  // dedicated approval sheet. The payload is app-authored, so this is
+  // a cross-check against a compromised UI layer, not blind-signing
+  // prevention.
+  if (typeof __DEV__ !== "undefined" && __DEV__) {
+    console.log(
+      "[erc8213] TransferWithAuthorization EIP-712 digest:",
+      hashTypedData(typed),
+    );
+  }
   return account.signTypedData(typed);
 }

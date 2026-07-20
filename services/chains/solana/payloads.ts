@@ -192,6 +192,16 @@ export type SolanaSignTxPayload = {
    * for the sheet + the Takumi-AI on-demand inspector.
    */
   feePayer?: string;
+  /**
+   * Raw parsed instructions (index-aligned with `decoded`) — task 65
+   * (TWV-2026-066): the Stage-2 on-chain-IDL resolver needs the
+   * original instruction bytes, which the decoded view drops.
+   */
+  rawInstructions?: Array<{
+    programId: string;
+    accounts: string[];
+    data: Uint8Array | string;
+  }>;
   signerAddresses?: string[];
   writableAddresses?: string[];
   accountKeys?: string[];

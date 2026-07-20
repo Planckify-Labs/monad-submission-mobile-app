@@ -21,6 +21,7 @@
 import { validateMnemonic } from "@scure/bip39";
 import { wordlist as englishWordlist } from "@scure/bip39/wordlists/english";
 import type { Keypair } from "@stellar/stellar-base";
+import { Networks } from "@stellar/stellar-base";
 
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { assertStellarChain } from "@/constants/configs/chainConfig";
@@ -76,6 +77,11 @@ import type {
   TruncateAddressOptions,
   WalletKitAdapter,
 } from "../types";
+import {
+  computeStellarSigningDigest,
+  fetchSorobanContractWasm,
+  resolveStellarClearSigningDescriptor,
+} from "./clearSigning";
 
 const STELLAR_NAMESPACE = "stellar" as const;
 
@@ -549,5 +555,33 @@ export function createStellarWalletKit(): WalletKitAdapter {
         endLength: opts?.end ?? 4,
       });
     },
+
+    // ── Clear signing (task 65 / TWV-2026-066) ──────────────────────
+    // Soroban contract-spec resolution via the on-chain WASM's
+    // `contractspecv0` custom section — a pinned two-hop
+    // `getLedgerEntries` read against the deployed contract itself.
+    // `args.network` carries the dApp session's network passphrase
+    // when no ChainConfig is bound; anything other than the public
+    // passphrase resolves to the testnet RPC (matches the two-network
+    // ChainConfig shape).
+    async resolveClearSigningDescriptor(args) {
+      const configuredRpc =
+        args.chain?.namespace === STELLAR_NAMESPACE
+          ? args.chain.rpcUrl
+          : undefined;
+      const isPublic =
+        args.chain?.namespace === STELLAR_NAMESPACE
+          ? args.chain.network === "mainnet"
+          : args.network === Networks.PUBLIC;
+      const rpcUrl =
+        configuredRpc ??
+        (isPublic
+          ? "https://mainnet.sorobanrpc.com"
+          : "https://soroban-testnet.stellar.org");
+      return resolveStellarClearSigningDescriptor(args, (contractId) =>
+        fetchSorobanContractWasm(rpcUrl, contractId),
+      );
+    },
+    computeSigningDigest: computeStellarSigningDigest,
   };
 }

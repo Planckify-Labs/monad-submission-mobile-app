@@ -1,12 +1,14 @@
 import { ChevronDown, ChevronRight } from "lucide-react-native";
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
 import type {
   ApprovalDecision,
   ApprovalIntent,
 } from "@/services/bridge/approval";
 import type { SolanaSignAllTransactionsPayload } from "@/services/chains/solana/payloads";
+import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { RiskBanner } from "./RiskBanner";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
@@ -23,12 +25,14 @@ const CLUSTER_LABEL: Record<string, string> = {
 };
 
 function TxCard({
+  intent,
   index,
   body,
   version,
   simulationWarningCount,
   defaultOpen,
 }: {
+  intent: ApprovalIntent<SolanaSignAllTransactionsPayload>;
   index: number;
   body: string;
   version: 0 | "legacy";
@@ -36,6 +40,12 @@ function TxCard({
   defaultOpen: boolean;
 }): React.ReactElement {
   const [open, setOpen] = useState(defaultOpen);
+  // Task 65 — per-transaction message SHA-256 digest (every entry in
+  // the batch is its own signature payload).
+  const digestArgs = useMemo<ComputeSigningDigestArgs>(
+    () => ({ kind: "transaction", transaction: body }),
+    [body],
+  );
   return (
     <View className="border border-gray-200 rounded-xl mb-2 overflow-hidden">
       <TouchableOpacity
@@ -63,6 +73,7 @@ function TxCard({
       </TouchableOpacity>
       {open && (
         <View className="px-3 py-2">
+          <ClearSigningSection intent={intent} digestArgs={digestArgs} />
           <Text className="text-[10px] text-gray-400 mb-1">Base64 payload</Text>
           <Text
             className="text-xs font-mono text-gray-700"
@@ -116,6 +127,7 @@ export function SolanaSignAllTransactionsSheet({
           {p.transactions.map((tx, i) => (
             <TxCard
               key={`${i}-${tx.transaction.slice(0, 8)}`}
+              intent={intent}
               index={i}
               body={tx.transaction}
               version={tx.version}
