@@ -22,17 +22,29 @@
  * no `namespace ===` branches (`pnpm check:chains`).
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ApprovalIntent } from "@/services/bridge/approval";
 import { resolveClearSigningSummary } from "@/services/decoders/clearSigning";
 import { summarizeClearSigningDescriptor } from "@/services/decoders/summarize";
+import { EMOJI_HASH_ROWS } from "@/services/security/emojiHash";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import type {
   ClearSigningDescriptor,
   ComputeSigningDigestArgs,
   SigningDigest,
 } from "@/services/walletKit/types";
+import { EmojiHashGrid } from "./EmojiHashGrid";
+
+type DigestView = "hex" | "emoji";
+
+/** Pick a spot-check row different from the current one (when possible). */
+function pickDifferentRow(current: number, rowCount: number): number {
+  if (rowCount <= 1) return current;
+  let next = Math.floor(Math.random() * (rowCount - 1));
+  if (next >= current) next += 1;
+  return next;
+}
 
 interface Props {
   intent: ApprovalIntent;
@@ -106,6 +118,18 @@ export function ClearSigningSection({
   const [summary, setSummary] = useState<string | null | undefined>(undefined);
   const [digest, setDigest] = useState<SigningDigest | null>(null);
   const [revealed, setRevealed] = useState(false);
+  const [digestView, setDigestView] = useState<DigestView>("hex");
+  // The emoji spot-check row is owned here (not in EmojiHashGrid) so it
+  // survives the Hex<->Emoji toggle. Picked once at random; only "Check
+  // another row" moves it. The emoji grid itself never changes for a
+  // given digest.
+  const [spotCheckRow, setSpotCheckRow] = useState(() =>
+    Math.floor(Math.random() * EMOJI_HASH_ROWS),
+  );
+  const rerollSpotCheckRow = useCallback(
+    () => setSpotCheckRow((cur) => pickDifferentRow(cur, EMOJI_HASH_ROWS)),
+    [],
+  );
 
   // Phase B — descriptor resolution (automatic, on mount).
   useEffect(() => {
@@ -180,6 +204,10 @@ export function ClearSigningSection({
   }, [ns, digestArgs]);
 
   const digestRows = useMemo(() => digest?.values ?? [], [digest]);
+  // The canonical row is the actual signing digest (the last value in
+  // every scheme: EIP-712 digest, calldata digest, tx hash). That is the
+  // one worth fingerprinting for a cross-device spot-check.
+  const canonicalRow = digestRows[digestRows.length - 1];
 
   return (
     <View>
@@ -233,25 +261,60 @@ export function ClearSigningSection({
       )}
 
       {digestRows.length > 0 && (
-        <Pressable
-          onPress={() => setRevealed((r) => !r)}
-          className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-3"
-        >
-          <Text className="text-xs text-gray-500 mb-1">
-            Signing digest · verify on a second device
-          </Text>
-          {digestRows.map((row) => (
-            <View key={row.label} className="mt-1">
-              <Text className="text-[10px] text-gray-500">{row.label}</Text>
-              <Text className="text-xs font-mono text-gray-900" selectable>
-                {revealed ? groupDigest(row.value) : truncateDigest(row.value)}
-              </Text>
+        <View className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-3">
+          <View className="flex-row items-center justify-between mb-2">
+            <Text className="text-xs text-gray-500 flex-1 pr-2">
+              Signing digest · verify on a second device
+            </Text>
+            <View className="flex-row bg-gray-200 rounded-lg p-0.5">
+              {(["hex", "emoji"] as const).map((mode) => {
+                const on = digestView === mode;
+                return (
+                  <Pressable
+                    key={mode}
+                    onPress={() => setDigestView(mode)}
+                    className={`px-2.5 py-1 rounded-md ${on ? "bg-white" : ""}`}
+                  >
+                    <Text
+                      className={`text-[11px] font-semibold ${
+                        on ? "text-gray-900" : "text-gray-500"
+                      }`}
+                    >
+                      {mode === "hex" ? "Hex" : "Emoji"}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
-          ))}
-          <Text className="text-[10px] text-gray-400 mt-2">
-            {revealed ? "Tap to shorten" : "Tap to show the full value"}
-          </Text>
-        </Pressable>
+          </View>
+
+          {digestView === "hex" ? (
+            <Pressable onPress={() => setRevealed((r) => !r)}>
+              {digestRows.map((row) => (
+                <View key={row.label} className="mt-1">
+                  <Text className="text-[10px] text-gray-500">{row.label}</Text>
+                  <Text className="text-xs font-mono text-gray-900" selectable>
+                    {revealed
+                      ? groupDigest(row.value)
+                      : truncateDigest(row.value)}
+                  </Text>
+                </View>
+              ))}
+              <Text className="text-[10px] text-gray-400 mt-2">
+                {revealed ? "Tap to shorten" : "Tap to show the full value"}
+              </Text>
+            </Pressable>
+          ) : (
+            canonicalRow && (
+              <EmojiHashGrid
+                value={canonicalRow.value}
+                label={canonicalRow.label}
+                activeRow={spotCheckRow}
+                onCheckAnotherRow={rerollSpotCheckRow}
+              />
+            )
+          )}
+        </View>
       )}
     </View>
   );
