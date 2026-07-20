@@ -44,6 +44,7 @@ import {
   usePushNotificationHandler,
   usePushRegistrationRetry,
 } from "@/services/push";
+import { bootPpobCategorizers } from "@/services/ppob";
 import { installQRMatrixCache } from "@/services/qrMatrixCache";
 import { bootWalletKits } from "@/services/walletKit/boot";
 import { hasStoredWallets } from "@/services/walletService";
@@ -56,6 +57,9 @@ bootWalletKits();
 bootGasAbstraction();
 // Register DeFi adapters
 bootDefi();
+// Register PPOB catalog categorizers (vcGamer today) — pure logic, no
+// registry deps, so ordering vs. the chain boots doesn't matter.
+bootPpobCategorizers();
 // Refresh the API-driven x402 settlement-rail override (enable/disable,
 // reorder, fee caps) into the on-device cache — best-effort, fire-and-forget
 // (x402-extensibility-spec §12.1, OQ-2). Failure leaves defaults in place.

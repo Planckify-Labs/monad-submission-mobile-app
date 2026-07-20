@@ -1,6 +1,9 @@
+export { CategoryTabs } from "./CategoryTabs";
 export { ContactPickerModal } from "./ContactPickerModal";
+export { FilterSheet } from "./FilterSheet";
 export { PackageVariantItem } from "./PackageVariantItem";
 export { PackageVariantList } from "./PackageVariantList";
 export { PhoneNumberInput } from "./PhoneNumberInput";
 export { ProviderNotDetectedAlert } from "./ProviderNotDetectedAlert";
+export { RecentNumbers } from "./RecentNumbers";
 export { ScreenHeader } from "./ScreenHeader";

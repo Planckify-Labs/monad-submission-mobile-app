@@ -4,6 +4,7 @@ import { Controller } from "react-hook-form";
 import { Text, TextInput, TouchableOpacity, View } from "react-native";
 import OptimizedImage from "@/components/common/OptimizedImage";
 import { ContactPickerModal } from "@/components/pulsa-data/ContactPickerModal";
+import { RecentNumbers } from "@/components/pulsa-data/RecentNumbers";
 import { formatPhoneNumber } from "@/constants/ISP-list";
 import { usePhoneNumber, usePhoneNumberForm } from "@/hooks/pulsa-data";
 import { useContactPicker } from "@/hooks/pulsa-data/useContactPicker";
@@ -73,6 +74,8 @@ export const PhoneNumberInput = memo(function PhoneNumberInput() {
           Phone number must be at least 11 digits
         </Text>
       )}
+
+      <RecentNumbers onSelect={setPhoneFromContact} />
 
       <ContactPickerModal
         visible={visible}

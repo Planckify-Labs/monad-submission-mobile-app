@@ -10,7 +10,7 @@ export interface PhoneContactEntry {
 }
 
 interface UseContactPickerOptions {
-  onPhoneSelected: (phone: string) => void;
+  onPhoneSelected: (phone: string, name?: string) => void;
 }
 
 export function useContactPicker({ onPhoneSelected }: UseContactPickerOptions) {
@@ -22,7 +22,11 @@ export function useContactPicker({ onPhoneSelected }: UseContactPickerOptions) {
 
   const handleSelect = useCallback(
     (entry: PhoneContactEntry) => {
-      onPhoneSelected(entry.number);
+      // Pass the contact name only when it's a real name (the flattener
+      // falls back to the number itself when a contact is unnamed).
+      const name =
+        entry.name && entry.name !== entry.number ? entry.name : undefined;
+      onPhoneSelected(entry.number, name);
       setVisible(false);
     },
     [onPhoneSelected],

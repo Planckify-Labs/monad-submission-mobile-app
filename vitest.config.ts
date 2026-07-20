@@ -77,6 +77,8 @@ export default defineConfig({
       "services/chains/stellar/xdrDecode.test.ts",
       "services/chains/stellar/agentContext.test.ts",
       "services/bridge/inspectors/StellarPreflightInspector.test.ts",
+      // PPOB catalog categorization (space-docked per fulfillment partner)
+      "services/ppob/vcgamer.test.ts",
       // Encrypted seed backup (docs/encrypted-seed-backup-spec.md)
       "services/backup/seedBackupCrypto.test.ts",
       "services/backup/bytes.test.ts",

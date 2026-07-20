@@ -11,6 +11,7 @@ import {
   useProductInputFields,
 } from "@/hooks/queries/useProducts";
 import useRQGlobalState from "@/hooks/useRQGlobalState";
+import { normalizeNumberKey } from "@/services/ppob/recentNumbers";
 
 const MAX_PHONE_LENGTH = 12;
 const MIN_VALID_LENGTH = 11;
@@ -21,6 +22,27 @@ const CATEGORY_PRODUCTS_QUERY_KEY = [
   "pulsa-data",
   "category-products",
 ] as const;
+const CONTACT_LABEL_QUERY_KEY = ["pulsa-data", "contact-label"] as const;
+
+interface ContactLabel {
+  /** Normalized number key the label belongs to. */
+  key: string;
+  name: string;
+}
+
+/**
+ * Remembers the contact name for a number picked from the contact book,
+ * so `recordNumberUsage` can attach it to the "Frequently used" chip.
+ * Keyed by normalized number so a stale label never bleeds onto a
+ * different, manually-typed number.
+ */
+export function useContactLabel() {
+  const { data, setNewData } = useRQGlobalState<ContactLabel | null>({
+    queryKey: CONTACT_LABEL_QUERY_KEY,
+    initialData: null,
+  });
+  return { contactLabel: data ?? null, setContactLabel: setNewData };
+}
 
 interface PhoneNumberFormValues {
   phoneNumber: string;
@@ -41,6 +63,7 @@ export function usePhoneNumberForm() {
   });
 
   const localPhoneNumber = watch("phoneNumber");
+  const { setContactLabel } = useContactLabel();
 
   // Sync local form state to global state
   useEffect(() => {
@@ -50,16 +73,21 @@ export function usePhoneNumberForm() {
   }, [localPhoneNumber, globalPhoneNumber, setGlobalPhoneNumber]);
 
   const setPhoneFromContact = useCallback(
-    (phone: string) => {
+    (phone: string, name?: string) => {
       let cleaned = phone.replace(/\D/g, "");
       if (cleaned.startsWith("62")) {
         cleaned = "0" + cleaned.slice(2);
       }
       if (cleaned.length <= MAX_PHONE_LENGTH) {
         setValue("phoneNumber", cleaned);
+        // Remember the contact name for this number (if any) so the
+        // "Frequently used" chip can show it after a purchase.
+        if (name) {
+          setContactLabel({ key: normalizeNumberKey(cleaned), name });
+        }
       }
     },
-    [setValue],
+    [setValue, setContactLabel],
   );
 
   return {
