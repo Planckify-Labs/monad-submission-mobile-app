@@ -70,6 +70,29 @@ const AUTHORIZED_DELEGATORS = EIP7702_ALLOWLIST;
 
 type ChainConfig = { chain: Chain; rpcUrl: string };
 
+// Upper bound on the pre-approval gas estimate. The estimate is
+// explicitly non-essential (the sheet falls back to dApp-supplied
+// values), but it is `await`ed before the approval intent is created,
+// so a slow / rate-limited RPC would otherwise gate the whole approval
+// sheet behind it. On a 429 the default viem transport honours the
+// upstream `Retry-After` header, which on a rate-limited public
+// endpoint (e.g. Cloudflare `error code: 1015`) can stall for minutes.
+const GAS_ESTIMATE_TIMEOUT_MS = 4000;
+
+/**
+ * Resolve `p`, or reject after `ms`. Used to cap non-essential
+ * pre-approval RPC reads so a slow / rate-limited endpoint can never
+ * block the approval sheet from appearing.
+ */
+function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error("preflight.timeout")), ms),
+    ),
+  ]);
+}
+
 export interface EvmAdapterOpts {
   /** Resolves the active viem Chain + RPC for the context's wallet. */
   resolveChainConfig: (ctx: AdapterContext) => ChainConfig | null;
@@ -106,6 +129,23 @@ export class EvmAdapter implements ChainAdapter {
     return createPublicClient({
       chain: config.chain,
       transport: http(config.rpcUrl),
+    }) as PublicClient;
+  }
+
+  /**
+   * Fast-fail client for pre-approval reads (the gas estimate). Unlike
+   * `publicClient`, this disables retries and uses a short per-request
+   * timeout so a rate-limited endpoint gives up quickly instead of
+   * honouring a multi-minute `Retry-After`. The reads it backs are all
+   * non-essential — the approval sheet renders with dApp values when
+   * they fail — so failing fast is strictly better than blocking.
+   */
+  private preflightClient(ctx: AdapterContext): PublicClient {
+    const config = this.opts.resolveChainConfig(ctx);
+    if (!config) throw PROVIDER_ERRORS.chainNotConnected();
+    return createPublicClient({
+      chain: config.chain,
+      transport: http(config.rpcUrl, { retryCount: 0, timeout: 3000 }),
     }) as PublicClient;
   }
 
@@ -405,13 +445,18 @@ export class EvmAdapter implements ChainAdapter {
             return err(PROVIDER_ERRORS.chainNotConnected());
           }
 
-          // Gas re-estimation side-by-side (task 18)
+          // Gas re-estimation side-by-side (task 18). Bounded by a hard
+          // timeout on a fast-fail client: the estimate is non-essential
+          // but it is awaited before the approval intent is created, so
+          // an unbounded read on a rate-limited RPC would leave the user
+          // staring at nothing while no sheet appears (viem honours the
+          // upstream `Retry-After`, stalling for minutes). Cap it so a
+          // slow RPC degrades to "dApp values only" within a few seconds.
           try {
-            const pc = this.publicClient(ctx);
-            const estimate = await this.buildGasEstimate(
-              pc,
-              normalized.payload,
-              rawTx,
+            const pc = this.preflightClient(ctx);
+            const estimate = await raceTimeout(
+              this.buildGasEstimate(pc, normalized.payload, rawTx),
+              GAS_ESTIMATE_TIMEOUT_MS,
             );
             (normalized.payload as { gasEstimate?: GasEstimate }).gasEstimate =
               estimate;

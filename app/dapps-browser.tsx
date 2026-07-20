@@ -88,13 +88,17 @@ function isWebviewThirdPartyNoise(args: readonly unknown[]): boolean {
   return false;
 }
 
+import type { Chain } from "viem";
 import { mainnet } from "viem/chains";
+import type { TBlockchain } from "@/api/types/blockchain";
 import BrowserAddressBar from "@/components/dapps-browser/BrowserAddressBar";
 import BrowserNavigationControls from "@/components/dapps-browser/BrowserNavigationControls";
 import ConnectionManagerSheet from "@/components/dapps-browser/connections/ConnectionManagerSheet";
 import DAppsHub from "@/components/dapps-browser/DAppsHub";
+import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
 import { useDappConnections } from "@/hooks/useDappConnections";
 import { useWallet } from "@/hooks/useWallet";
+import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
 import { ApprovalHost } from "@/services/bridge/ApprovalHost";
 import { bootBridge } from "@/services/bridge/boot";
 import { ChainAdapterRegistry } from "@/services/chains/registry";
@@ -153,6 +157,33 @@ export default function DappsBrowser() {
     sessionNonce,
   };
 
+  // Backend `/blockchains` feed — the authoritative source for each EVM
+  // chain's RPC URL. Held in a ref (reassigned every render, same pattern
+  // as `ctxRef`) so the `resolveEvmChain` closure below always reads the
+  // latest feed, even though the feed loads asynchronously after the
+  // bridge is first booted.
+  const { data: blockchains } = useBlockchainsWithStorage({ isActive: true });
+  const blockchainsRef = useRef<TBlockchain[] | undefined>(blockchains);
+  blockchainsRef.current = blockchains;
+
+  // Resolve an EVM chain config from the backend feed by numeric chainId.
+  // Returns `null` when the feed hasn't loaded or has no matching EVM row
+  // with a usable RPC, letting callers fall back. This is what keeps dApp
+  // traffic on the project's own RPC instead of viem's rate-limited public
+  // default (`eth.merkle.io`).
+  const resolveBackendEvmChain = useCallback(
+    (chainId: number): { chain: Chain; rpcUrl: string } | null => {
+      const row = blockchainsRef.current?.find(
+        (b) => b.chainId === chainId && Boolean(b.rpcUrl),
+      );
+      if (!row) return null;
+      const cfg = buildChainConfigFromBlockchain(row);
+      if (cfg.namespace !== "eip155") return null;
+      return { chain: cfg.chain, rpcUrl: row.rpcUrl };
+    },
+    [],
+  );
+
   const bridge = useMemo(
     () =>
       bootBridge({
@@ -173,6 +204,12 @@ export default function DappsBrowser() {
           // wallets in `ctx.wallets`.
           void ctx;
           if (activeChain.namespace === "eip155") {
+            // Prefer the backend feed's RPC for the active EVM chain. Its
+            // `chain` object is usually already backend-built (carrying the
+            // project RPC), but re-resolving by chainId guarantees we never
+            // fall through to a viem chain's baked-in public default.
+            const backend = resolveBackendEvmChain(activeChain.chain.id);
+            if (backend) return backend;
             return {
               chain: activeChain.chain,
               rpcUrl:
@@ -181,6 +218,13 @@ export default function DappsBrowser() {
                 "",
             };
           }
+          // UI is on a non-EVM chain but an EVM dApp made a request. Serve
+          // it on mainnet, sourced from the backend feed (project RPC).
+          // Only if the feed has no mainnet row do we fall back to viem's
+          // `mainnet`, whose default RPC (`eth.merkle.io`) is a shared,
+          // rate-limited public endpoint.
+          const backendMainnet = resolveBackendEvmChain(mainnet.id);
+          if (backendMainnet) return backendMainnet;
           return {
             chain: mainnet,
             rpcUrl: mainnet.rpcUrls?.default?.http?.[0] ?? "",
@@ -192,7 +236,7 @@ export default function DappsBrowser() {
       }),
     // Re-binding fires on wallet/chain change so the bridge always has a live
     // context reference; the inner state guards against double-boot.
-    [activeChain, changeActiveChain],
+    [activeChain, changeActiveChain, resolveBackendEvmChain],
   );
 
   const formatUrl = useCallback((input: string): string => {

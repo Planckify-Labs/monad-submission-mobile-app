@@ -1,6 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView, Text, TouchableOpacity, View } from "react-native";
-import { formatEther } from "viem";
+import { createPublicClient, formatEther, formatUnits, http } from "viem";
+import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
+import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
 import type {
   ApprovalDecision,
   ApprovalIntent,
@@ -10,12 +12,20 @@ import type {
   GasEstimate,
 } from "@/services/chains/evm/payloads";
 import { decodeCalldata } from "@/services/decoders";
+import { detectClaimMismatch } from "@/services/security/claimLabelDelta";
 import {
+  type AssetDelta,
   predictAssetDeltasFromCalldata,
-  type TxSimulationResult,
+  type SimulatedAssetChange,
+  simulateAssetChanges,
 } from "@/services/security/txSimulator";
+import type {
+  ClearSigningDescriptor,
+  ComputeSigningDigestArgs,
+} from "@/services/walletKit/types";
 import { truncateAddress } from "@/utils/walletUtils";
 import { ApprovalShell } from "./ApprovalShell";
+import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 
 // TWV-2026-009 — user-visible copy for the high-risk calldata variants.
@@ -39,17 +49,38 @@ export function EvmTransactionSheet({
   const [source, setSource] = useState<"wallet" | "dApp">(
     tx.gasEstimate?.recommended ?? "wallet",
   );
+  const [showRaw, setShowRaw] = useState(false);
   const decoded = useMemo(() => decodeCalldata(tx.data), [tx.data]);
 
-  // TWV-2026-011 — predict asset deltas from calldata. Network-backed
-  // simulation (revert detection via pinned RPC) is wired through the
-  // bridge's inspector pipeline; here we surface the predicted delta as
-  // the primary UX block. If coverage is partial, the UI must warn that
-  // asset movement could not be enumerated.
-  const simulation: Pick<
-    Extract<TxSimulationResult, { status: "ok" }>,
-    "deltas" | "coverage"
-  > = useMemo(
+  const hasCalldata = !!tx.data && tx.data !== "0x";
+  // Task 65 — Stage-2 descriptor input + ERC-8213 Flow B digest input.
+  const clearSigningCall = useMemo(
+    () =>
+      hasCalldata
+        ? { to: tx.to, chainId: tx.chainId, data: tx.data }
+        : undefined,
+    [hasCalldata, tx.to, tx.chainId, tx.data],
+  );
+  const digestArgs = useMemo<ComputeSigningDigestArgs>(
+    () => ({ kind: "calldata", calldata: tx.data ?? "0x" }),
+    [tx.data],
+  );
+
+  // Task 65 Phase F — claim-vs-delta cross-check (TWV-2026-038, task
+  // 27) now also fed by the resolved Stage-2 intent: structured and
+  // registry/on-chain-sourced, so harder to evade than the free-text
+  // regex (which stays as the fallback for unresolved calls).
+  const [resolvedDescriptor, setResolvedDescriptor] =
+    useState<ClearSigningDescriptor | null>(null);
+  const onDescriptorResolved = useCallback(
+    (d: ClearSigningDescriptor | null) => setResolvedDescriptor(d),
+    [],
+  );
+
+  // TWV-2026-011 — static calldata predictor. Instant (no network), so
+  // it paints the asset-movement block on first render and is the
+  // fallback when on-chain simulation isn't available.
+  const staticSim = useMemo(
     () =>
       predictAssetDeltasFromCalldata({
         from: tx.from,
@@ -60,6 +91,114 @@ export function EvmTransactionSheet({
       }),
     [tx.from, tx.to, tx.value, tx.data, tx.chainId],
   );
+
+  // TWV-2026-011 follow-up — real trace-based simulation. Built on a
+  // PINNED client (the wallet's own RPC for this tx's chain, sourced from
+  // the backend feed), never the dApp-supplied one. Resolves the exact
+  // per-token balance diffs the static predictor can't, e.g. for a router
+  // `execute`. Falls back to the static block when the RPC can't trace.
+  const { data: blockchains } = useBlockchainsWithStorage({ isActive: true });
+  const pinnedClient = useMemo(() => {
+    const row = blockchains?.find(
+      (b) => b.chainId === tx.chainId && Boolean(b.rpcUrl),
+    );
+    if (!row) return null;
+    const cfg = buildChainConfigFromBlockchain(row);
+    if (cfg.namespace !== "eip155") return null;
+    return createPublicClient({
+      chain: cfg.chain,
+      transport: http(row.rpcUrl, { retryCount: 0, timeout: 8000 }),
+    });
+  }, [blockchains, tx.chainId]);
+
+  const [sim, setSim] = useState<
+    | { phase: "idle" | "loading" | "unavailable" }
+    | { phase: "ok"; changes: SimulatedAssetChange[]; reverted: boolean }
+  >({ phase: "idle" });
+
+  useEffect(() => {
+    const hasSomethingToSimulate =
+      (!!tx.data && tx.data !== "0x") || (!!tx.value && tx.value > 0n);
+    if (!pinnedClient || !hasSomethingToSimulate) {
+      setSim({ phase: "unavailable" });
+      return;
+    }
+    let cancelled = false;
+    setSim({ phase: "loading" });
+    void simulateAssetChanges(pinnedClient, {
+      from: tx.from,
+      to: tx.to,
+      value: tx.value,
+      data: tx.data,
+      chainId: tx.chainId,
+    }).then((res) => {
+      if (cancelled) return;
+      setSim(
+        res.status === "ok"
+          ? { phase: "ok", changes: res.changes, reverted: res.reverted }
+          : { phase: "unavailable" },
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pinnedClient, tx.from, tx.to, tx.value, tx.data, tx.chainId]);
+
+  // Deltas fed to the claim-vs-result cross-check. When the real trace is
+  // available it wins: an on-chain net-inflow figure is far harder to
+  // spoof than the static guess.
+  const claimDeltas = useMemo<AssetDelta[]>(() => {
+    if (sim.phase === "ok") {
+      return sim.changes.map((c) => ({
+        token: c.token,
+        symbol: c.symbol,
+        direction: c.direction,
+        amount: c.amount,
+        counterparty: tx.to,
+        kind: c.token === null ? "native" : "transfer",
+      }));
+    }
+    return staticSim.deltas;
+  }, [sim, staticSim.deltas, tx.to]);
+
+  const claimMismatch = useMemo(
+    () =>
+      detectClaimMismatch({
+        functionName: decoded?.functionName,
+        resolvedIntent: resolvedDescriptor?.intent,
+        deltas: claimDeltas,
+      }),
+    [decoded?.functionName, resolvedDescriptor?.intent, claimDeltas],
+  );
+
+  // Unified, formatted rows for the asset-movement card — from the real
+  // trace when we have it, else the static predictor.
+  const displayDeltas = useMemo(() => {
+    if (sim.phase === "ok") {
+      return sim.changes.map((c) => ({
+        symbol: c.symbol,
+        direction: c.direction,
+        display: formatAmount(c.amount, c.decimals),
+      }));
+    }
+    return staticSim.deltas.map((d) => ({
+      symbol: d.symbol,
+      direction: d.direction,
+      display:
+        d.amount === "unlimited"
+          ? "Unlimited"
+          : d.token === null
+            ? formatEther(d.amount)
+            : d.amount.toString(),
+    }));
+  }, [sim, staticSim.deltas]);
+
+  const simReverted = sim.phase === "ok" && sim.reverted;
+  const simLoading = sim.phase === "loading";
+  // Show the "couldn't enumerate" caution only when we truly have nothing
+  // authoritative: the trace is unavailable AND the static pass was partial.
+  const coverageUnknown =
+    sim.phase !== "ok" && staticSim.coverage === "partial";
 
   const feeLabel =
     tx.type === 0 ? "Legacy" : tx.type === 1 ? "Access list" : "Dynamic fee";
@@ -92,17 +231,28 @@ export function EvmTransactionSheet({
             before "what runs". Partial coverage is surfaced explicitly.
           */}
           <View className="bg-blue-50 border border-blue-200 rounded-xl p-3 mb-3">
-            <Text className="text-xs font-semibold text-blue-800 uppercase">
-              Asset movement
-            </Text>
-            {simulation.deltas.length === 0 ? (
+            <View className="flex-row items-center">
+              <Text className="text-xs font-semibold text-blue-800 uppercase flex-1">
+                Asset movement
+              </Text>
+              {sim.phase === "ok" && (
+                <Text className="text-[10px] text-blue-600">
+                  Simulated on-chain
+                </Text>
+              )}
+            </View>
+            {simLoading ? (
               <Text className="text-sm text-blue-900 mt-1">
-                No predicted asset movement.
+                Simulating transaction...
+              </Text>
+            ) : displayDeltas.length === 0 ? (
+              <Text className="text-sm text-blue-900 mt-1">
+                No asset movement predicted.
               </Text>
             ) : (
-              simulation.deltas.map((d, i) => (
+              displayDeltas.map((d, i) => (
                 <View
-                  key={`${d.kind}-${i}`}
+                  key={`${d.symbol}-${i}`}
                   className="flex-row items-center mt-1"
                 >
                   <Text
@@ -110,20 +260,21 @@ export function EvmTransactionSheet({
                       d.direction === "out" ? "text-red-700" : "text-green-700"
                     }`}
                   >
-                    {d.direction === "out" ? "−" : "+"}{" "}
-                    {d.amount === "unlimited"
-                      ? "Unlimited"
-                      : d.amount.toString()}{" "}
-                    {d.symbol}
+                    {d.direction === "out" ? "-" : "+"} {d.display} {d.symbol}
                   </Text>
                 </View>
               ))
             )}
-            {simulation.coverage === "partial" && (
+            {simReverted && (
+              <Text className="text-xs text-red-700 mt-2 font-medium">
+                This transaction is expected to fail (revert). Signing it would
+                still cost gas and change nothing.
+              </Text>
+            )}
+            {coverageUnknown && !simLoading && (
               <Text className="text-xs text-amber-700 mt-2">
-                ⚠ Asset movement could not be enumerated for this calldata. Sign
-                with caution — a full pre-sign simulator is on the roadmap
-                (TWV-2026-011 follow-up).
+                We could not simulate this transaction on this network. Review
+                the decoded call and signing digest below before you sign.
               </Text>
             )}
           </View>
@@ -172,6 +323,28 @@ export function EvmTransactionSheet({
               </View>
             </View>
           )}
+          {/* Task 65 — descriptor card + AI summary + signing digest.
+              The digest renders even when nothing resolves (that's when
+              independent verification matters most); the unrecognized
+              card only fires when the local selector decode also found
+              nothing, so it never contradicts the Function card below. */}
+          {claimMismatch.triggered && (
+            <View className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3">
+              <Text className="text-xs font-bold text-red-800 uppercase">
+                Claim label does not match predicted result
+              </Text>
+              <Text className="text-sm text-red-900 mt-1">
+                {claimMismatch.reason}
+              </Text>
+            </View>
+          )}
+          <ClearSigningSection
+            intent={intent}
+            call={clearSigningCall}
+            digestArgs={digestArgs}
+            showUnrecognizedCard={hasCalldata && !decoded?.signature}
+            onDescriptorResolved={onDescriptorResolved}
+          />
           <View className="bg-gray-50 rounded-xl p-3 mb-3">
             <Text className="text-xs text-gray-500">To</Text>
             <Text className="text-sm text-gray-900" selectable>
@@ -267,6 +440,26 @@ export function EvmTransactionSheet({
             )}
           </View>
 
+          {hasCalldata && (
+            <View className="mt-3">
+              <TouchableOpacity onPress={() => setShowRaw((r) => !r)}>
+                <Text className="text-xs text-gray-500 underline">
+                  {showRaw ? "Hide raw data" : "View raw data"}
+                </Text>
+              </TouchableOpacity>
+              {showRaw && (
+                <View className="bg-gray-50 rounded-xl p-3 mt-2">
+                  <Text
+                    className="text-[10px] font-mono text-gray-700"
+                    selectable
+                  >
+                    {tx.data}
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
+
           {(intent.wallet?.type === "Smart4337" ||
             intent.wallet?.type === "Smart7702") && (
             <Text className="text-xs text-gray-500 mt-3">
@@ -300,4 +493,15 @@ function formatArg(v: unknown): string {
     return truncateAddress({ address: v, preset: "medium" });
   if (Array.isArray(v)) return `[${v.length} items]`;
   return String(v);
+}
+
+// Format a token amount from base units to a human string using its
+// decimals. Falls back to the raw integer if formatting throws (e.g. a
+// nonsensical decimals value from a hostile token contract).
+function formatAmount(amount: bigint, decimals: number): string {
+  try {
+    return formatUnits(amount, decimals);
+  } catch {
+    return amount.toString();
+  }
 }

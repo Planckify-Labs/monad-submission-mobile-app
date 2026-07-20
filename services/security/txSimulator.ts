@@ -17,7 +17,8 @@
 // with `coverage: "partial"` so the UI can warn the user that asset
 // movement could not be enumerated.
 
-import { type PublicClient } from "viem";
+import { ethAddress, type PublicClient } from "viem";
+import { simulateCalls } from "viem/actions";
 import { decodeCalldata } from "../decoders/calldata.ts";
 
 export interface TxSimulationInput {
@@ -193,4 +194,137 @@ export async function simulateTransaction(
 
   const { deltas, coverage } = predictAssetDeltasFromCalldata(input);
   return { status: "ok", deltas, coverage, gasEstimate };
+}
+
+// ---------------------------------------------------------------------------
+// TWV-2026-011 follow-up — real trace-based asset-change simulation.
+//
+// The static predictor above only understands `transfer` / `approve` /
+// `setApprovalForAll` / native value; arbitrary calldata (a Universal
+// Router `execute`, a bespoke router, a batched multicall) returns
+// `coverage: "partial"`. This is the promised upgrade: run the call
+// through the node's `eth_simulateV1` (via viem's `simulateCalls` with
+// asset-change tracing) against a PINNED client and read back the actual
+// per-token balance diffs of the signer — symbol and decimals included,
+// so the UI can format amounts instead of dumping raw base units.
+//
+// Same hard rule as `simulateTransaction`: the caller MUST pass a client
+// built on the wallet's own RPC, never the dApp-supplied one.
+// ---------------------------------------------------------------------------
+
+/** One concrete balance change for the signer, ready for display. */
+export interface SimulatedAssetChange {
+  /** Token contract, or `null` for the native currency. */
+  token: `0x${string}` | null;
+  symbol: string;
+  decimals: number;
+  direction: AssetDeltaDirection;
+  /** Magnitude of the change in base units (10^decimals). */
+  amount: bigint;
+}
+
+export type TraceSimulationResult =
+  | {
+      status: "ok";
+      changes: SimulatedAssetChange[];
+      /** True when the call itself reverts under simulation. */
+      reverted: boolean;
+    }
+  /** The RPC does not implement `eth_simulateV1` — fall back to the predictor. */
+  | { status: "unsupported" }
+  /** Network / RPC failure — fall back to the predictor. */
+  | { status: "transport_error" };
+
+const NATIVE_PSEUDO_ADDRESS = ethAddress.toLowerCase();
+
+/** The subset of viem's `assetChanges` entry this module consumes. */
+export interface RawAssetChange {
+  token: { address: string; decimals?: number; symbol?: string };
+  value: { diff: bigint };
+}
+
+/**
+ * Map viem's raw `assetChanges` (balance diffs of the traced signer) into
+ * display-ready deltas: native detected via the ETH pseudo-address,
+ * direction from the sign of the diff, zero-diffs dropped. Pure — the unit
+ * seam for `simulateAssetChanges`.
+ */
+export function mapSimulatedAssetChanges(
+  assetChanges: readonly RawAssetChange[],
+): SimulatedAssetChange[] {
+  const changes: SimulatedAssetChange[] = [];
+  for (const change of assetChanges) {
+    const diff = change.value.diff;
+    if (diff === 0n) continue;
+    const isNative =
+      change.token.address.toLowerCase() === NATIVE_PSEUDO_ADDRESS;
+    changes.push({
+      token: isNative ? null : (change.token.address as `0x${string}`),
+      symbol: change.token.symbol ?? (isNative ? "native" : "token"),
+      decimals:
+        typeof change.token.decimals === "number"
+          ? change.token.decimals
+          : isNative
+            ? 18
+            : 0,
+      direction: diff > 0n ? "in" : "out",
+      amount: diff > 0n ? diff : -diff,
+    });
+  }
+  return changes;
+}
+
+// viem/geth signal an unimplemented `eth_simulateV1` in several shapes
+// depending on the provider. Any of these means "this RPC can't trace,
+// degrade gracefully" rather than "the transaction is bad".
+export function isUnsupportedSimulationError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("method not found") ||
+    m.includes("not supported") ||
+    m.includes("does not exist/is not available") ||
+    m.includes("does not exist") ||
+    m.includes("unsupported method") ||
+    m.includes("eth_simulatev1") ||
+    m.includes("could not be found") ||
+    m.includes("not available") ||
+    m.includes("-32601")
+  );
+}
+
+/**
+ * Trace the signer's asset changes for a single call via `eth_simulateV1`.
+ * Never throws: an unsupported RPC or a network error is reported as a
+ * discriminated status so the caller can fall back to the static
+ * predictor. Balance validation is left OFF so the preview reflects the
+ * call's intent even when the wallet's current balance is zero.
+ */
+export async function simulateAssetChanges(
+  client: PublicClient,
+  input: TxSimulationInput,
+): Promise<TraceSimulationResult> {
+  try {
+    const { assetChanges, results } = await simulateCalls(client, {
+      account: input.from,
+      calls: [
+        {
+          to: input.to,
+          value: input.value ?? 0n,
+          data: input.data,
+        },
+      ],
+      traceAssetChanges: true,
+      traceTransfers: true,
+    });
+
+    const reverted = results[0]?.status === "failure";
+    const changes = mapSimulatedAssetChanges(assetChanges);
+    return { status: "ok", changes, reverted };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (isUnsupportedSimulationError(message)) {
+      return { status: "unsupported" };
+    }
+    return { status: "transport_error" };
+  }
 }
