@@ -18,6 +18,12 @@ export default defineConfig({
         __dirname,
         "services/backup/primitives.node.ts",
       ),
+      // Native cookie module (RN NativeModules) — mocked for any pure-logic
+      // test that transitively reaches services/chains/evm/dappCookies.ts.
+      "@react-native-cookies/cookies": path.resolve(
+        __dirname,
+        "services/chains/evm/rnCookies.mock.ts",
+      ),
       "@": path.resolve(__dirname, "."),
     },
   },
@@ -63,6 +69,7 @@ export default defineConfig({
       "services/chains/stellar/transferService.test.ts",
       "services/chains/stellar/assetTransferService.test.ts",
       "services/chains/stellar/base64.test.ts",
+      "services/chains/stellar/sep53.test.ts",
       "services/chains/stellar/horizonClient.test.ts",
       // StellarWalletKit.test.ts runs under node:test (not vitest) —
       // it transitively imports walletService.ts, which needs the EVM

@@ -48,6 +48,7 @@ import {
   getHorizonClient,
   isHorizonNotFound,
 } from "../../chains/stellar/horizonClient";
+import { sep53Digest } from "../../chains/stellar/sep53";
 import { invokeSorobanContract } from "../../chains/stellar/sorobanInvoke";
 import { getSorobanRpcClient } from "../../chains/stellar/sorobanRpcClient";
 import {
@@ -219,10 +220,14 @@ export function createStellarWalletKit(): WalletKitAdapter {
       return getStellarSignerForWallet(wallet);
     },
 
-    // ── Auth — mirrors SIWS-Sui/SIWS-Solana; no intent-wrapping step ─
+    // ── Auth — SEP-53 message signing ───────────────────────────────
     // Stellar's Keypair.sign/verify are raw ed25519 with no built-in
-    // framing (unlike Sui's messageWithIntent), so this is a direct
-    // sign over the UTF-8 message bytes (spec §4.2).
+    // framing (unlike Sui's messageWithIntent). Rather than sign the raw
+    // UTF-8 bytes, we apply SEP-53: sign over
+    // `SHA-256("Stellar Signed Message:\n" ‖ message)`. That prefix
+    // domain-separates this login signature from a transaction signature
+    // so an auth message can never collide with a transaction preimage.
+    // Mirrors the server verifier (api/src/auth/siws-stellar/sep53.ts).
     async signAuthMessage(wallet: TWallet, message: string): Promise<string> {
       const kp: Keypair | null = await getStellarSignerForWallet(wallet);
       if (!kp) {
@@ -236,7 +241,7 @@ export function createStellarWalletKit(): WalletKitAdapter {
       // app's Hermes runtime (confirmed via the same bug that broke
       // transaction submission — see `horizonClient.ts`'s
       // `transactionToBase64Xdr`).
-      const signature = kp.sign(Buffer.from(message, "utf8"));
+      const signature = kp.sign(sep53Digest(message));
       return bytesToBase64(signature);
     },
 

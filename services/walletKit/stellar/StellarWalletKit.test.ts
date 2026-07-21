@@ -26,6 +26,7 @@ import { mainnet } from "viem/chains";
 
 import type { ChainConfig } from "../../../constants/configs/chainConfig.ts";
 import { mnemonicToStellarPrivateKey } from "../../chains/stellar/derivation.ts";
+import { sep53Digest } from "../../chains/stellar/sep53.ts";
 import { createStellarWalletKit } from "./StellarWalletKit.ts";
 
 const stellarMainnetChain: ChainConfig = {
@@ -147,7 +148,7 @@ describe("StellarWalletKit.createWalletFromMnemonic", () => {
 describe("StellarWalletKit.signAuthMessage", () => {
   const kit = createStellarWalletKit();
 
-  it("produces a signature byte-for-byte equivalent to a direct keypair sign over the same UTF-8 bytes", async () => {
+  it("produces a SEP-53 signature over SHA-256(prefix ‖ message), not the raw bytes", async () => {
     const wallet = await kit.createWalletFromMnemonic({
       mnemonic: TEST_MNEMONIC,
     });
@@ -155,10 +156,14 @@ describe("StellarWalletKit.signAuthMessage", () => {
 
     const seed = mnemonicToStellarPrivateKey(TEST_MNEMONIC);
     const kp = Keypair.fromRawEd25519Seed(Buffer.from(seed));
-    const expected = kp.sign(Buffer.from(message, "utf8")).toString("base64");
+    const expected = kp.sign(sep53Digest(message)).toString("base64");
 
     const actual = await kit.signAuthMessage(wallet, message);
     assert.equal(actual, expected);
+
+    // Guard the migration: it must NOT be the pre-SEP-53 raw-UTF-8 form.
+    const legacy = kp.sign(Buffer.from(message, "utf8")).toString("base64");
+    assert.notEqual(actual, legacy);
   });
 });
 
