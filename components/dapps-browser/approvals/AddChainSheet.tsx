@@ -24,6 +24,14 @@ export function AddChainSheet({
     >
       <ApprovalShell intent={intent} title="Add network">
         <ScrollView className="flex-1">
+          <View className="mb-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
+            <Text className="text-xs text-amber-800">
+              This site wants to add a custom network we do not verify. It will
+              be available only on this site, and balances or transaction
+              previews on it cannot be checked. Add it only if you trust this
+              site.
+            </Text>
+          </View>
           <View className="bg-gray-50 rounded-xl p-3">
             <Row k="Name" v={p.chainName} />
             <Row k="Chain ID" v={String(p.chainId)} />

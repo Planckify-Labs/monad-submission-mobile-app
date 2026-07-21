@@ -1,10 +1,24 @@
-import * as SecureStore from "expo-secure-store";
+import { storage } from "@/lib/storage/mmkv";
 
+// Persisted in MMKV per-origin (Phase 2): custom chains are non-secret,
+// cache-like data, so reopening a dApp restores its network without a fresh
+// `wallet_addEthereumChain`. (Previously SecureStore; the key is new, so any
+// pre-migration entries are simply re-added on next use.)
 const STORAGE_KEY = "dapp_bridge.user_chains";
 
 export interface UserChain {
   chainId: number;
   chainName: string;
+  /**
+   * Origin (dApp URL) that added this network. Custom chains are
+   * second-class and scoped to the site that added them: a network added
+   * by `app.foo.com` is NOT offered to `app.bar.com`. Legacy entries
+   * persisted before this field existed have `origin === undefined` and
+   * match any origin (back-compat). A custom chain is inherently
+   * unverified — it lives here precisely because it is absent from the
+   * backend `/blockchains` feed; consumer UI must treat it as untrusted.
+   */
+  origin?: string;
   nativeCurrency: { name: string; symbol: string; decimals: number };
   rpcUrls: string[];
   blockExplorerUrls?: string[];
@@ -29,7 +43,7 @@ async function hydrate(): Promise<void> {
   if (hydrated) return;
   hydrated = true;
   try {
-    const raw = await SecureStore.getItemAsync(STORAGE_KEY);
+    const raw = storage.getString(STORAGE_KEY);
     if (raw) chains = JSON.parse(raw) as Record<number, UserChain>;
   } catch {
     chains = {};
@@ -38,10 +52,16 @@ async function hydrate(): Promise<void> {
 
 async function persist(): Promise<void> {
   try {
-    await SecureStore.setItemAsync(STORAGE_KEY, JSON.stringify(chains));
+    storage.set(STORAGE_KEY, JSON.stringify(chains));
   } catch {
     // best effort
   }
+}
+
+// A stored chain is visible to an origin when it was added by that origin
+// or predates per-origin scoping (legacy entry, no recorded origin).
+function matchesOrigin(c: UserChain, origin: string): boolean {
+  return c.origin === undefined || c.origin === origin;
 }
 
 function notify(): void {
@@ -65,14 +85,25 @@ export const UserChainStore = {
     listeners.add(l);
     return () => listeners.delete(l);
   },
-  get(chainId: number): UserChain | null {
-    return chains[chainId] ?? null;
+  /**
+   * Look up a stored custom chain. When `origin` is passed, the entry only
+   * matches if it was added by that origin (or is a legacy entry with no
+   * recorded origin). Omitting `origin` matches any — use that only for
+   * display-name reads, never to authorize serving a chain to a dApp.
+   */
+  get(chainId: number, origin?: string): UserChain | null {
+    const c = chains[chainId];
+    if (!c) return null;
+    if (origin === undefined) return c;
+    return matchesOrigin(c, origin) ? c : null;
   },
-  has(chainId: number): boolean {
-    return chainId in chains;
+  has(chainId: number, origin?: string): boolean {
+    return this.get(chainId, origin) !== null;
   },
-  list(): UserChain[] {
-    return Object.values(chains);
+  list(origin?: string): UserChain[] {
+    const all = Object.values(chains);
+    if (origin === undefined) return all;
+    return all.filter((c) => matchesOrigin(c, origin));
   },
   async add(chain: UserChain): Promise<void> {
     await hydrate();

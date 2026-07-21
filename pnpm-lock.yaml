@@ -32,6 +32,9 @@ importers:
       '@react-native-async-storage/async-storage':
         specifier: ^2.2.0
         version: 2.2.0(react-native@0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6))
+      '@react-native-cookies/cookies':
+        specifier: ^6.2.1
+        version: 6.2.1(react-native@0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6))
       '@react-native-google-signin/google-signin':
         specifier: ^16.1.1
         version: 16.1.1(expo@54.0.33)(react-native@0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6))(react@19.1.0)
@@ -1687,6 +1690,12 @@ packages:
     resolution: {integrity: sha512-gvRvjR5JAaUZF8tv2Kcq/Gbt3JHwbKFYfmb445rhOj6NUMx3qPLixmDx5pZAyb9at1bYvJ4/eTUipU5aki45xw==}
     peerDependencies:
       react-native: ^0.0.0-0 || >=0.65 <1.0
+
+  '@react-native-cookies/cookies@6.2.1':
+    resolution: {integrity: sha512-D17wCA0DXJkGJIxkL74Qs9sZ3sA+c+kCoGmXVknW7bVw/W+Vv1m/7mWTNi9DLBZSRddhzYw8SU0aJapIaM/g5w==}
+    deprecated: This package is deprecated. Use @preeternal/react-native-cookie-manager or react-native-nitro-cookies instead.
+    peerDependencies:
+      react-native: '>= 0.60.2'
 
   '@react-native-google-signin/google-signin@16.1.1':
     resolution: {integrity: sha512-lcHBnZ7uvCJiWtGooKOklo/4okqszWvJ0BatW1UaIe+ynmpVpp1lyJkvv1Mj08d39k4soaWuhZVNKjD/RFL34Q==}
@@ -8656,6 +8665,11 @@ snapshots:
   '@react-native-async-storage/async-storage@2.2.0(react-native@0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6))':
     dependencies:
       merge-options: 3.0.4
+      react-native: 0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6)
+
+  '@react-native-cookies/cookies@6.2.1(react-native@0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6))':
+    dependencies:
+      invariant: 2.2.4
       react-native: 0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6)
 
   '@react-native-google-signin/google-signin@16.1.1(expo@54.0.33)(react-native@0.81.5(@babel/core@7.28.4)(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(utf-8-validate@6.0.6))(react@19.1.0)':

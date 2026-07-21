@@ -39,7 +39,12 @@ interface BootOpts {
   getContext: () => AdapterContext;
   getWebView: () => WebView | null;
   resolveEvmChain: Parameters<typeof createEvmAdapter>[0]["resolveChainConfig"];
-  onSwitchChain?: Parameters<typeof createEvmAdapter>[0]["onSwitchChain"];
+  resolveSupportedEvmChain?: Parameters<
+    typeof createEvmAdapter
+  >[0]["resolveSupportedChain"];
+  resolveDefaultEvmChain?: Parameters<
+    typeof createEvmAdapter
+  >[0]["resolveDefaultChain"];
   onWatchAsset?: Parameters<typeof createEvmAdapter>[0]["onWatchAsset"];
   onShowCallsStatus?: Parameters<
     typeof createEvmAdapter
@@ -82,7 +87,8 @@ export function bootBridge(opts: BootOpts) {
 
   const evmAdapter = createEvmAdapter({
     resolveChainConfig: opts.resolveEvmChain,
-    onSwitchChain: opts.onSwitchChain,
+    resolveSupportedChain: opts.resolveSupportedEvmChain,
+    resolveDefaultChain: opts.resolveDefaultEvmChain,
     onWatchAsset: opts.onWatchAsset,
     onShowCallsStatus: opts.onShowCallsStatus,
   });

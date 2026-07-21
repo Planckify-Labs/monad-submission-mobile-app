@@ -33,6 +33,15 @@ export interface AdapterContext {
    * carries it. Rotated on every top-frame navigation.
    */
   sessionNonce?: string;
+  /**
+   * Per-origin resolved chain for a dApp-bridge request, stamped by the
+   * adapter before dispatch so read/exec paths serve the origin's SELECTED
+   * chain (registered → project RPC, custom → dApp RPC) instead of the
+   * home-screen active chain. This is what keeps dApp chain state isolated
+   * from the system chain (Phase 2). Opaque here; each adapter casts to its
+   * own chain-config shape. Absent for non-bridge callers.
+   */
+  chainOverride?: unknown;
   // Intentionally NO `setActiveWallet`. The global active-wallet slot is
   // a UI concern (home screen, portfolio). When an adapter's approval
   // flow wrote to it, one chain's approval would poison another chain's

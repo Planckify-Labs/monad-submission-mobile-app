@@ -505,18 +505,12 @@ export class DappBridge {
     // so the Wallet Standard `change` listeners catch a consistent
     // accounts list, mirroring the EVM fast path.
     // Fast path — EVM `wallet_switchEthereumChain`. After the user
-    // approves, the bridge has changed the active chain via
-    // `onSwitchChain` (changeActiveChain), and EIP-3326 requires the
-    // wallet to emit `chainChanged` so the dApp knows to refresh.
-    // Previously this rode on the `onStateChange` slow path, which
-    // built the update from the global active chain — coincidentally
-    // correct here, but the same slow path also fired `accountsChanged`
-    // events with the global active wallet on every other intent
-    // (sign, watchAsset, etc.), silently flipping dApps onto the
-    // wrong wallet. With `onStateChange` neutered, this fast path is
-    // the origin-correct replacement: emit `chainChanged` keyed off
-    // `intent.payload.chainId` (the chain the dApp asked to switch
-    // to), no `ctx` read.
+    // approves, the adapter has recorded the origin's chain selection
+    // per-origin (`OriginChainStore`) — WITHOUT touching the home-screen
+    // active chain (Phase 2 isolation) — and EIP-3326 requires the wallet
+    // to emit `chainChanged` so the dApp knows to refresh. This fast path
+    // emits it keyed off `intent.payload.chainId` (the chain the dApp asked
+    // to switch to), no `ctx` / global-active read.
     if (intent.kind === "switchChain" && intent.namespace === "eip155") {
       const chainId = (intent.payload as { chainId?: number }).chainId;
       if (typeof chainId === "number") {
@@ -532,6 +526,17 @@ export class DappBridge {
           })();
           true;
         `);
+      }
+      // EIP-3326: on a successful chain switch the wallet SHOULD "cancel all
+      // pending RPC requests and chain-specific user confirmations". Any other
+      // approval still queued for this origin was framed under the old chain
+      // (a sendTransaction / signTypedData carries a chainId), so approving it
+      // now would sign against a chain the dApp already moved off of. Reject
+      // and drop those; the dApp can re-request under the new chain.
+      for (const p of pendingIntentsStore.snapshot) {
+        if (p.id === intent.id || p.origin.url !== intent.origin.url) continue;
+        pendingIntentsStore.resolve(p.id, { id: p.id, outcome: "reject" });
+        pendingIntentsStore.remove(p.id);
       }
       return;
     }

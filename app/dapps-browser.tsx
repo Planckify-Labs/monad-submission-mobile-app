@@ -114,8 +114,21 @@ interface TBrowserState {
   isSecure: boolean;
 }
 
+/**
+ * RPC isolation seam (item 5). The dApp-browser surface should read from
+ * an RPC endpoint/quota separate from the app's internal features, but on
+ * one the project still trusts (never the dApp's own RPC for a supported
+ * chain). Today the backend feed exposes a single `rpcUrl`, so this returns
+ * it unchanged; it is the ONE place to point at a browser-scoped endpoint
+ * (e.g. a distinct key/quota, or a future `row.dappRpcUrl`) once infra
+ * provisions it, without touching the add/switch handlers.
+ */
+function browserRpcForRow(row: TBlockchain): string {
+  return row.rpcUrl;
+}
+
 export default function DappsBrowser() {
-  const { activeWallet, wallets, activeChain, changeActiveChain } = useWallet();
+  const { activeWallet, wallets, activeChain } = useWallet();
   // Optional initial URL — e.g. the DeFi card's "Manual" deep-link pushes
   // `router.push({ pathname: "/dapps-browser", params: { url } })` so the
   // user completes a deposit through the protocol's own UI (still on the
@@ -179,10 +192,29 @@ export default function DappsBrowser() {
       if (!row) return null;
       const cfg = buildChainConfigFromBlockchain(row);
       if (cfg.namespace !== "eip155") return null;
-      return { chain: cfg.chain, rpcUrl: row.rpcUrl };
+      return { chain: cfg.chain, rpcUrl: browserRpcForRow(row) };
     },
     [],
   );
+
+  // The chain a dApp starts on before it switches (Phase 2 isolation, no
+  // dependence on the home-screen active chain): Ethereum mainnet from the
+  // feed if present, else the first EVM feed row with a usable RPC. Served on
+  // the project RPC.
+  const resolveDefaultEvmChain = useCallback((): {
+    chain: Chain;
+    rpcUrl: string;
+  } | null => {
+    const byMainnet = resolveBackendEvmChain(mainnet.id);
+    if (byMainnet) return byMainnet;
+    const row = blockchainsRef.current?.find(
+      (b) => b.isEVM && typeof b.chainId === "number" && Boolean(b.rpcUrl),
+    );
+    if (!row) return null;
+    const cfg = buildChainConfigFromBlockchain(row);
+    if (cfg.namespace !== "eip155") return null;
+    return { chain: cfg.chain, rpcUrl: browserRpcForRow(row) };
+  }, [resolveBackendEvmChain]);
 
   const bridge = useMemo(
     () =>
@@ -230,13 +262,21 @@ export default function DappsBrowser() {
             rpcUrl: mainnet.rpcUrls?.default?.http?.[0] ?? "",
           };
         },
-        onSwitchChain: async (chainId) => {
-          await changeActiveChain(chainId);
-        },
+        // Feed-backed lookup by numeric chainId, independent of the active
+        // chain. Lets the add/switch handlers treat a network the project
+        // supports as first-class (switched to, served on the project RPC)
+        // rather than a dApp-defined custom chain whose RPC we'd persist.
+        resolveSupportedEvmChain: (chainId) => resolveBackendEvmChain(chainId),
+        // Phase 2 isolation: a dApp's chain is per-origin and NEVER touches
+        // the home-screen active chain, so switching is applied inside the
+        // adapter (OriginChainStore) with no `changeActiveChain` here. This
+        // is the default chain a fresh origin starts on: Ethereum mainnet
+        // from the feed, else the first EVM feed row, on the project RPC.
+        resolveDefaultEvmChain: () => resolveDefaultEvmChain(),
       }),
     // Re-binding fires on wallet/chain change so the bridge always has a live
     // context reference; the inner state guards against double-boot.
-    [activeChain, changeActiveChain, resolveBackendEvmChain],
+    [activeChain, resolveBackendEvmChain, resolveDefaultEvmChain],
   );
 
   const formatUrl = useCallback((input: string): string => {

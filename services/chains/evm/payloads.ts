@@ -55,6 +55,19 @@ export type EvmSwitchChainPayload = {
    */
   fromChainId?: number;
   fromChainName?: string;
+  /**
+   * Display name of the target chain, stamped by the adapter from the
+   * backend feed (registered chains) or `UserChainStore` (custom chains)
+   * so the sheet never shows a bare "Chain 1". Same isolation rule as
+   * `fromChainName`: resolved in the bridge, not from `useWallet()`.
+   */
+  toChainName?: string;
+  /**
+   * True when the target is a dApp-added custom network (present only in
+   * `UserChainStore`, not the backend feed). The sheet uses this to show
+   * an "unverified network" warning.
+   */
+  toIsCustom?: boolean;
 };
 
 export type EvmAddChainPayload = {

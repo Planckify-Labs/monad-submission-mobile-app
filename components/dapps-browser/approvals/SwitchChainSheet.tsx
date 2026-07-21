@@ -21,13 +21,19 @@ export function SwitchChainSheet({
   // dApp-bridge isolation: "From" is the chain the dApp session is on,
   // stamped into the payload by the adapter — never the home-screen
   // `useWallet().activeChain`, which can point somewhere else entirely.
-  const { fromChainId, fromChainName } = intent.payload;
+  const { fromChainId, fromChainName, toChainName, toIsCustom } =
+    intent.payload;
   const from =
     fromChainName ??
     (fromChainId !== undefined
       ? (UserChainStore.get(fromChainId)?.chainName ?? `Chain ${fromChainId}`)
       : "Current network");
-  const target = UserChainStore.get(intent.payload.chainId);
+  // Prefer the name the adapter stamped (feed for registered chains,
+  // UserChainStore for custom). Falls back to a store read, then the id.
+  const to =
+    toChainName ??
+    UserChainStore.get(intent.payload.chainId)?.chainName ??
+    `Chain ${intent.payload.chainId}`;
   return (
     <SheetModal
       onDismiss={() => onDecision({ id: intent.id, outcome: "reject" })}
@@ -37,10 +43,17 @@ export function SwitchChainSheet({
           <Text className="text-xs text-gray-500">From</Text>
           <Text className="text-base text-gray-900 mb-2">{from}</Text>
           <Text className="text-xs text-gray-500">To</Text>
-          <Text className="text-base text-gray-900">
-            {target?.chainName ?? `Chain ${intent.payload.chainId}`}
-          </Text>
+          <Text className="text-base text-gray-900">{to}</Text>
         </View>
+        {toIsCustom && (
+          <View className="mt-3 bg-amber-50 border border-amber-200 rounded-xl p-3">
+            <Text className="text-xs text-amber-800">
+              This is a custom network this site added. It is not one of our
+              verified networks, so balances and transaction previews on it
+              cannot be checked. Continue only if you trust this site.
+            </Text>
+          </View>
+        )}
       </ApprovalShell>
       <PrimaryActions
         approveLabel="Switch"

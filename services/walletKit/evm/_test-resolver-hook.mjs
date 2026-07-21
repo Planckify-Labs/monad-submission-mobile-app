@@ -27,6 +27,13 @@ const STUB_SOURCES = {
     export async function deleteItemAsync() {}
     export default {};
   `,
+  "rn-cookies": `
+    export default {
+      get: async () => ({}),
+      set: async () => true,
+      clearAll: async () => true,
+    };
+  `,
   "mmkv-storage": `
     export const storage = {
       getString: () => undefined,
@@ -142,6 +149,15 @@ export async function resolve(specifier, context, nextResolve) {
     return {
       shortCircuit: true,
       url: stubUrl(STUB_SOURCES["expo-secure-store"]),
+      format: "module",
+    };
+  }
+  // Stub the native cookie module (`@react-native-cookies/cookies`) — its RN
+  // entry imports NativeModules, which the strip-types loader can't parse.
+  if (specifier === "@react-native-cookies/cookies") {
+    return {
+      shortCircuit: true,
+      url: stubUrl(STUB_SOURCES["rn-cookies"]),
       format: "module",
     };
   }

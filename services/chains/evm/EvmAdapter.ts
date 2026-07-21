@@ -32,7 +32,12 @@ import { originKey } from "@/services/permissions/caip";
 import { PermissionStore } from "@/services/permissions/store";
 import { getAccountForWallet } from "@/services/walletService";
 import { Bundler, getBundlerConfig, type UserOperation } from "./bundler";
-import { UserChainStore } from "./chainStore";
+import { type UserChain, UserChainStore } from "./chainStore";
+import {
+  cachedDappCookies,
+  canForwardCookies,
+  refreshDappCookies,
+} from "./dappCookies";
 import { getInstallUuid } from "./eip6963";
 // --- TWV-2026-010 — Allowlisted 7702 delegators. The authoritative list
 // lives in `./eip7702Guard.ts`; re-exported here for legacy callers
@@ -50,6 +55,7 @@ import {
   validateBlockExplorerUrls,
 } from "./explorerAllowlist";
 import { getEvmInjectedScript } from "./injectedScript";
+import { OriginChainStore } from "./originChainStore";
 import type {
   EvmAddChainPayload,
   EvmAuthorizationPayload,
@@ -68,7 +74,18 @@ import { verifySignature } from "./signatureVerifier";
 
 const AUTHORIZED_DELEGATORS = EIP7702_ALLOWLIST;
 
-type ChainConfig = { chain: Chain; rpcUrl: string };
+type ChainConfig = {
+  chain: Chain;
+  rpcUrl: string;
+  /**
+   * Extra headers to send on every RPC call to this chain. Set for custom
+   * chains served on a dApp's own RPC: we forward the dApp's `Origin` /
+   * `Referer` so an Origin-gated RPC proxy doesn't reject the wallet's
+   * native fetch as cross-origin. Never set for project-RPC (registered)
+   * chains. See docs/design-notes/chain-switch-ux.md.
+   */
+  fetchHeaders?: Record<string, string>;
+};
 
 // Upper bound on the pre-approval gas estimate. The estimate is
 // explicitly non-essential (the sheet falls back to dApp-supplied
@@ -93,11 +110,121 @@ function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
+// viem transport for a chain config, forwarding any `fetchHeaders` (custom
+// chains carry the dApp's Origin/Referer so an Origin-gated RPC proxy accepts
+// the wallet's native fetch). `http`'s own options (retry/timeout) merge in.
+function httpTransport(
+  config: ChainConfig,
+  extra?: { retryCount?: number; timeout?: number },
+) {
+  return http(config.rpcUrl, {
+    ...(extra ?? {}),
+    ...(config.fetchHeaders
+      ? { fetchOptions: { headers: config.fetchHeaders } }
+      : {}),
+  });
+}
+
+// Scheme+host of a dApp URL, for the forwarded Origin/Referer headers.
+function safeOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return url;
+  }
+}
+
+// Build a ChainConfig for a custom chain served on the dApp's own RPC, with
+// the origin forwarded so an Origin-gated proxy doesn't reject us as CORS, plus
+// the dApp's session cookies for a cookie-gated proxy — but ONLY to the dApp's
+// own origin (never a third-party RPC). Cookies come from the sync cache (warmed
+// by the switch probe); we also kick a background refresh to keep them fresh.
+function buildCustomConfig(chain: UserChain, originUrl: string): ChainConfig {
+  const origin = safeOrigin(originUrl);
+  const rpcUrl = chain.rpcUrls[0];
+  const headers: Record<string, string> = { Origin: origin, Referer: origin };
+  if (canForwardCookies(rpcUrl, origin)) {
+    const cookie = cachedDappCookies(origin);
+    if (cookie) headers.Cookie = cookie;
+    void refreshDappCookies(origin);
+  }
+  return {
+    chain: {
+      id: chain.chainId,
+      name: chain.chainName,
+      nativeCurrency: chain.nativeCurrency,
+      rpcUrls: { default: { http: chain.rpcUrls } },
+    } as unknown as Chain,
+    rpcUrl,
+    fetchHeaders: headers,
+  };
+}
+
+// Reachability probe for a custom chain's RPC before we let an origin switch
+// to it: confirms the endpoint answers `eth_chainId` with the claimed id,
+// using the forwarded Origin so Origin-gated proxies pass. Returns false on
+// any failure (unreachable / cookie-gated / wrong chainId) so the switch fails
+// cleanly instead of stranding the dApp on a chain the wallet can't serve.
+async function probeRpc(
+  rpcUrl: string,
+  expectedChainId: number,
+  origin: string,
+): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Origin: origin,
+      Referer: origin,
+    };
+    // Cookie-gated proxy: forward the dApp's session cookies, but only to the
+    // dApp's own HTTPS origin. This also warms the cache for the serving path.
+    if (canForwardCookies(rpcUrl, origin)) {
+      const cookie = await refreshDappCookies(origin);
+      if (cookie) headers.Cookie = cookie;
+    }
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_chainId",
+        params: [],
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    const j = (await res.json()) as { result?: string };
+    if (typeof j.result !== "string") return false;
+    return Number(fromHex(j.result as Hex, "number")) === expectedChainId;
+  } catch {
+    return false;
+  }
+}
+
 export interface EvmAdapterOpts {
   /** Resolves the active viem Chain + RPC for the context's wallet. */
   resolveChainConfig: (ctx: AdapterContext) => ChainConfig | null;
-  /** Called after successful chain switch so app-level active chain updates. */
-  onSwitchChain?: (chainId: number) => void | Promise<void>;
+  /**
+   * Resolves a *supported* EVM chain by numeric id from the backend
+   * `/blockchains` feed, independent of the currently-active chain.
+   * The add/switch handlers use this so a chain the project already
+   * supports is treated as a first-class network (switched to, served on
+   * the project RPC) rather than a dApp-defined custom network whose RPC
+   * we would persist. Returns null for chains absent from the feed, and
+   * may be undefined when the app hasn't wired a feed source.
+   */
+  resolveSupportedChain?: (chainId: number) => ChainConfig | null;
+  /**
+   * Resolves the default EVM chain (backend feed's default row, fallback
+   * mainnet) served on the project RPC. Used as the starting chain for an
+   * origin that has never switched. Phase 2 keeps dApp chain state fully
+   * isolated from the home-screen active chain, so a fresh dApp starts here,
+   * NOT on whatever chain the user happens to have active on the home screen.
+   */
+  resolveDefaultChain?: () => ChainConfig | null;
   /** Appends a token to the user's token-list store. Provided by app. */
   onWatchAsset?: (payload: EvmWatchAssetPayload) => Promise<void>;
   /** Opens the internal tx history screen filtered to a bundle id. */
@@ -123,12 +250,75 @@ export class EvmAdapter implements ChainAdapter {
     this.opts = opts;
   }
 
+  /**
+   * The chain config for the current request. Prefers the per-origin
+   * `chainOverride` stamped by `handleRequest` / `executeApproval` (Phase 2
+   * isolation) so reads/txs serve the dApp's SELECTED chain, and only falls
+   * back to the app-provided resolver when no override is present (non-bridge
+   * callers). The override is what keeps the home-screen active chain out of
+   * dApp serving entirely.
+   */
+  private resolveConfig(ctx: AdapterContext): ChainConfig | null {
+    if (ctx.chainOverride) return ctx.chainOverride as ChainConfig;
+    return this.opts.resolveChainConfig(ctx);
+  }
+
+  /**
+   * Resolves the chain an origin is currently on, fully isolated from the
+   * home-screen active chain:
+   *   selected custom chain  → dApp RPC + forwarded Origin header,
+   *   selected registered id → backend feed / project RPC,
+   *   nothing selected       → default chain (project RPC).
+   */
+  private perOriginConfig(originUrl: string): ChainConfig | null {
+    const selectedId = OriginChainStore.getSelected(originUrl);
+    if (selectedId != null) {
+      const custom = UserChainStore.get(selectedId, originUrl);
+      if (custom) return buildCustomConfig(custom, originUrl);
+      const registered = this.opts.resolveSupportedChain?.(selectedId);
+      if (registered) return registered;
+      // Selection dangling (chain removed / no longer in feed) — fall through
+      // to the default rather than serve a chain we can't resolve.
+    }
+    // Default chain for a fresh origin. Returning null (e.g. feed not loaded
+    // yet) lets `resolveConfig` fall back to the app resolver for that brief
+    // window; steady state always has a default, keeping dApp chain state off
+    // the home-screen active chain.
+    return this.opts.resolveDefaultChain?.() ?? null;
+  }
+
+  /**
+   * Flags a signing intent when the origin is on a custom chain, so every
+   * sign sheet's RiskBanner warns that reads and the simulation on it come
+   * from the dApp's own RPC and can't be independently confirmed. The
+   * clear-signing DECODE is untouched — it is RPC-independent (it decodes
+   * exactly what you sign) and stays fully on; only RPC-derived enrichment
+   * is capped as unverified.
+   */
+  private annotateCustomChain<P>(
+    intent: ApprovalIntent<P>,
+    originUrl: string,
+  ): ApprovalIntent<P> {
+    const selectedId = OriginChainStore.getSelected(originUrl);
+    if (selectedId != null && UserChainStore.get(selectedId, originUrl)) {
+      intent.annotations.push({
+        code: "custom-chain.unverified",
+        severity: "warn",
+        title: "Unverified network",
+        detail:
+          "This network was added by the site and isn't verified. Balances and previews on it can't be confirmed.",
+        source: "local",
+      });
+    }
+    return intent;
+  }
+
   private publicClient(ctx: AdapterContext): PublicClient {
-    const config = this.opts.resolveChainConfig(ctx);
+    const config = this.resolveConfig(ctx);
     if (!config) throw PROVIDER_ERRORS.chainNotConnected();
     return createPublicClient({
       chain: config.chain,
-      transport: http(config.rpcUrl),
+      transport: httpTransport(config),
     }) as PublicClient;
   }
 
@@ -141,23 +331,23 @@ export class EvmAdapter implements ChainAdapter {
    * they fail — so failing fast is strictly better than blocking.
    */
   private preflightClient(ctx: AdapterContext): PublicClient {
-    const config = this.opts.resolveChainConfig(ctx);
+    const config = this.resolveConfig(ctx);
     if (!config) throw PROVIDER_ERRORS.chainNotConnected();
     return createPublicClient({
       chain: config.chain,
-      transport: http(config.rpcUrl, { retryCount: 0, timeout: 3000 }),
+      transport: httpTransport(config, { retryCount: 0, timeout: 3000 }),
     }) as PublicClient;
   }
 
   private walletClient(ctx: AdapterContext, wallet: TWallet) {
-    const config = this.opts.resolveChainConfig(ctx);
+    const config = this.resolveConfig(ctx);
     if (!config) throw PROVIDER_ERRORS.chainNotConnected();
     const account = getAccountForWallet(wallet);
     if (!account) throw PROVIDER_ERRORS.internalError("no-account");
     return createWalletClient({
       account: account as Account,
       chain: config.chain,
-      transport: http(config.rpcUrl),
+      transport: httpTransport(config),
     });
   }
 
@@ -175,7 +365,7 @@ export class EvmAdapter implements ChainAdapter {
     req: ChainRequest,
     ctx: AdapterContext,
   ): AdapterContext {
-    const config = this.opts.resolveChainConfig(ctx);
+    const config = this.resolveConfig(ctx);
     if (!config) return ctx;
     const effective = pickEvmWalletForOrigin(
       ctx,
@@ -188,7 +378,7 @@ export class EvmAdapter implements ChainAdapter {
   }
 
   getInjectedScript(ctx: AdapterContext): string {
-    const config = this.opts.resolveChainConfig(ctx);
+    const config = this.resolveConfig(ctx);
     const chainIdHex = config ? toHex(config.chain.id) : "0x1";
     const selectedAddress = ctx.activeWallet?.address ?? null;
     return getEvmInjectedScript({
@@ -239,6 +429,15 @@ export class EvmAdapter implements ChainAdapter {
         ? [req.params]
         : [];
 
+    // Phase 2 — stamp the per-origin chain BEFORE anything reads it. Every
+    // subsequent `resolveConfig(ctx)` (reads, wallet-scoping, tx chainId)
+    // then serves the chain THIS origin selected, fully isolated from the
+    // home-screen active chain. Set once here so we don't re-resolve per case.
+    ctx = {
+      ...ctx,
+      chainOverride: this.perOriginConfig(req.origin.url) ?? undefined,
+    };
+
     // Origin-scope `ctx.activeWallet` to the wallet this dApp has a grant
     // for. Before `setActiveWallet` was removed from `AdapterContext`,
     // connect-approval flipped the global so subsequent requests saw the
@@ -253,12 +452,12 @@ export class EvmAdapter implements ChainAdapter {
       switch (req.method) {
         // ---------- Read / metadata ----------
         case "eth_chainId": {
-          const config = this.opts.resolveChainConfig(ctx);
+          const config = this.resolveConfig(ctx);
           if (!config) return err(PROVIDER_ERRORS.chainNotConnected());
           return resolved(toHex(config.chain.id));
         }
         case "net_version": {
-          const config = this.opts.resolveChainConfig(ctx);
+          const config = this.resolveConfig(ctx);
           if (!config) return err(PROVIDER_ERRORS.chainNotConnected());
           return resolved(String(config.chain.id));
         }
@@ -279,7 +478,7 @@ export class EvmAdapter implements ChainAdapter {
         case "eth_accounts": {
           // Privacy fix — only disclose when origin has an EIP-2255 grant.
           if (!ctx.activeWallet) return resolved([]);
-          const chainConfig = this.opts.resolveChainConfig(ctx);
+          const chainConfig = this.resolveConfig(ctx);
           if (!chainConfig) return resolved([]);
           const allowed = PermissionStore.isGranted(
             req.origin.url,
@@ -316,7 +515,7 @@ export class EvmAdapter implements ChainAdapter {
         // ---------- Connect / permissions ----------
         case "eth_requestAccounts":
         case "wallet_requestPermissions": {
-          const cfg = this.opts.resolveChainConfig(ctx);
+          const cfg = this.resolveConfig(ctx);
           if (!cfg) return err(PROVIDER_ERRORS.chainNotConnected());
 
           // Pick the EVM wallet this origin should see. NEVER route
@@ -422,7 +621,10 @@ export class EvmAdapter implements ChainAdapter {
                     | "eth_signTypedData_v4"),
           };
           return needsApproval(
-            makeIntent(req, "signTypedData", payload, ctx.activeWallet),
+            this.annotateCustomChain(
+              makeIntent(req, "signTypedData", payload, ctx.activeWallet),
+              req.origin.url,
+            ),
           );
         }
 
@@ -432,7 +634,7 @@ export class EvmAdapter implements ChainAdapter {
           if (!rawTx || typeof rawTx !== "object")
             return err(PROVIDER_ERRORS.invalidParams("tx"));
           if (!ctx.activeWallet) return err(PROVIDER_ERRORS.disconnected());
-          const cfg = this.opts.resolveChainConfig(ctx);
+          const cfg = this.resolveConfig(ctx);
           if (!cfg) return err(PROVIDER_ERRORS.chainNotConnected());
           const normalized = normalizeTx(
             rawTx,
@@ -465,11 +667,14 @@ export class EvmAdapter implements ChainAdapter {
           }
 
           return needsApproval(
-            makeIntent(
-              req,
-              "sendTransaction",
-              normalized.payload,
-              ctx.activeWallet,
+            this.annotateCustomChain(
+              makeIntent(
+                req,
+                "sendTransaction",
+                normalized.payload,
+                ctx.activeWallet,
+              ),
+              req.origin.url,
             ),
           );
         }
@@ -493,9 +698,25 @@ export class EvmAdapter implements ChainAdapter {
           const [raw] = params as [Record<string, unknown>];
           const normalized = normalizeAddChain(raw);
           if ("error" in normalized) return err(normalized.error);
-          if (UserChainStore.has(normalized.payload.chainId)) {
+          // EIP-3085: for a chainId the wallet already recognizes, return
+          // null (no-op) rather than duplicating it. A chain present in the
+          // backend `/blockchains` feed is a first-class supported network —
+          // we NEVER persist the dApp's rpcUrls for it. Reads/signing stay on
+          // the project RPC via resolveChainConfig; the dApp's follow-up
+          // `wallet_switchEthereumChain` handles activation. This keeps the
+          // approval-UI trust inputs (gas, nonce, balance, simulation) on RPC
+          // we control (see design-notes/chain-switch-ux.md).
+          if (this.opts.resolveSupportedChain?.(normalized.payload.chainId)) {
             return resolved(null);
           }
+          // Custom chains are scoped to the origin that added them.
+          if (UserChainStore.has(normalized.payload.chainId, req.origin.url)) {
+            return resolved(null);
+          }
+          // Unregistered chain: the project has no RPC for it, so the dApp's
+          // rpcUrls are the only option. Treat as a genuine custom-network add
+          // and route through approval (custom chains are stored second-class
+          // and served on their own RPC — see chainStore + AddChainSheet).
           return needsApproval(
             makeIntent(req, "addChain", normalized.payload, ctx.activeWallet),
           );
@@ -515,14 +736,21 @@ export class EvmAdapter implements ChainAdapter {
           } catch {
             return err(PROVIDER_ERRORS.invalidParams("chainId"));
           }
-          if (!UserChainStore.has(targetId)) {
-            const cfg = this.opts.resolveChainConfig(ctx);
-            // Fall back to currently-resolved chain — it's in-band.
-            if (cfg?.chain.id !== targetId) {
-              return err(PROVIDER_ERRORS.chainNotAdded(targetId));
-            }
-          }
-          const current = this.opts.resolveChainConfig(ctx);
+          // EIP-3326: "The chain ID MUST be known to the wallet." We treat a
+          // chain as known when it is registered in the backend `/blockchains`
+          // feed (a supported network), user-added as a custom chain, or the
+          // chain currently resolved for this context. Otherwise 4902 so the
+          // dApp knows to call `wallet_addEthereumChain` first.
+          const current = this.resolveConfig(ctx);
+          const supported = this.opts.resolveSupportedChain?.(targetId) ?? null;
+          // Custom chains are scoped to the origin that added them.
+          const custom = UserChainStore.get(targetId, req.origin.url);
+          const known =
+            Boolean(supported) ||
+            custom !== null ||
+            current?.chain.id === targetId;
+          if (!known) return err(PROVIDER_ERRORS.chainNotAdded(targetId));
+          // Already the active chain — no-op success.
           if (current?.chain.id === targetId) return resolved(null);
           return needsApproval(
             makeIntent(
@@ -532,6 +760,8 @@ export class EvmAdapter implements ChainAdapter {
                 chainId: targetId,
                 fromChainId: current?.chain.id,
                 fromChainName: current?.chain.name,
+                toChainName: supported?.chain.name ?? custom?.chainName,
+                toIsCustom: !supported && custom !== null,
               } satisfies EvmSwitchChainPayload,
               ctx.activeWallet,
             ),
@@ -552,7 +782,7 @@ export class EvmAdapter implements ChainAdapter {
         case "wallet_sendCalls": {
           const [raw] = params as [Record<string, unknown>];
           if (!ctx.activeWallet) return err(PROVIDER_ERRORS.disconnected());
-          const cfg = this.opts.resolveChainConfig(ctx);
+          const cfg = this.resolveConfig(ctx);
           if (!cfg) return err(PROVIDER_ERRORS.chainNotConnected());
           const normalized = normalizeSendCalls(
             raw,
@@ -561,7 +791,15 @@ export class EvmAdapter implements ChainAdapter {
           );
           if ("error" in normalized) return err(normalized.error);
           return needsApproval(
-            makeIntent(req, "sendCalls", normalized.payload, ctx.activeWallet),
+            this.annotateCustomChain(
+              makeIntent(
+                req,
+                "sendCalls",
+                normalized.payload,
+                ctx.activeWallet,
+              ),
+              req.origin.url,
+            ),
           );
         }
         case "wallet_getCallsStatus": {
@@ -609,7 +847,7 @@ export class EvmAdapter implements ChainAdapter {
               ? ctx.activeWallet.type === "Smart4337" ||
                 ctx.activeWallet.type === "Smart7702"
               : false;
-          const cfg = this.opts.resolveChainConfig(ctx);
+          const cfg = this.resolveConfig(ctx);
           const chainIdHex = cfg ? toHex(cfg.chain.id) : "0x1";
           const paymasterUrl = cfg
             ? getPaymasterConfig(cfg.chain.id)?.url
@@ -655,6 +893,13 @@ export class EvmAdapter implements ChainAdapter {
     if (decision.outcome === "reject") {
       throw PROVIDER_ERRORS.userRejected();
     }
+
+    // Serve execution on the same per-origin chain the request was built
+    // under (Phase 2 isolation) — never the home-screen active chain.
+    ctx = {
+      ...ctx,
+      chainOverride: this.perOriginConfig(intent.origin.url) ?? undefined,
+    };
 
     switch (intent.kind) {
       case "connect":
@@ -860,9 +1105,23 @@ export class EvmAdapter implements ChainAdapter {
     _ctx: AdapterContext,
   ): Promise<null> {
     const payload = intent.payload as EvmSwitchChainPayload;
-    if (this.opts.onSwitchChain) {
-      await this.opts.onSwitchChain(payload.chainId);
+    const origin = intent.origin.url;
+    // Custom chains are served on the dApp's own RPC. Probe it first (with
+    // the forwarded Origin) so we never strand the dApp on a chain we can't
+    // reach — an unreachable / cookie-gated RPC fails cleanly here instead of
+    // "switch succeeded" followed by every read erroring.
+    const custom = UserChainStore.get(payload.chainId, origin);
+    if (custom) {
+      const ok = await probeRpc(
+        custom.rpcUrls[0],
+        payload.chainId,
+        safeOrigin(origin),
+      );
+      if (!ok) throw PROVIDER_ERRORS.chainNotAdded(payload.chainId);
     }
+    // Record the origin's selection. This is the ONLY state a switch writes —
+    // the home-screen active chain is never touched (Phase 2 isolation).
+    OriginChainStore.setSelected(origin, payload.chainId);
     return null;
   }
 
@@ -871,13 +1130,27 @@ export class EvmAdapter implements ChainAdapter {
     _ctx: AdapterContext,
   ): Promise<null> {
     const payload = intent.payload as EvmAddChainPayload;
-    // Health check — `eth_chainId` against rpc[0] with 5s timeout.
+    const origin = safeOrigin(intent.origin.url);
+    // Health check — `eth_chainId` against rpc[0] with 5s timeout. Forward the
+    // dApp's Origin/Referer so an Origin-gated RPC proxy accepts the wallet's
+    // native fetch (same mechanism used when serving the chain). A cookie/
+    // session-gated proxy still fails here, which is the honest outcome: we
+    // can't serve a chain we can't reach, so we don't record it.
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 5000);
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        Origin: origin,
+        Referer: origin,
+      };
+      if (canForwardCookies(payload.rpcUrls[0], origin)) {
+        const cookie = await refreshDappCookies(origin);
+        if (cookie) headers.Cookie = cookie;
+      }
       const res = await fetch(payload.rpcUrls[0], {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: 1,
@@ -919,6 +1192,8 @@ export class EvmAdapter implements ChainAdapter {
     await UserChainStore.add({
       chainId: payload.chainId,
       chainName: sanitiseChainString(payload.chainName, 64),
+      // Scope the custom network to the origin that added it.
+      origin: intent.origin.url,
       nativeCurrency: {
         ...payload.nativeCurrency,
         name: sanitiseChainString(payload.nativeCurrency?.name, 32),
