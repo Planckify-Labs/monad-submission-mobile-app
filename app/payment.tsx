@@ -8,6 +8,7 @@ import React, {
   useState,
 } from "react";
 import {
+  ActivityIndicator,
   Image,
   Platform,
   ScrollView,
@@ -32,6 +33,7 @@ import {
   useExecuteRedemption,
   useRedemptionStatus,
 } from "@/hooks/queries/useRedeem";
+import { useGoToAuth } from "@/hooks/useGoToAuth";
 import { track } from "@/services/analytics/posthog";
 
 export default function PaymentScreen() {
@@ -64,6 +66,7 @@ export default function PaymentScreen() {
   }, [customerInfo]);
 
   const { isAuthenticated } = useIsAuthenticated();
+  const { navigatingToAuth, goToAuth } = useGoToAuth();
   const { data: variantData, isLoading: isLoadingVariant } =
     useProductVariantById(variantId);
   const { data: pointBalance, isFetching: isPointBalanceFetching } =
@@ -122,8 +125,10 @@ export default function PaymentScreen() {
       return;
     }
 
+    // Signed-out is surfaced inline by the primary CTA ("Sign In to
+    // Redeem"), so this path is defensive only. Bail quietly if the
+    // session lapsed mid-flow instead of hard-redirecting to /auth.
     if (!isAuthenticated) {
-      router.push("/auth");
       return;
     }
 
@@ -176,8 +181,9 @@ export default function PaymentScreen() {
   ]);
 
   const handlePaymentConfirmation = useCallback(() => {
+    // Defensive: the Redeem button is swapped for a sign-in CTA while
+    // signed out, so this only fires when authenticated. No redirect.
     if (!isAuthenticated) {
-      router.push("/auth");
       return;
     }
     setPinModalVisible(true);
@@ -313,18 +319,38 @@ export default function PaymentScreen() {
               </View>
             </View>
 
-            <TouchableOpacity
-              activeOpacity={buttonDisabled ? 1 : 0.7}
-              className={`p-4 rounded-full shadow-md mb-4 ${
-                buttonDisabled ? "bg-gray-400/35" : "bg-light-primary-red"
-              }`}
-              onPress={handlePaymentConfirmation}
-              disabled={buttonDisabled}
-            >
-              <Text className="font-bold text-center text-lg text-white">
-                Redeem
-              </Text>
-            </TouchableOpacity>
+            {isAuthenticated === false ? (
+              <TouchableOpacity
+                activeOpacity={navigatingToAuth ? 1 : 0.7}
+                className={`p-4 rounded-full shadow-md mb-4 flex-row items-center justify-center gap-3 ${
+                  navigatingToAuth
+                    ? "bg-light-primary-red/80"
+                    : "bg-light-primary-red"
+                }`}
+                onPress={goToAuth}
+                disabled={navigatingToAuth}
+              >
+                {navigatingToAuth && (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                )}
+                <Text className="font-bold text-center text-lg text-white">
+                  {navigatingToAuth ? "Opening sign-in…" : "Sign In to Redeem"}
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                activeOpacity={buttonDisabled ? 1 : 0.7}
+                className={`p-4 rounded-full shadow-md mb-4 ${
+                  buttonDisabled ? "bg-gray-400/35" : "bg-light-primary-red"
+                }`}
+                onPress={handlePaymentConfirmation}
+                disabled={buttonDisabled}
+              >
+                <Text className="font-bold text-center text-lg text-white">
+                  Redeem
+                </Text>
+              </TouchableOpacity>
+            )}
           </ScrollView>
 
           <PinConfirmationModal

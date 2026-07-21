@@ -30,6 +30,7 @@ import {
 import TokenSelectorModal from "@/components/wallet/TokenSelectorModal";
 import WalletSelectorModal from "@/components/wallet/WalletSelectorModal";
 import { useDepositState } from "@/hooks/deposit/useDepositState";
+import { useGoToAuth } from "@/hooks/useGoToAuth";
 import { useNavigationReady } from "@/hooks/useNavigationReady";
 import { useWallet } from "@/hooks/useWallet";
 
@@ -98,6 +99,7 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
   } = useDepositState();
 
   const chainSelectorRef = useRef<ChainSelectorRef>(null);
+  const { navigatingToAuth, goToAuth } = useGoToAuth();
 
   const [walletModalVisible, setWalletModalVisible] = useState(false);
   const [tokenModalVisible, setTokenModalVisible] = useState(false);
@@ -146,7 +148,10 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
 
   const handleDepositPress = useCallback(async () => {
     if (isAuthenticated === false) {
-      handleDeposit(); // redirects to /auth
+      // Inline sign-in: the CTA already reads "Sign In to Add Points",
+      // so route the tap through the shared sign-in flow (spinner +
+      // focus reset) instead of a surprise /auth jump.
+      void goToAuth();
       return;
     }
     const preflight = await checkApprovalNeeded();
@@ -156,7 +161,7 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
     } else {
       setPinModalVisible(true);
     }
-  }, [isAuthenticated, handleDeposit, checkApprovalNeeded]);
+  }, [isAuthenticated, goToAuth, checkApprovalNeeded]);
 
   const handlePinSubmit = useCallback(
     async (_pin: string) => {
@@ -285,12 +290,15 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
               isLoading={isLoading}
               onPress={handleDepositPress}
               disabled={
-                isAuthenticated !== false &&
-                (hasInsufficientNative || hasInsufficientToken)
+                navigatingToAuth ||
+                (isAuthenticated !== false &&
+                  (hasInsufficientNative || hasInsufficientToken))
               }
               label={
                 isAuthenticated === false
-                  ? "Sign In to Add Points"
+                  ? navigatingToAuth
+                    ? "Opening sign-in…"
+                    : "Sign In to Add Points"
                   : "Add Points"
               }
             />

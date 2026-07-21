@@ -417,9 +417,11 @@ export function useDepositState() {
 
   const handleDeposit = useCallback(
     async (options?: { approvalMode?: "exact" | "unlimited" }) => {
-      // Redirect to auth if not signed in
+      // Signed-out is surfaced inline by the deposit CTA ("Sign In to
+      // Add Points" routes through the shared sign-in flow), so this is a
+      // defensive guard for a session that lapsed mid-flow. Bail quietly
+      // rather than hard-redirecting to /auth.
       if (!isAuthenticated) {
-        router.push("/auth");
         return;
       }
 
