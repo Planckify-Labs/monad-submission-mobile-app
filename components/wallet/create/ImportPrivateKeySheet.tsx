@@ -47,6 +47,7 @@ import {
   View,
 } from "react-native";
 import { BaseModal } from "@/components/common/BaseModal";
+import LoadinngSpinnerPopup from "@/components/common/LoadinngSpinnerPopup";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { useWallet } from "@/hooks/useWallet";
 import type { Namespace } from "@/services/chains/types";
@@ -61,6 +62,21 @@ import { NamespacePicker } from "./NamespacePicker";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.92;
+
+// Deriving a wallet from a private key blocks the JS thread. A spinner rendered
+// *inside* the sheet would freeze mid-frame, so we fully close the sheet FIRST,
+// then show the shared loading popup and derive — the same handoff the
+// create-wallet flow uses in `app/login.tsx`.
+//
+// The derivation is kicked off from BaseModal's `onClosed` callback (which
+// fires exactly when the slide-out animation has completely finished) rather
+// than a guessed timer, so the sheet is always fully gone before the spinner
+// appears. `SPINNER_PAINT_DELAY_MS` then gives the spinner a beat to paint
+// before the blocking derivation freezes the thread.
+const SPINNER_PAINT_DELAY_MS = 180; // let the spinner paint before deriving
+const SUCCESS_HOLD_MS = 300; // hold "You're all set" briefly before closing
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 type Props = {
   visible: boolean;
@@ -107,6 +123,11 @@ function ImportPrivateKeySheet({
   const [privateKey, setPrivateKey] = useState<string>("");
   const [name, setName] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
+  // Spinner visibility is decoupled from `submitting` so the sheet can finish
+  // its close animation BEFORE the spinner appears (see `handleSheetClosed`).
+  const [showSpinner, setShowSpinner] = useState<boolean>(false);
+  // Message shown in the shared spinner popup while the sheet is hidden.
+  const [loadingMessage, setLoadingMessage] = useState<string>("");
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const { addWallet } = useWallet();
@@ -114,15 +135,27 @@ function ImportPrivateKeySheet({
   // Focus target for step 2.
   const keyInputRef = useRef<TextInput>(null);
 
+  // Import inputs captured on Confirm, consumed once the sheet has FULLY
+  // closed. Deriving is deferred to BaseModal's `onClosed` so the sheet is
+  // completely gone before the spinner + compute take over.
+  const pendingImportRef = useRef<{
+    namespace: Namespace;
+    privateKey: string;
+    name: string | undefined;
+  } | null>(null);
+
   // Reset on open / close. Matches the discipline of holding the raw
   // key only for the lifetime of the sheet.
   useEffect(() => {
     if (!visible) {
+      pendingImportRef.current = null;
       setStep(1);
       setNamespace(null);
       setPrivateKey("");
       setName("");
       setSubmitting(false);
+      setShowSpinner(false);
+      setLoadingMessage("");
       setSubmitError(null);
     }
   }, [visible]);
@@ -178,60 +211,102 @@ function ImportPrivateKeySheet({
     setStep((s) => (s === 3 ? 2 : 1) as Step);
   }, [step, onClose]);
 
-  const handleConfirm = useCallback(async () => {
-    if (!namespace) return;
+  // The actual import. Runs ONLY after the sheet has fully closed (invoked
+  // from `handleSheetClosed`), so the blocking derivation never fights the
+  // slide-out animation for the JS thread.
+  const runImport = useCallback(
+    async (
+      ns: Namespace,
+      normalized: string,
+      walletName: string | undefined,
+    ) => {
+      // Sheet is gone — reveal the spinner and let it paint before deriving.
+      setLoadingMessage("Importing your wallet...");
+      setShowSpinner(true);
+      await sleep(SPINNER_PAINT_DELAY_MS);
+      try {
+        const kit = walletKitRegistry.get(ns);
+        const built = await kit.createWalletFromPrivateKey({
+          privateKey: normalized,
+          name: walletName,
+        });
+        if (!built) {
+          setSubmitError(
+            "We couldn't import this key. Double-check that it matches the chain you picked.",
+          );
+          return;
+        }
+        // Route through `addWallet` so the singular dedup / persistence
+        // path owns it. We pass params — the hook calls
+        // `createWalletFromParams` internally; re-deriving from the same
+        // normalized key yields the same address as `built.address`, so
+        // there's no mismatch risk.
+        const ok = await addWallet(
+          buildAddWalletParams(ns, normalized, walletName),
+        );
+        if (!ok) {
+          setSubmitError(
+            "We couldn't import this wallet. It may already exist in your wallet list.",
+          );
+          return;
+        }
+        // Hand the just-built wallet to the parent. We don't read back
+        // from `useWallet().wallets` because that array is stale inside
+        // this closure — the query cache update from `addWallet` lands
+        // on the next render. `built` has the same address as what the
+        // hook persisted (both go through the same derivation), so it's
+        // a faithful reference.
+        onWalletAdded(built);
+        // Hold the success message briefly, then drop local key state and close.
+        setLoadingMessage("You're all set! 🎉");
+        await sleep(SUCCESS_HOLD_MS);
+        setPrivateKey("");
+        setName("");
+        onClose();
+      } catch (e) {
+        if (__DEV__) console.warn("ImportPrivateKeySheet: confirm failed", e);
+        setSubmitError(
+          "Something went wrong importing this wallet. Please try again.",
+        );
+      } finally {
+        // On error this un-hides the sheet (with the error) and drops the
+        // spinner; on success the parent has already closed us.
+        setSubmitting(false);
+        setShowSpinner(false);
+      }
+    },
+    [addWallet, onWalletAdded, onClose],
+  );
+
+  const handleConfirm = useCallback(() => {
+    if (!namespace || submitting) return;
     setSubmitError(null);
+    // Capture the inputs now; the derivation itself is deferred until the
+    // sheet has FULLY closed (see `handleSheetClosed`). We only close the
+    // sheet here — no compute, no spinner yet.
+    // TWV-2026-057 — raw key held only until `addWallet`; local state is
+    // cleared on success / on unmount.
+    pendingImportRef.current = {
+      namespace,
+      privateKey: normalizePrivateKeyInput(privateKey, namespace),
+      name: name.trim() || undefined,
+    };
+    setLoadingMessage("Preparing import...");
     setSubmitting(true);
-    try {
-      const kit = walletKitRegistry.get(namespace);
-      const normalized = normalizePrivateKeyInput(privateKey, namespace);
-      // TWV-2026-057 — raw key held only across this synchronous pair
-      // of calls. After `addWallet` we drop local state on success /
-      // on unmount.
-      const built = await kit.createWalletFromPrivateKey({
-        privateKey: normalized,
-        name: name.trim() || undefined,
-      });
-      if (!built) {
-        setSubmitError(
-          "We couldn't import this key. Double-check that it matches the chain you picked.",
-        );
-        return;
-      }
-      // Route through `addWallet` so the singular dedup / persistence
-      // path owns it. We pass params — the hook calls
-      // `createWalletFromParams` internally; re-deriving from the same
-      // normalized key yields the same address as `built.address`, so
-      // there's no mismatch risk.
-      const ok = await addWallet(
-        buildAddWalletParams(namespace, normalized, name.trim() || undefined),
-      );
-      if (!ok) {
-        setSubmitError(
-          "We couldn't import this wallet. It may already exist in your wallet list.",
-        );
-        return;
-      }
-      // Hand the just-built wallet to the parent. We don't read back
-      // from `useWallet().wallets` because that array is stale inside
-      // this closure — the query cache update from `addWallet` lands
-      // on the next render. `built` has the same address as what the
-      // hook persisted (both go through the same derivation), so it's
-      // a faithful reference.
-      onWalletAdded(built);
-      // Drop local key state immediately before closing.
-      setPrivateKey("");
-      setName("");
-      onClose();
-    } catch (e) {
-      if (__DEV__) console.warn("ImportPrivateKeySheet: confirm failed", e);
-      setSubmitError(
-        "Something went wrong importing this wallet. Please try again.",
-      );
-    } finally {
-      setSubmitting(false);
+  }, [namespace, privateKey, name, submitting]);
+
+  // Fired by BaseModal when the slide-out animation has completely finished.
+  // If an import is pending, the sheet is now fully gone, so it's safe to show
+  // the spinner and run the blocking derivation.
+  const handleSheetClosed = useCallback(() => {
+    const pending = pendingImportRef.current;
+    pendingImportRef.current = null;
+    if (pending) {
+      void runImport(pending.namespace, pending.privateKey, pending.name);
     }
-  }, [namespace, privateKey, name, addWallet, onWalletAdded, onClose]);
+    // Otherwise it was an ordinary dismiss — reset is handled by the
+    // `visible` effect above when the parent drops `visible`.
+  }, [runImport]);
 
   const title =
     step === 1
@@ -241,118 +316,132 @@ function ImportPrivateKeySheet({
         : "Name this wallet";
 
   return (
-    <BaseModal
-      visible={visible}
-      onClose={onClose}
-      height={SHEET_HEIGHT}
-      enablePanToClose={!submitting}
-      enableBackdropClose={!submitting}
-      closeButtonDisabled={submitting}
-    >
-      {/* Header */}
-      <View className="flex-row items-center justify-between px-4 pb-3">
-        {step > 1 ? (
-          <Pressable
-            onPress={goBack}
-            accessibilityRole="button"
-            accessibilityLabel="Back"
-            hitSlop={12}
-            className="p-1"
-          >
-            <ArrowLeft size={24} color="#c71c4b" />
-          </Pressable>
-        ) : (
-          <View className="w-8" />
-        )}
-        <Text className="text-light-matte-black font-semibold text-base">
-          Step {step} of 3
-        </Text>
-        {/* Spacer balances the back button; BaseModal renders the close. */}
-        <View className="w-8" />
-      </View>
-
-      <ScrollView
-        className="flex-1 px-6"
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{ paddingBottom: 24 }}
+    <>
+      <BaseModal
+        // Gate `visible` off during import so the sheet slides fully out;
+        // `onClosed` then fires the derivation once the animation is done.
+        visible={visible && !submitting}
+        onClose={onClose}
+        onClosed={handleSheetClosed}
+        height={SHEET_HEIGHT}
+        enablePanToClose={!submitting}
+        enableBackdropClose={!submitting}
+        closeButtonDisabled={submitting}
       >
-        <Text className="text-light-matte-black text-2xl font-bold mb-2">
-          {title}
-        </Text>
-
-        {step === 1 ? (
-          <Step1Body
-            selected={selectedForPicker}
-            onChange={handleNamespaceChange}
-            inferredHint={!namespace && inferred !== null}
-          />
-        ) : null}
-
-        {step === 2 && namespace ? (
-          <Step2Body
-            namespace={namespace}
-            value={privateKey}
-            onChangeText={setPrivateKey}
-            validationState={validationState}
-            inputRef={keyInputRef}
-          />
-        ) : null}
-
-        {step === 3 && namespace ? (
-          <Step3Body
-            namespace={namespace}
-            name={name}
-            onChangeName={setName}
-            submitError={submitError}
-          />
-        ) : null}
-      </ScrollView>
-
-      {/* Primary action */}
-      <View className="px-6 pb-2">
-        {step === 1 ? (
-          <PrimaryButton
-            label="Continue"
-            disabled={!namespace}
-            onPress={proceedFromStep1}
-          />
-        ) : null}
-        {step === 2 ? (
-          <PrimaryButton
-            label="Continue"
-            disabled={validationState !== "valid"}
-            onPress={proceedFromStep2}
-          />
-        ) : null}
-        {step === 3 ? (
-          <PrimaryButton
-            label={submitting ? "Importing..." : "Import wallet"}
-            disabled={submitting}
-            loading={submitting}
-            onPress={handleConfirm}
-          />
-        ) : null}
-      </View>
-
-      {/* Footer — present on every step */}
-      {onImportSeedPhraseInstead ? (
-        <View className="px-6 pt-2">
-          <Text className="text-light-matte-black/60 text-xs text-center mb-1">
-            Wrong chain? A seed phrase imports all chains at once.
+        {/* Header */}
+        <View className="flex-row items-center justify-between px-4 pb-3">
+          {step > 1 ? (
+            <Pressable
+              onPress={goBack}
+              accessibilityRole="button"
+              accessibilityLabel="Back"
+              hitSlop={12}
+              className="p-1"
+            >
+              <ArrowLeft size={24} color="#c71c4b" />
+            </Pressable>
+          ) : (
+            <View className="w-8" />
+          )}
+          <Text className="text-light-matte-black font-semibold text-base">
+            Step {step} of 3
           </Text>
-          <Pressable
-            onPress={onImportSeedPhraseInstead}
-            accessibilityRole="button"
-            accessibilityLabel="Import seed phrase instead"
-            hitSlop={8}
-          >
-            <Text className="text-light-primary-red text-sm font-semibold text-center">
-              Import seed phrase instead
-            </Text>
-          </Pressable>
+          {/* Spacer balances the back button; BaseModal renders the close. */}
+          <View className="w-8" />
         </View>
-      ) : null}
-    </BaseModal>
+
+        <ScrollView
+          className="flex-1 px-6"
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: 24 }}
+        >
+          <Text className="text-light-matte-black text-2xl font-bold mb-2">
+            {title}
+          </Text>
+
+          {step === 1 ? (
+            <Step1Body
+              selected={selectedForPicker}
+              onChange={handleNamespaceChange}
+              inferredHint={!namespace && inferred !== null}
+            />
+          ) : null}
+
+          {step === 2 && namespace ? (
+            <Step2Body
+              namespace={namespace}
+              value={privateKey}
+              onChangeText={setPrivateKey}
+              validationState={validationState}
+              inputRef={keyInputRef}
+            />
+          ) : null}
+
+          {step === 3 && namespace ? (
+            <Step3Body
+              namespace={namespace}
+              name={name}
+              onChangeName={setName}
+              submitError={submitError}
+            />
+          ) : null}
+        </ScrollView>
+
+        {/* Primary action */}
+        <View className="px-6 pb-2">
+          {step === 1 ? (
+            <PrimaryButton
+              label="Continue"
+              disabled={!namespace}
+              onPress={proceedFromStep1}
+            />
+          ) : null}
+          {step === 2 ? (
+            <PrimaryButton
+              label="Continue"
+              disabled={validationState !== "valid"}
+              onPress={proceedFromStep2}
+            />
+          ) : null}
+          {step === 3 ? (
+            <PrimaryButton
+              label={submitting ? "Importing..." : "Import wallet"}
+              disabled={submitting}
+              loading={submitting}
+              onPress={handleConfirm}
+            />
+          ) : null}
+        </View>
+
+        {/* Footer — present on every step */}
+        {onImportSeedPhraseInstead ? (
+          <View className="px-6 pt-2">
+            <Text className="text-light-matte-black/60 text-xs text-center mb-1">
+              Wrong chain? A seed phrase imports all chains at once.
+            </Text>
+            <Pressable
+              onPress={onImportSeedPhraseInstead}
+              accessibilityRole="button"
+              accessibilityLabel="Import seed phrase instead"
+              hitSlop={8}
+            >
+              <Text className="text-light-primary-red text-sm font-semibold text-center">
+                Import seed phrase instead
+              </Text>
+            </Pressable>
+          </View>
+        ) : null}
+      </BaseModal>
+
+      {/* Shared spinner — revealed only AFTER the sheet has fully closed, and
+          stays up while the wallet derives. Lives outside BaseModal so it
+          survives the slide-out. */}
+      <LoadinngSpinnerPopup
+        visible={showSpinner}
+        title="Importing Wallet"
+        message={loadingMessage}
+      />
+    </>
   );
 }
 

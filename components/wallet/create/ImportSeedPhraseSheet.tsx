@@ -60,6 +60,7 @@ import {
   View,
 } from "react-native";
 import { BaseModal } from "@/components/common/BaseModal";
+import LoadinngSpinnerPopup from "@/components/common/LoadinngSpinnerPopup";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { useWallet } from "@/hooks/useWallet";
 import { track } from "@/services/analytics/posthog";
@@ -81,6 +82,21 @@ import NamespacePicker from "./NamespacePicker";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 const SHEET_HEIGHT = SCREEN_HEIGHT * 0.92;
+
+// Deriving wallets is CPU-heavy and blocks the JS thread. A spinner rendered
+// *inside* the sheet would freeze mid-frame, so we fully close the sheet FIRST,
+// then bring up the shared loading popup and run the derivation — the same
+// handoff the create-wallet flow uses in `app/login.tsx`.
+//
+// The derivation is kicked off from BaseModal's `onClosed` callback (which
+// fires exactly when the slide-out animation has completely finished) rather
+// than a guessed timer, so the sheet is always fully gone before the spinner
+// appears. `SPINNER_PAINT_DELAY_MS` then gives the spinner a beat to paint
+// before the blocking derivation freezes the thread.
+const SPINNER_PAINT_DELAY_MS = 180; // let the spinner paint before deriving
+const SUCCESS_HOLD_MS = 300; // hold "You're all set" briefly before closing
+const sleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 type Props = {
   visible: boolean;
@@ -159,9 +175,22 @@ const ImportSeedPhraseSheet: React.FC<Props> = memo(
     // Confirm step.
     const [isSaving, setIsSaving] = useState<boolean>(false);
     const [completed, setCompleted] = useState<boolean>(false);
+    // Spinner visibility is decoupled from `isSaving` so the sheet can finish
+    // its close animation BEFORE the spinner appears (see `handleSheetClosed`).
+    const [showSpinner, setShowSpinner] = useState<boolean>(false);
+    // Message shown in the shared spinner popup while the sheet is hidden.
+    const [loadingMessage, setLoadingMessage] = useState<string>("");
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
     const [skippedNamespaces, setSkippedNamespaces] = useState<Namespace[]>([]);
     const [allDuplicates, setAllDuplicates] = useState<boolean>(false);
+
+    // Import inputs captured on Confirm, consumed once the sheet has FULLY
+    // closed. Deriving is deferred to BaseModal's `onClosed` so the sheet is
+    // completely gone before the spinner + compute take over.
+    const pendingImportRef = useRef<{
+      mnemonic: string;
+      namespaces: Namespace[];
+    } | null>(null);
 
     const validationState = useMemo(
       () => validateMnemonicState(rawInput),
@@ -176,16 +205,28 @@ const ImportSeedPhraseSheet: React.FC<Props> = memo(
     const resetState = useCallback(() => {
       // TWV-2026-057 dwell discipline — drop every reference to the
       // mnemonic before the sheet next opens.
+      pendingImportRef.current = null;
       setStep(1);
       setRawInput("");
       setHasBlurred(false);
       setNamespaces(allRegisteredNamespaces());
       setIsSaving(false);
+      setShowSpinner(false);
       setCompleted(false);
+      setLoadingMessage("");
       setErrorMsg(null);
       setSkippedNamespaces([]);
       setAllDuplicates(false);
     }, []);
+
+    // Reset when the PARENT closes the sheet — NOT when we merely hide it
+    // behind the spinner during import (that only gates BaseModal's own
+    // `visible`, leaving the parent prop true). This replaces BaseModal's
+    // `onClosed` reset, which would otherwise fire — and wipe mid-import
+    // state — the instant we gate `visible` off to show the spinner.
+    useEffect(() => {
+      if (!visible) resetState();
+    }, [visible, resetState]);
 
     const handleCancel = useCallback(() => {
       if (isSaving) return; // cannot cancel mid-save
@@ -220,83 +261,114 @@ const ImportSeedPhraseSheet: React.FC<Props> = memo(
       setStep(3);
     }, [namespaces]);
 
-    const handleConfirm = useCallback(async () => {
+    // The actual import. Runs ONLY after the sheet has fully closed (invoked
+    // from `handleSheetClosed`), so the blocking derivation never fights the
+    // slide-out animation for the JS thread.
+    const runImport = useCallback(
+      async (mnemonicString: string, selectedNamespaces: Namespace[]) => {
+        // Sheet is gone — reveal the spinner and let it paint before deriving.
+        setLoadingMessage("Deriving your wallets...");
+        setShowSpinner(true);
+        await sleep(SPINNER_PAINT_DELAY_MS);
+        try {
+          // Defence-in-depth — re-validate here so we never feed an
+          // invalid mnemonic to the derivation layer even if the UI
+          // state somehow drifted.
+          if (validateMnemonicState(mnemonicString) !== "valid") {
+            throw new Error("This doesn't look like a valid BIP-39 phrase.");
+          }
+          // TWV-2026-057 — derive, partition, hand off. Local refs drop
+          // at function exit.
+          const derived = await deriveWalletsFromMnemonic(
+            mnemonicString,
+            selectedNamespaces,
+            defaultWalletNameFor,
+          );
+          if (derived.length === 0) {
+            throw new Error("We couldn't derive any wallets from this phrase.");
+          }
+          // Snapshot the existing wallets AT CONFIRM-TIME — the
+          // `useWallet` hook's `addWallets` does its own secondary
+          // dedup, so the partition here is purely for the UX banner.
+          const { toAdd, skipped } = filterDuplicates(
+            derived,
+            (useWalletSnapshot.current as { wallets: TWallet[] }).wallets,
+          );
+          if (skipped.length > 0) {
+            setSkippedNamespaces(skipped);
+          }
+          if (toAdd.length === 0) {
+            // Every derived wallet is already imported — surface the
+            // banner and let the user cancel. The `finally` clears
+            // `isSaving`, so the sheet slides back in with the banner;
+            // Confirm disables via `allDuplicates` (no opaque retry).
+            setAllDuplicates(true);
+            return;
+          }
+          // "Account found" recovery: badge the restored wallets as the Google
+          // account's own, so they read as a Google wallet just like a minted one.
+          setLoadingMessage("Securing your keys...");
+          const finalToAdd = tagSocial
+            ? tagWalletsAsGoogle(toAdd, tagSocial)
+            : toAdd;
+          const ok = await addWallets(finalToAdd);
+          if (!ok) {
+            throw new Error("Failed to save wallets");
+          }
+          setCompleted(true);
+          track("wallet_imported", {
+            chains: finalToAdd.map((w) => w.namespace),
+            wallets_added: finalToAdd.length,
+          });
+          // Hold the success message briefly in the spinner, then hand off
+          // and close. `resetState` runs when the parent drops `visible`.
+          setLoadingMessage("You're all set! 🎉");
+          await sleep(SUCCESS_HOLD_MS);
+          onWalletsAdded(finalToAdd);
+          onClose();
+        } catch (e) {
+          if (__DEV__) {
+            console.warn("[ImportSeedPhraseSheet] confirm threw", e);
+          }
+          setErrorMsg("We couldn't import this wallet. Please try again.");
+        } finally {
+          // On error / all-duplicates this un-hides the sheet (with the banner)
+          // and drops the spinner; on success the parent has already closed us.
+          setIsSaving(false);
+          setShowSpinner(false);
+        }
+      },
+      [addWallets, onWalletsAdded, onClose, tagSocial],
+    );
+
+    const handleConfirm = useCallback(() => {
       if (isSaving || completed) return;
       setErrorMsg(null);
       setSkippedNamespaces([]);
       setAllDuplicates(false);
+      // Capture the inputs now; the derivation itself is deferred until the
+      // sheet has FULLY closed (see `handleSheetClosed`). We only close the
+      // sheet here — no compute, no spinner yet.
+      pendingImportRef.current = {
+        mnemonic: normalizeMnemonic(rawInput),
+        namespaces,
+      };
+      setLoadingMessage("Preparing import...");
       setIsSaving(true);
-      try {
-        const mnemonicString = normalizeMnemonic(rawInput);
-        // Defence-in-depth — re-validate here so we never feed an
-        // invalid mnemonic to the derivation layer even if the UI
-        // state somehow drifted.
-        if (validateMnemonicState(mnemonicString) !== "valid") {
-          throw new Error("This doesn't look like a valid BIP-39 phrase.");
-        }
-        // TWV-2026-057 — derive, partition, hand off. Local refs drop
-        // at function exit.
-        const derived = await deriveWalletsFromMnemonic(
-          mnemonicString,
-          namespaces,
-          defaultWalletNameFor,
-        );
-        if (derived.length === 0) {
-          throw new Error("We couldn't derive any wallets from this phrase.");
-        }
-        // Snapshot the existing wallets AT CONFIRM-TIME — the
-        // `useWallet` hook's `addWallets` does its own secondary
-        // dedup, so the partition here is purely for the UX banner.
-        const { toAdd, skipped } = filterDuplicates(
-          derived,
-          (useWalletSnapshot.current as { wallets: TWallet[] }).wallets,
-        );
-        if (skipped.length > 0) {
-          setSkippedNamespaces(skipped);
-        }
-        if (toAdd.length === 0) {
-          // Every derived wallet is already imported — surface the
-          // banner and let the user cancel. Confirm button disables
-          // via `allDuplicates` so they don't get an opaque retry.
-          setAllDuplicates(true);
-          return;
-        }
-        // "Account found" recovery: badge the restored wallets as the Google
-        // account's own, so they read as a Google wallet just like a minted one.
-        const finalToAdd = tagSocial
-          ? tagWalletsAsGoogle(toAdd, tagSocial)
-          : toAdd;
-        const ok = await addWallets(finalToAdd);
-        if (!ok) {
-          throw new Error("Failed to save wallets");
-        }
-        setCompleted(true);
-        track("wallet_imported", {
-          chains: finalToAdd.map((w) => w.namespace),
-          wallets_added: finalToAdd.length,
-        });
-        onWalletsAdded(finalToAdd);
-        // Close — success stays visible through BaseModal's slide-out and
-        // `resetState` runs on `onClosed`.
-        onClose();
-      } catch (e) {
-        if (__DEV__) {
-          console.warn("[ImportSeedPhraseSheet] confirm threw", e);
-        }
-        setErrorMsg("We couldn't import this wallet. Please try again.");
-      } finally {
-        setIsSaving(false);
+    }, [isSaving, completed, rawInput, namespaces]);
+
+    // Fired by BaseModal when the slide-out animation has completely finished.
+    // If an import is pending, the sheet is now fully gone, so it's safe to
+    // show the spinner and run the blocking derivation.
+    const handleSheetClosed = useCallback(() => {
+      const pending = pendingImportRef.current;
+      pendingImportRef.current = null;
+      if (pending) {
+        void runImport(pending.mnemonic, pending.namespaces);
       }
-    }, [
-      rawInput,
-      namespaces,
-      addWallets,
-      onWalletsAdded,
-      onClose,
-      isSaving,
-      completed,
-      tagSocial,
-    ]);
+      // Otherwise it was an ordinary dismiss — reset is handled by the
+      // `visible` effect below when the parent drops `visible`.
+    }, [runImport]);
 
     // `useWallet` returns a fresh `wallets` reference on every bundle
     // change — capture it in a ref so `handleConfirm` doesn't close
@@ -491,60 +563,73 @@ const ImportSeedPhraseSheet: React.FC<Props> = memo(
     };
 
     return (
-      <BaseModal
-        visible={visible}
-        onClose={handleCancel}
-        onClosed={resetState}
-        height={SHEET_HEIGHT}
-        enablePanToClose={!isSaving}
-        enableBackdropClose={!isSaving}
-        closeButtonDisabled={isSaving}
-      >
-        {/* Header */}
-        <View className="flex-row items-center justify-between px-4 pb-2">
-          <Pressable
-            onPress={handleBack}
-            disabled={isSaving}
-            accessibilityLabel="Back"
-            className={`w-9 h-9 items-center justify-center ${
-              isSaving ? "opacity-30" : ""
-            }`}
-          >
-            <ArrowLeft size={22} color="#c71c4b" />
-          </Pressable>
-          <Text className="text-light-matte-black text-lg font-bold">
-            Import seed phrase
-          </Text>
-          {/* Spacer balances the back button; BaseModal renders the close. */}
-          <View className="w-9" />
-        </View>
-
-        {/* Step indicator */}
-        <View className="flex-row gap-2 px-4 mb-3">
-          {[1, 2, 3].map((i) => (
-            <View
-              key={i}
-              className={`h-1 flex-1 rounded-full ${
-                i <= step ? "bg-light-primary-red" : "bg-gray-300"
-              }`}
-            />
-          ))}
-        </View>
-
-        {/* Body */}
-        <ScrollView
-          className="flex-1 px-4"
-          contentContainerStyle={{ paddingBottom: 16 }}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
+      <>
+        <BaseModal
+          // Gate `visible` off during import so the sheet slides fully out;
+          // `onClosed` then fires the derivation once the animation is done.
+          visible={visible && !isSaving}
+          onClose={handleCancel}
+          onClosed={handleSheetClosed}
+          height={SHEET_HEIGHT}
+          enablePanToClose={!isSaving}
+          enableBackdropClose={!isSaving}
+          closeButtonDisabled={isSaving}
         >
-          {step === 1 ? renderStep1() : null}
-          {step === 2 ? renderStep2() : null}
-          {step === 3 ? renderStep3() : null}
-        </ScrollView>
+          {/* Header */}
+          <View className="flex-row items-center justify-between px-4 pb-2">
+            <Pressable
+              onPress={handleBack}
+              disabled={isSaving}
+              accessibilityLabel="Back"
+              className={`w-9 h-9 items-center justify-center ${
+                isSaving ? "opacity-30" : ""
+              }`}
+            >
+              <ArrowLeft size={22} color="#c71c4b" />
+            </Pressable>
+            <Text className="text-light-matte-black text-lg font-bold">
+              Import seed phrase
+            </Text>
+            {/* Spacer balances the back button; BaseModal renders the close. */}
+            <View className="w-9" />
+          </View>
 
-        <View className="px-4 pt-2">{renderFooter()}</View>
-      </BaseModal>
+          {/* Step indicator */}
+          <View className="flex-row gap-2 px-4 mb-3">
+            {[1, 2, 3].map((i) => (
+              <View
+                key={i}
+                className={`h-1 flex-1 rounded-full ${
+                  i <= step ? "bg-light-primary-red" : "bg-gray-300"
+                }`}
+              />
+            ))}
+          </View>
+
+          {/* Body */}
+          <ScrollView
+            className="flex-1 px-4"
+            contentContainerStyle={{ paddingBottom: 16 }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            {step === 1 ? renderStep1() : null}
+            {step === 2 ? renderStep2() : null}
+            {step === 3 ? renderStep3() : null}
+          </ScrollView>
+
+          <View className="px-4 pt-2">{renderFooter()}</View>
+        </BaseModal>
+
+        {/* Shared spinner — revealed only AFTER the sheet has fully closed,
+          and stays up while the wallets derive. Lives outside BaseModal so it
+          survives the slide-out. */}
+        <LoadinngSpinnerPopup
+          visible={showSpinner}
+          title="Importing Wallet"
+          message={loadingMessage}
+        />
+      </>
     );
   },
 );
