@@ -189,7 +189,7 @@ function PositionRowItem({ row }: { row: PositionRow }) {
 
 const PositionListCard: React.FC<
   ToolComponentProps<PositionInput, PositionOutput>
-> = ({ state, output }) => {
+> = ({ state, output, showSetupCTA = true }) => {
   if (state === "input-streaming" || state === "input-available" || !output) {
     return (
       <View className="my-1.5 rounded-2xl border border-light-matte-black/10 bg-white px-3.5 py-3">
@@ -268,7 +268,7 @@ const PositionListCard: React.FC<
         <Text className="text-sm text-light-matte-black/80 mt-1.5">
           You don&apos;t have any open DeFi positions yet.
         </Text>
-        <SetupStrategyCTA variant="block" />
+        {showSetupCTA ? <SetupStrategyCTA variant="block" /> : null}
       </View>
     );
   }

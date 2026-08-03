@@ -638,7 +638,7 @@ function GroupCard({
 
 const OpportunityListCard: React.FC<
   ToolComponentProps<OpportunityInput, OpportunityOutput>
-> = ({ state, input, output, onUserPrompt }) => {
+> = ({ state, input, output, onUserPrompt, showSetupCTA = true }) => {
   const { data: strategy } = useUserStrategy();
   const [page, setPage] = useState(0);
   // Multi-select deposit builder: checked pools + their per-row amount, keyed
@@ -1038,7 +1038,7 @@ const OpportunityListCard: React.FC<
               </Text>
             </TouchableOpacity>
           ) : null}
-          <SetupStrategyCTA />
+          {showSetupCTA ? <SetupStrategyCTA /> : null}
         </>
       )}
     </View>

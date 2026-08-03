@@ -1,8 +1,39 @@
 {
   "version": 1,
   "agents": [
-    { "id": "core",   "display_name": "Takumi",             "tool_prefixes": ["core_"],                                                                                                                                                       "status": "ready" },
-    { "id": "wallet", "display_name": "Wallet specialist",  "tool_prefixes": ["get_", "send_", "transfer_", "approve_", "read_contract", "estimate_gas", "write_contract", "search_", "deposit_", "execute_", "request_", "cancel_", "create_", "establish_", "x402_"], "status": "ready" },
-    { "id": "defi",   "display_name": "DeFi specialist",    "tool_prefixes": ["defi_"],                                                                                                                                                       "status": "ready" }
+    {
+      "id": "core",
+      "display_name": "Takumi",
+      "tool_prefixes": ["core_"],
+      "status": "ready"
+    },
+    {
+      "id": "wallet",
+      "display_name": "Wallet specialist",
+      "tool_prefixes": [
+        "get_",
+        "send_",
+        "transfer_",
+        "approve_",
+        "read_contract",
+        "estimate_gas",
+        "write_contract",
+        "search_",
+        "deposit_",
+        "execute_",
+        "request_",
+        "cancel_",
+        "create_",
+        "establish_",
+        "x402_"
+      ],
+      "status": "ready"
+    },
+    {
+      "id": "defi",
+      "display_name": "DeFi specialist",
+      "tool_prefixes": ["defi_"],
+      "status": "ready"
+    }
   ]
 }

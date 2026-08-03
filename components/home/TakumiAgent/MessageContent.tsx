@@ -3,7 +3,11 @@ import { Text, View } from "react-native";
 import type { AgentMessage } from "@/services/agent-messages/types";
 import MarkdownMessage from "./MarkdownMessage";
 import PlainTextMessage from "./PlainTextMessage";
-import { BALANCE_TOOL_NAMES, toolComponents } from "./StructuredUI";
+import {
+  BALANCE_TOOL_NAMES,
+  SETUP_CTA_TOOLS,
+  toolComponents,
+} from "./StructuredUI";
 import { normalizeWalletBalancesOutput } from "./StructuredUI/cards/BalancesCard";
 import { useOriginAgentDisplay } from "./useOriginAgentDisplay";
 
@@ -178,7 +182,18 @@ const MessageContent: React.FC<MessageContentProps> = React.memo(
             via {originDisplayName}
           </Text>
         ) : null}
-        {message.parts.map((part, i) => {
+        {(() => {
+          // Several DeFi cards embed the same "set up your strategy" CTA, so
+          // a turn listing e.g. USDC and USDT opportunities rendered it twice.
+          // Grant it to the first CTA-capable part only.
+          const setupCtaOwner = message.parts.find(
+            (p) => p.type === "tool" && SETUP_CTA_TOOLS.has(p.toolName),
+          );
+          const setupCtaOwnerId =
+            setupCtaOwner && setupCtaOwner.type === "tool"
+              ? setupCtaOwner.toolCallId
+              : undefined;
+          return message.parts.map((part, i) => {
           if (part.type === "text") {
             if (isUser) {
               return <PlainTextMessage key={`text-${i}`} content={part.text} />;
@@ -227,12 +242,14 @@ const MessageContent: React.FC<MessageContentProps> = React.memo(
                 onUserPrompt={livePromptCallback}
                 decision={part.decision}
                 onRequestApproval={liveRequestApproval}
+                showSetupCTA={part.toolCallId === setupCtaOwnerId}
               />
             );
           }
 
           return null;
-        })}
+          });
+        })()}
       </View>
     );
   },

@@ -99,3 +99,16 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   defi_get_config: StrategyConfigCard,
   x402_fetch: X402FetchCard,
 };
+
+/**
+ * Tools whose cards embed the "set up your DeFi strategy" CTA.
+ *
+ * A single turn can render several of them (e.g. one opportunity list per
+ * asset), and the CTA is identical every time. `MessageContent` uses this set
+ * to grant the CTA to the first such card in a message and withhold it from
+ * the rest, so the prompt appears once per turn instead of once per card.
+ */
+export const SETUP_CTA_TOOLS: ReadonlySet<string> = new Set([
+  "defi_list_opportunities",
+  "defi_list_positions",
+]);

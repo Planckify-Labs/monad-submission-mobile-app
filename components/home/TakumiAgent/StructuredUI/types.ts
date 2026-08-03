@@ -31,6 +31,16 @@ export type ToolComponentProps<Input, Output> = {
    * execute or post a result. Undefined in historical mode.
    */
   onRequestApproval?: () => void;
+  /**
+   * Whether this card may render the "set up your DeFi strategy" CTA.
+   *
+   * Several DeFi cards embed the same CTA, so a turn that lists (say)
+   * USDC and USDT opportunities used to render it once per card. The
+   * parent (`MessageContent`) grants it to the FIRST CTA-capable card in
+   * a message and withholds it from the rest, so the prompt appears once.
+   * Defaults to true when a card is rendered outside that parent.
+   */
+  showSetupCTA?: boolean;
 };
 
 export type ToolComponent<Input, Output> = React.ComponentType<
