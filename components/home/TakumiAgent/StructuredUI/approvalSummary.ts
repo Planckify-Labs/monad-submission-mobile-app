@@ -22,6 +22,54 @@ export function truncateAddress(addr: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+/**
+ * Human label for a CAIP-2 chain id, by TABLE LOOKUP.
+ *
+ * `eip155:8453` on an approval sheet tells the user nothing. Unlike the
+ * bridge cards, this surface sees only raw tool ARGS and has no
+ * backend-resolved display name to read, so it keeps a small static map.
+ *
+ * Deliberately a lookup and not a set of namespace comparisons: shared UI
+ * must not branch on the chain family (CLAUDE.md hard rule, enforced by
+ * `pnpm check:chains`). An unknown chain falls back to the CAIP-2 id,
+ * which is honest rather than wrong.
+ */
+const CHAIN_NAMES: Record<string, string> = {
+  "eip155:1": "Ethereum",
+  "eip155:10": "OP Mainnet",
+  "eip155:56": "BNB Chain",
+  "eip155:137": "Polygon",
+  "eip155:8453": "Base",
+  "eip155:42161": "Arbitrum",
+  "eip155:43114": "Avalanche",
+  "eip155:59144": "Linea",
+  "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp": "Solana",
+  "solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1": "Solana Devnet",
+  "sui:mainnet": "Sui",
+  "sui:testnet": "Sui Testnet",
+  "stellar:pubnet": "Stellar",
+  "stellar:testnet": "Stellar Testnet",
+};
+
+function chainName(caip2: string): string {
+  return CHAIN_NAMES[caip2] ?? caip2;
+}
+
+/**
+ * Last path segment of a CAIP-19 is the contract / mint / coin type, not
+ * a symbol, so there is no symbol to recover for a token asset. Native
+ * assets DO carry one structurally, and naming them beats showing a raw
+ * `slip44:60`.
+ */
+function assetSymbolFromCaip19(asset: string | undefined): string | undefined {
+  if (!asset) return undefined;
+  if (asset.includes("/slip44:60")) return "ETH";
+  if (asset.includes("/slip44:501")) return "SOL";
+  if (asset.endsWith("::sui::SUI")) return "SUI";
+  if (asset.includes("/native")) return "XLM";
+  return undefined;
+}
+
 export type ApprovalFacts = {
   /** Leading verb, defaults to "Send". */
   action?: string;
@@ -33,6 +81,11 @@ export type ApprovalFacts = {
   to?: string;
   /** Optional trusted label rendered next to the address, e.g. a name. */
   toLabel?: string;
+  /**
+   * Trailing clause appended verbatim, e.g. "from Base to Solana" for a
+   * bridge. Built from tool args like everything else here, never prose.
+   */
+  suffix?: string;
 };
 
 type ModelProse = {
@@ -56,16 +109,20 @@ export function factsFirstSummary(
   const amount = nonEmptyString(facts.amount);
   const to = nonEmptyString(facts.to);
 
-  if (amount || to) {
+  const suffix = nonEmptyString(facts.suffix);
+
+  if (amount || to || suffix) {
     const action = nonEmptyString(facts.action) ?? "Send";
     const asset = nonEmptyString(facts.asset);
     const parts: string[] = [action];
     if (amount) parts.push(asset ? `${amount} ${asset}` : amount);
+    else if (asset) parts.push(asset);
     if (to) {
       const addr = truncateAddress(to);
       const label = nonEmptyString(facts.toLabel);
       parts.push(label ? `to ${label} (${addr})` : `to ${addr}`);
     }
+    if (suffix) parts.push(suffix);
     return parts.join(" ");
   }
 
@@ -95,6 +152,27 @@ export function approvalSummaryFromToolInput(
 
   const spender = str("spender");
   const to = str("to") ?? spender ?? str("destination") ?? str("recipient");
+
+  // Bridge writes (bridge-capability-spec §8.1). A bridge's identity is
+  // the ROUTE, not a recipient — the destination address is usually the
+  // user's own wallet on another chain, so "Send X to 0xab…cd" reads as a
+  // transfer to a stranger. Build the route clause from the args instead,
+  // and never fall back to the model's `human_summary` for a write that
+  // moves value across chains.
+  const fromChain = str("from_chain");
+  const toChain = str("to_chain");
+  if (fromChain && toChain) {
+    return factsFirstSummary(
+      {
+        action: "Bridge",
+        amount: str("amount_raw"),
+        asset: assetSymbolFromCaip19(str("from_asset")),
+        suffix: `from ${chainName(fromChain)} to ${chainName(toChain)}`,
+      },
+      {},
+      `Bridge from ${chainName(fromChain)} to ${chainName(toChain)}`,
+    );
+  }
 
   const nativeAmount =
     str("amount_xlm") ?? str("amount_sol") ?? str("amount_sui");

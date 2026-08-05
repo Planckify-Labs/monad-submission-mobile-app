@@ -91,6 +91,12 @@ export const EXPECTED_MOBILE_TOOLS: ReadonlyArray<string> = [
   // defi Sui Intent Engine (spec §7.1) — onchain reads/writes, executor: mobile
   "defi_intent_preview",
   "defi_intent_execute",
+  // general-purpose bridge (docs/bridge-capability-spec.md §8.3) — owned by
+  // the DeFi agent via the `bridge_` prefix on its manifest entry
+  "bridge_get_support",
+  "bridge_quote",
+  "bridge_execute",
+  "bridge_status",
   // agent-initiated x402 micropayments (spec Phase 5 §5.5)
   "x402_fetch",
 ];
@@ -157,6 +163,8 @@ export const MOBILE_WRITE_TOOLS: ReadonlySet<string> = new Set<string>([
   "defi_compound",
   // sui intent engine write
   "defi_intent_execute",
+  // bridge write — moves value cross-chain, irreversible mid-flight
+  "bridge_execute",
   // agent-initiated x402 micropayment (spends within a pre-signed allowance)
   "x402_fetch",
 ]);

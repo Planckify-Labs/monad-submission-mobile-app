@@ -62,6 +62,12 @@ import type {
 } from "../types.ts";
 import { SvmWalletNamespaceMismatchError } from "../types.ts";
 import {
+  solanaCaip2For,
+  solanaCheckBridgeDestinationReadiness,
+  solanaSubmitBridgeExecution,
+  solanaToAssetCaip19,
+} from "./bridge.ts";
+import {
   computeSolanaSigningDigest,
   fetchSolanaAccountData,
   resolveSolanaClearSigningDescriptor,
@@ -474,5 +480,13 @@ export function createSolanaWalletKit(): WalletKitAdapter {
       );
     },
     computeSigningDigest: computeSolanaSigningDigest,
+
+    // ── Bridge capability (bridge-capability-spec §5.1, §5.2, §7.5) ──
+    // Solana's destination precondition is an associated token account
+    // plus rent, not gas — see `./bridge.ts`.
+    caip2For: solanaCaip2For,
+    toAssetCaip19: solanaToAssetCaip19,
+    submitBridgeExecution: solanaSubmitBridgeExecution,
+    checkBridgeDestinationReadiness: solanaCheckBridgeDestinationReadiness,
   };
 }

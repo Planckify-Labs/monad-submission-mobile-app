@@ -1,4 +1,6 @@
 import BalancesCard from "./cards/BalancesCard";
+import BridgeProgressCard from "./cards/BridgeProgressCard";
+import BridgeQuoteCard from "./cards/BridgeQuoteCard";
 import IntentPreviewCard from "./cards/IntentPreviewCard";
 import OpportunityListCard from "./cards/OpportunityListCard";
 import PendingTxCard from "./cards/PendingTxCard";
@@ -97,6 +99,12 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   defi_intent_preview: IntentPreviewCard,
   defi_intent_execute: SuiPendingTxCard,
   defi_get_config: StrategyConfigCard,
+  // Bridge (docs/bridge-capability-spec.md §7). The quote card is the
+  // full disclosure surface; the progress card owns the post-submit half
+  // of the UX, which `bridge_execute` and `bridge_status` both feed.
+  bridge_quote: BridgeQuoteCard,
+  bridge_execute: BridgeProgressCard,
+  bridge_status: BridgeProgressCard,
   x402_fetch: X402FetchCard,
 };
 

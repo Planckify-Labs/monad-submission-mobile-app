@@ -36,15 +36,16 @@ import {
 } from "@/services/analytics/identity";
 import { posthog } from "@/services/analytics/posthog";
 import { resolveScreenName } from "@/services/analytics/screenNames";
+import { bootstrapBridgeAdapters } from "@/services/bridgeRoutes/bootstrap";
 import { bootDefi } from "@/services/defi/bootstrap";
 import { bootGasAbstraction } from "@/services/gasAbstraction/boot";
 import { initNotificationHandlers } from "@/services/notifications/handlers";
+import { bootPpobCategorizers } from "@/services/ppob";
 import {
   registerForPushNotifications,
   usePushNotificationHandler,
   usePushRegistrationRetry,
 } from "@/services/push";
-import { bootPpobCategorizers } from "@/services/ppob";
 import { installQRMatrixCache } from "@/services/qrMatrixCache";
 import { bootWalletKits } from "@/services/walletKit/boot";
 import { hasStoredWallets } from "@/services/walletService";
@@ -57,6 +58,10 @@ bootWalletKits();
 bootGasAbstraction();
 // Register DeFi adapters
 bootDefi();
+// Register bridge-route adapters (lifi + cctp). Resolves wallet kits at
+// execute time, not registration time, so ordering vs. bootWalletKits is
+// not load-bearing — but keep it after for consistency with bootDefi.
+bootstrapBridgeAdapters();
 // Register PPOB catalog categorizers (vcGamer today) — pure logic, no
 // registry deps, so ordering vs. the chain boots doesn't matter.
 bootPpobCategorizers();

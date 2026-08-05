@@ -10,17 +10,12 @@
  */
 
 import type { MobileToolExecutor } from "../types";
+import { BRIDGE_EXECUTORS } from "./bridge";
+import { crossChainDeposit } from "./crossChainDeposit";
 import { DEFI_INTENT_EXECUTORS } from "./intentExecutors";
 import { getConfig, listOpportunities, listPositions } from "./reads";
 import { simulateDeposit } from "./simulate";
-import {
-  claim,
-  compound,
-  crossChainDeposit,
-  deposit,
-  rebalance,
-  withdraw,
-} from "./writes";
+import { claim, compound, deposit, rebalance, withdraw } from "./writes";
 
 export const DEFI_EXECUTORS: Record<string, MobileToolExecutor> = {
   defi_list_opportunities: listOpportunities,
@@ -35,4 +30,8 @@ export const DEFI_EXECUTORS: Record<string, MobileToolExecutor> = {
   defi_compound: compound,
   // Sui Intent Engine (spec §6.4) — defi_ prefix → DeFi specialist.
   ...DEFI_INTENT_EXECUTORS,
+  // General-purpose bridge (docs/bridge-capability-spec.md §8.3). The
+  // `bridge_` prefix is declared on the DeFi agent in
+  // `agentManifests.json`, so `composeAgentExecutors` accepts it here.
+  ...BRIDGE_EXECUTORS,
 };

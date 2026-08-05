@@ -4,7 +4,9 @@
     {
       "id": "core",
       "display_name": "Takumi",
-      "tool_prefixes": ["core_"],
+      "tool_prefixes": [
+        "core_"
+      ],
       "status": "ready"
     },
     {
@@ -32,7 +34,10 @@
     {
       "id": "defi",
       "display_name": "DeFi specialist",
-      "tool_prefixes": ["defi_"],
+      "tool_prefixes": [
+        "defi_",
+        "bridge_"
+      ],
       "status": "ready"
     }
   ]

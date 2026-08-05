@@ -73,6 +73,12 @@ import type {
   WalletKitAdapter,
 } from "../types.ts";
 import {
+  evmCaip2For,
+  evmCheckBridgeDestinationReadiness,
+  evmSubmitBridgeExecution,
+  evmToAssetCaip19,
+} from "./bridge.ts";
+import {
   computeEvmSigningDigest,
   resolveEvmClearSigningDescriptor,
 } from "./clearSigning.ts";
@@ -655,5 +661,13 @@ export function createEvmWalletKit(): WalletKitAdapter {
     // are pure/in-process — no network call on the EVM path.
     resolveClearSigningDescriptor: resolveEvmClearSigningDescriptor,
     computeSigningDigest: computeEvmSigningDigest,
+
+    // ── Bridge capability (bridge-capability-spec §5.1, §5.2, §7.5) ──
+    // CAIP ids, provider-payload submission (incl. the ERC-20 allowance
+    // no other namespace has), and the native-gas strand check.
+    caip2For: evmCaip2For,
+    toAssetCaip19: evmToAssetCaip19,
+    submitBridgeExecution: evmSubmitBridgeExecution,
+    checkBridgeDestinationReadiness: evmCheckBridgeDestinationReadiness,
   };
 }

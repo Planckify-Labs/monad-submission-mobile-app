@@ -65,6 +65,12 @@ import type {
   WalletKitAdapter,
 } from "../types.ts";
 import {
+  suiCaip2For,
+  suiCheckBridgeDestinationReadiness,
+  suiSubmitBridgeExecution,
+  suiToAssetCaip19,
+} from "./bridge.ts";
+import {
   computeSuiSigningDigest,
   makeSuiRpcCall,
   resolveSuiClearSigningDescriptor,
@@ -535,5 +541,11 @@ export function createSuiWalletKit(): WalletKitAdapter {
       return resolveSuiClearSigningDescriptor(args, makeSuiRpcCall(rpcUrl));
     },
     computeSigningDigest: computeSuiSigningDigest,
+
+    // ── Bridge capability (bridge-capability-spec §5.1, §5.2, §7.5) ──
+    caip2For: suiCaip2For,
+    toAssetCaip19: suiToAssetCaip19,
+    submitBridgeExecution: suiSubmitBridgeExecution,
+    checkBridgeDestinationReadiness: suiCheckBridgeDestinationReadiness,
   };
 }

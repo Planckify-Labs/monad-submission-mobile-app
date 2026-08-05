@@ -55,6 +55,11 @@ export default defineConfig({
       // Cross-repo registry parity (server TOOL_REGISTRY ⇄ EXPECTED_MOBILE_TOOLS).
       // Runnable now that the expected list lives in an import-free module.
       "services/agent-executors/registryParity.test.ts",
+      // Bridge capability (docs/bridge-capability-spec.md). Pure CAIP
+      // parsing + the adapter-registry seam, and the card formatters
+      // whose per-token decimals handling §6 depends on.
+      "services/bridgeRoutes/caip.test.ts",
+      "components/home/TakumiAgent/StructuredUI/cards/bridgeFormat.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",

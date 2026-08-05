@@ -337,6 +337,104 @@ export interface CheckAssetReceivableResult {
   reason?: string;
 }
 
+// ── Bridge capability arg shapes (docs/bridge-capability-spec.md §5.2) ──
+
+/**
+ * Provider-built bridge transaction, tagged by payload SHAPE rather than
+ * namespace. Mirrors `TBridgeExecutionPayload` on the wire.
+ *
+ * Tagging by shape is what lets `submitBridgeExecution` be one dispatch
+ * point: shared code never asks "which chain is this?", only "which kit
+ * owns this chain?", and the kit decides whether it understands the
+ * payload.
+ */
+export type BridgeExecutionPayload =
+  | {
+      kind: "evm_transaction";
+      chain: string;
+      to: string;
+      data: string;
+      value: string;
+      gasPrice?: string;
+      gasLimit?: string;
+      /** ERC-20 allowance the kit must ensure before submitting. */
+      approval?: { token: string; spender: string; amountRaw: string };
+    }
+  | {
+      kind: "serialized_transaction";
+      chain: string;
+      encoding: "base64" | "hex";
+      payload: string;
+    }
+  | {
+      kind: "soroban_invoke";
+      chain: string;
+      contractId: string;
+      method: string;
+      argsXdrBase64: string[];
+    };
+
+/**
+ * Thrown by a kit handed a payload kind it does not implement. Callers
+ * catch by `name` and map to a curated code — never render the message.
+ */
+export class BridgePayloadUnsupportedError extends Error {
+  readonly name = "BridgePayloadUnsupportedError";
+  readonly payloadKind: string;
+  constructor(payloadKind: string) {
+    super(`unsupported bridge payload kind: ${payloadKind}`);
+    this.payloadKind = payloadKind;
+  }
+}
+
+export interface SubmitBridgeExecutionArgs {
+  /**
+   * The wallet bound to this bridge intent.
+   *
+   * NEVER a home-screen `activeWallet` fallback: the wallet the user is
+   * bridging from and the wallet shown on the home screen can differ, and
+   * mixing them is the exact bug class fixed in `4828e91`
+   * (`feedback_dapp_bridge_isolation`).
+   */
+  wallet: TWallet;
+  chain: ChainConfig;
+  payload: BridgeExecutionPayload;
+}
+
+export interface BridgeDestinationReadinessArgs {
+  chain: ChainConfig;
+  /** Destination address being checked, in this chain's own encoding. */
+  address: string;
+  /**
+   * Token identifier in the shape `sendTokenTransfer` takes (Stellar's
+   * compound `CODE:ISSUER`, an EVM contract, an SPL mint, a Sui coin
+   * type). Null / omitted means the chain's native asset.
+   */
+  contractAddress?: string | null;
+  /** CAIP-19 of the asset, for building a remedy the card can act on. */
+  assetCaip19?: string;
+}
+
+/**
+ * One unmet destination precondition, with its own remedy so the card
+ * renders every namespace's blockers through the same component (§7.5).
+ */
+export interface BridgeReadinessBlocker {
+  code:
+    | "no_destination_gas"
+    | "missing_trustline"
+    | "account_not_funded"
+    | "missing_token_account";
+  /** Hand-written, ready to render. Never raw error text. */
+  message: string;
+  severity: "warning" | "blocking";
+  remedy:
+    | { kind: "gas_top_up"; suggestedUsd: number }
+    | { kind: "establish_trustline"; asset: string }
+    | { kind: "fund_account"; minimumRaw: string; symbol: string }
+    | { kind: "none" };
+}
+
 /** Arguments for `WalletKitAdapter.establishTrustline` (spec §4.1/§8.3). */
 export interface EstablishTrustlineArgs {
   wallet: TWallet;
@@ -1079,6 +1177,94 @@ export interface WalletKitAdapter {
    * `undefined`. Consumers presence-check. Returns the base58 digest.
    */
   signAndExecuteSuiPtb?(args: SignAndExecuteSuiPtbArgs): Promise<string>;
+
+  // ── Bridge capability (docs/bridge-capability-spec.md §5.1, §5.2, §7.5) ──
+
+  /**
+   * This chain's CAIP-2 id (`eip155:8453`, `sui:mainnet`,
+   * `stellar:pubnet`, `solana:5eykt4Us…`).
+   *
+   * The bridge surface speaks CAIP-2 end to end so a Solana mint or a Sui
+   * coin type is expressible at all (§5.1) — the old EVM-shaped
+   * `^0x…{40}$` DTO made them literally inexpressible (§4.1). Building
+   * the id needs per-namespace knowledge (Stellar's CAIP reference is
+   * `pubnet`, not `mainnet`; Solana's is a truncated genesis hash), so it
+   * docks here rather than living in a shared switch.
+   */
+  caip2For?(chain: ChainConfig): string | null;
+
+  /**
+   * CAIP-19 asset id for `contractAddress` on `chain`, or for the chain's
+   * NATIVE asset when `contractAddress` is null/undefined.
+   *
+   * Each namespace has its own asset namespace (`erc20`, `token`, `coin`,
+   * `credit_alphanum4`) and its own native encoding, which is exactly the
+   * knowledge that must not leak into shared code.
+   */
+  toAssetCaip19?(
+    chain: ChainConfig,
+    contractAddress?: string | null,
+  ): string | null;
+
+  /**
+   * The reverse of {@link toAssetCaip19}: CAIP-19 back to the chain-native
+   * token identifier that `sendTokenTransfer` / `hasTrustline` take, or
+   * `null` for the chain's native asset.
+   *
+   * Only namespaces whose CAIP-19 encoding DIFFERS from their internal one
+   * need this. EVM, Solana, and Sui carry the contract / mint / coin type
+   * verbatim in the asset reference, so they omit it and the generic
+   * fallback is correct. Stellar does not: CAIP-19's `asset_reference`
+   * grammar excludes the colon, so `CODE:ISSUER` is encoded as
+   * `CODE-ISSUER` and has to be decoded back here.
+   */
+  fromAssetCaip19?(asset: string): string | null;
+
+  /**
+   * Sign and submit a provider-built bridge transaction, returning the
+   * source-chain transaction hash / signature / digest.
+   *
+   * The payload is tagged by SHAPE (`evm_transaction`,
+   * `serialized_transaction`, `soroban_invoke`), never by namespace, so
+   * the shared executor dispatches through this one method and no code
+   * under `components/`, `hooks/`, or `app/` learns a namespace string
+   * (CLAUDE.md hard rule, enforced by `pnpm check:chains`).
+   *
+   * A kit implements only the payload kinds it understands and throws
+   * `BridgePayloadUnsupportedError` for the rest. ERC-20 allowance
+   * handling lives inside the EVM kit because it is the only namespace
+   * that has the concept.
+   */
+  submitBridgeExecution?(args: SubmitBridgeExecutionArgs): Promise<string>;
+
+  /**
+   * Can `address` actually RECEIVE, and then MOVE, `asset` on this chain?
+   *
+   * "Does the destination need an approve?" was the wrong framing (§10.4).
+   * The general problem is per-namespace preconditions on the destination,
+   * of which gas is only the EVM case:
+   *
+   *   EVM      → native gas                        → gas top up
+   *   Solana   → associated token account + rent   → create the account
+   *   Sui      → native gas                        → gas top up
+   *   Stellar  → USDC trustline + XLM base reserve → establish trustline
+   *
+   * Stellar is a different CLASS of problem: a trustline is a hard opt-in
+   * the recipient must have performed, and no amount of sender-side
+   * signing can complete a transfer to an account that hasn't opted in.
+   *
+   * Returns a list of blockers, each carrying its own remedy, so the card
+   * renders them uniformly (§7.5). Adding a namespace means implementing
+   * this one method, NOT editing the card. Bridging a full balance to a
+   * chain where the user cannot receive or cannot move funds STRANDS
+   * them, so this runs at quote time.
+   *
+   * All `message` copy is hand-written and ready to render — never raw
+   * error text (CLAUDE.md user-facing errors).
+   */
+  checkBridgeDestinationReadiness?(
+    args: BridgeDestinationReadinessArgs,
+  ): Promise<BridgeReadinessBlocker[]>;
 
   /**
    * Pre-flight check: can `to` receive the non-native asset identified

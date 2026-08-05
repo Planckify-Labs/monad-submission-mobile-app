@@ -79,6 +79,13 @@ import type {
   WalletKitAdapter,
 } from "../types";
 import {
+  stellarCaip2For,
+  stellarCheckBridgeDestinationReadiness,
+  stellarFromAssetCaip19,
+  stellarSubmitBridgeExecution,
+  stellarToAssetCaip19,
+} from "./bridge";
+import {
   computeStellarSigningDigest,
   fetchSorobanContractWasm,
   resolveStellarClearSigningDescriptor,
@@ -588,5 +595,15 @@ export function createStellarWalletKit(): WalletKitAdapter {
       );
     },
     computeSigningDigest: computeStellarSigningDigest,
+
+    // ── Bridge capability (bridge-capability-spec §5.1, §5.2, §7.5) ──
+    // Stellar is the reason destination readiness is a per-namespace
+    // capability rather than a gas check: a trustline is a hard opt-in
+    // the recipient must have performed. See `./bridge.ts`.
+    caip2For: stellarCaip2For,
+    toAssetCaip19: stellarToAssetCaip19,
+    fromAssetCaip19: stellarFromAssetCaip19,
+    submitBridgeExecution: stellarSubmitBridgeExecution,
+    checkBridgeDestinationReadiness: stellarCheckBridgeDestinationReadiness,
   };
 }
