@@ -27,6 +27,11 @@ export default defineConfig({
       "@": path.resolve(__dirname, "."),
     },
   },
+  // Metro injects `__DEV__`; under vitest it is simply absent, so any
+  // module using the bare (unguarded) form throws a ReferenceError on
+  // its first dev-log line. Define it as `false` so production-path code
+  // runs verbatim and dev logging stays out of test output.
+  define: { __DEV__: "false" },
   test: {
     include: [
       "services/chains/addressCompare.test.ts",
@@ -50,6 +55,7 @@ export default defineConfig({
       "services/swap/sui/appendIntentReceipt.test.ts",
       "services/swap/sui/intentReceiptPackageId.test.ts",
       "services/agent-executors/defi/intentExecutors.test.ts",
+      "services/agent-executors/defi/opportunityScope.test.ts",
       "services/agent-executors/defi/intentSchemaParity.test.ts",
       "services/agent-executors/parseInput.test.ts",
       // Cross-repo registry parity (server TOOL_REGISTRY ⇄ EXPECTED_MOBILE_TOOLS).
@@ -60,6 +66,8 @@ export default defineConfig({
       // whose per-token decimals handling §6 depends on.
       "services/bridgeRoutes/caip.test.ts",
       "components/home/TakumiAgent/StructuredUI/cards/bridgeFormat.test.ts",
+      // Once-per-turn consolidation of repeated list-tool cards.
+      "components/home/TakumiAgent/StructuredUI/mergeToolParts.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",

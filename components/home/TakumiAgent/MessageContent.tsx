@@ -9,6 +9,7 @@ import {
   toolComponents,
 } from "./StructuredUI";
 import { normalizeWalletBalancesOutput } from "./StructuredUI/cards/BalancesCard";
+import { consolidateToolParts } from "./StructuredUI/mergeToolParts";
 import { useOriginAgentDisplay } from "./useOriginAgentDisplay";
 
 interface MessageContentProps {
@@ -173,6 +174,10 @@ const MessageContent: React.FC<MessageContentProps> = React.memo(
     const isUser = message.role === "user";
     const suppressedBalanceParts = computeSuppressedToolParts(message);
     const suppressedRetryParts = computeSuppressedRetryParts(message);
+    // Generic once-per-turn rule for list tools: when the model fans one
+    // goal into several calls of the same tool (e.g. an opportunity list
+    // per chain), render ONE card carrying the union of the results.
+    const consolidated = consolidateToolParts(message.parts);
     const originDisplayName = useOriginAgentDisplay(message.originAgentId);
 
     return (
@@ -185,69 +190,85 @@ const MessageContent: React.FC<MessageContentProps> = React.memo(
         {(() => {
           // Several DeFi cards embed the same "set up your strategy" CTA, so
           // a turn listing e.g. USDC and USDT opportunities rendered it twice.
-          // Grant it to the first CTA-capable part only.
+          // Grant it to the first CTA-capable part that actually renders —
+          // a suppressed part (consolidated duplicate, superseded retry)
+          // would silently swallow the CTA.
           const setupCtaOwner = message.parts.find(
-            (p) => p.type === "tool" && SETUP_CTA_TOOLS.has(p.toolName),
+            (p) =>
+              p.type === "tool" &&
+              SETUP_CTA_TOOLS.has(p.toolName) &&
+              !consolidated.suppressed.has(p.toolCallId) &&
+              !suppressedBalanceParts.has(p.toolCallId) &&
+              !suppressedRetryParts.has(p.toolCallId),
           );
           const setupCtaOwnerId =
             setupCtaOwner && setupCtaOwner.type === "tool"
               ? setupCtaOwner.toolCallId
               : undefined;
           return message.parts.map((part, i) => {
-          if (part.type === "text") {
-            if (isUser) {
-              return <PlainTextMessage key={`text-${i}`} content={part.text} />;
+            if (part.type === "text") {
+              if (isUser) {
+                return (
+                  <PlainTextMessage key={`text-${i}`} content={part.text} />
+                );
+              }
+              // Space consecutive assistant text blocks so two segments never
+              // glue into a run-on ("…have it!I need…"). The first block sits
+              // flush; later blocks get a paragraph gap above.
+              return (
+                <View key={`text-${i}`} className={i > 0 ? "mt-2" : undefined}>
+                  <MarkdownMessage content={part.text} />
+                </View>
+              );
             }
-            // Space consecutive assistant text blocks so two segments never
-            // glue into a run-on ("…have it!I need…"). The first block sits
-            // flush; later blocks get a paragraph gap above.
-            return (
-              <View key={`text-${i}`} className={i > 0 ? "mt-2" : undefined}>
-                <MarkdownMessage content={part.text} />
-              </View>
-            );
-          }
 
-          if (part.type === "tool") {
-            const Component = toolComponents[part.toolName];
-            if (!Component) return null;
-            if (suppressedBalanceParts.has(part.toolCallId)) return null;
-            if (suppressedRetryParts.has(part.toolCallId)) return null;
+            if (part.type === "tool") {
+              const Component = toolComponents[part.toolName];
+              if (!Component) return null;
+              if (suppressedBalanceParts.has(part.toolCallId)) return null;
+              if (suppressedRetryParts.has(part.toolCallId)) return null;
+              if (consolidated.suppressed.has(part.toolCallId)) return null;
 
-            const liveCallback =
-              mode === "live" && addToolResult
-                ? (output: unknown) => addToolResult(part.toolCallId, output)
-                : undefined;
-            // `onUserPrompt` only appends a user message, which is safe
-            // from any card — including a historical one (e.g. depositing
-            // from an earlier OpportunityListCard after the turn settled).
-            // Unlike addToolResult/onRequestApproval (write/approval gates
-            // kept live-only above), it never acts on stale state.
-            // IntentPreviewCard independently guards on `mode !==
-            // "historical"`, so it stays inert when frozen.
-            const livePromptCallback = onUserPrompt;
-            const liveRequestApproval =
-              mode === "live" && onRequestApproval
-                ? () => onRequestApproval(part.toolCallId)
-                : undefined;
-            return (
-              <Component
-                key={part.toolCallId}
-                state={part.state}
-                input={part.input}
-                output={part.output}
-                error={part.error}
-                mode={mode}
-                addToolResult={liveCallback}
-                onUserPrompt={livePromptCallback}
-                decision={part.decision}
-                onRequestApproval={liveRequestApproval}
-                showSetupCTA={part.toolCallId === setupCtaOwnerId}
-              />
-            );
-          }
+              // The surviving card of a consolidated group renders the union
+              // of its siblings' rows; every other part renders its own.
+              const renderedOutput = consolidated.outputs.has(part.toolCallId)
+                ? consolidated.outputs.get(part.toolCallId)
+                : part.output;
 
-          return null;
+              const liveCallback =
+                mode === "live" && addToolResult
+                  ? (output: unknown) => addToolResult(part.toolCallId, output)
+                  : undefined;
+              // `onUserPrompt` only appends a user message, which is safe
+              // from any card — including a historical one (e.g. depositing
+              // from an earlier OpportunityListCard after the turn settled).
+              // Unlike addToolResult/onRequestApproval (write/approval gates
+              // kept live-only above), it never acts on stale state.
+              // IntentPreviewCard independently guards on `mode !==
+              // "historical"`, so it stays inert when frozen.
+              const livePromptCallback = onUserPrompt;
+              const liveRequestApproval =
+                mode === "live" && onRequestApproval
+                  ? () => onRequestApproval(part.toolCallId)
+                  : undefined;
+              return (
+                <Component
+                  key={part.toolCallId}
+                  state={part.state}
+                  input={part.input}
+                  output={renderedOutput}
+                  error={part.error}
+                  mode={mode}
+                  addToolResult={liveCallback}
+                  onUserPrompt={livePromptCallback}
+                  decision={part.decision}
+                  onRequestApproval={liveRequestApproval}
+                  showSetupCTA={part.toolCallId === setupCtaOwnerId}
+                />
+              );
+            }
+
+            return null;
           });
         })()}
       </View>

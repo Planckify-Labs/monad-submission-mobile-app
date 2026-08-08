@@ -100,28 +100,106 @@ function shapePosition(p: TStrategyPosition) {
 }
 
 /**
+ * Explicit "every chain" escape hatch on the `namespace` filter. Without
+ * it the model has no way to ask for the cross-chain catalog once the
+ * default below narrows to the active chain.
+ */
+const ALL_CHAINS = "all";
+
+/**
  * `defi_list_opportunities` — scored, tier-filtered yield catalog.
  *
  * Backend returns the curated list filtered by tier when the user has a
  * `UserStrategy` row, or unfiltered when they don't. Transient params
  * (tier/asset_symbol/chain_id/liquidity_profile/amount_usd) let
  * first-touch users browse without onboarding (§14.6).
+ *
+ * Chain scope belongs to the DEVICE, not the model. Every other wallet
+ * surface (balances, send, token list) shows the active chain only, and
+ * this list follows the same rule: a wallet on Stellar must not be handed
+ * Sui and Solana pools it cannot deposit into.
+ *
+ * "Active chain" means the exact chain, not its family. On Base that is
+ * Base, NOT every EVM chain — a wallet on Base holds Base funds, and an
+ * Ethereum or Arbitrum pool needs a bridge just like a Sui one does. So
+ * the scope is `namespace` PLUS `chain_id` whenever the active chain has
+ * a numeric id (`context.activeChainId`, EVM-only by construction, which
+ * keeps this free of namespace branching). Non-EVM chains have no numeric
+ * id and their rows are `chain_id` 0, so namespace alone pins them.
+ *
+ * Two deliberate exits exist, and nothing else:
+ *   - `namespace: "all"` — the user explicitly asked to see every chain.
+ *   - an explicit `chain_id` — a specific chain the user named.
+ * Anything else, INCLUDING a bare `namespace` the model chose on its own,
+ * resolves to the active namespace. That last part is the load-bearing
+ * bit: the model reliably probes other chains ("let me check Sui too"),
+ * and honoring those probes is exactly what produced a Sui-only list on a
+ * Stellar wallet. Same posture as `walletKit`'s `namespaceScope.ts` —
+ * device-side determinism, prompt wording as belt-and-suspenders.
+ *
+ * There is deliberately NO auto-widening when the active chain has no
+ * venues. Silently swapping in other chains' rows is what made the list
+ * look like it ignored the wallet. An empty result stays empty and the
+ * card offers a one-tap "see every chain" instead, so widening is always
+ * the user's choice.
  */
-export const listOpportunities: MobileToolExecutor = (input, _context) =>
+export const listOpportunities: MobileToolExecutor = (input, context) =>
   safeExecute(async () => {
     const tier = optionalString(input, "tier");
     const assetSymbol = optionalString(input, "asset_symbol");
     const chainId = optionalInt(input, "chain_id");
-    const namespace = optionalString(input, "namespace");
+    const requestedNamespace = optionalString(input, "namespace");
     const liquidityProfile = optionalString(input, "liquidity_profile");
     const amountUsd = optionalNumber(input, "amount_usd");
+
+    const activeNamespace = context.wallet.namespace;
+    const wantsEveryChain = requestedNamespace === ALL_CHAINS;
+    // An explicit chain_id IS the chain scope; don't stack a namespace on it.
+    const wantsOneChainId = chainId !== undefined;
+    const scopedToActive = !wantsEveryChain && !wantsOneChainId;
+    const namespace = scopedToActive ? activeNamespace : undefined;
+    // Present only for chains with a numeric id (EVM). Pins Base to Base
+    // instead of showing every EVM chain's pools.
+    const activeChainId =
+      scopedToActive && context.activeChainId && context.activeChainId > 0
+        ? context.activeChainId
+        : undefined;
+    const effectiveChainId = chainId ?? activeChainId;
+    // Name the exact chain for the card's empty state ("No yield options on
+    // Base"). The namespace family label ("EVM") would be wrong now that the
+    // scope is per chain, so prefer the blockchains row and fall back to the
+    // family only when the active chain has no numeric id (non-EVM).
+    const activeChainName =
+      activeChainId !== undefined
+        ? (context.blockchains.find((b) => b.chainId === activeChainId)?.name ??
+          null)
+        : null;
+    const chainScope = wantsEveryChain
+      ? "all_chains"
+      : wantsOneChainId
+        ? "requested_chain"
+        : "active_chain";
 
     if (__DEV__) {
       console.warn("[defi/listOpportunities] ENTER", {
         tier,
         assetSymbol,
         chainId,
+        requestedNamespace,
+        activeNamespace,
         namespace,
+        activeChainId,
+        effectiveChainId,
+        chainScope,
+        // Loud on purpose: a namespace the model picked itself is ignored
+        // in favour of the active chain, and that should be visible when
+        // debugging "why am I not seeing chain X".
+        ignoredModelNamespace:
+          requestedNamespace !== undefined &&
+          !wantsEveryChain &&
+          requestedNamespace !== activeNamespace
+            ? requestedNamespace
+            : undefined,
         liquidityProfile,
         amountUsd,
       });
@@ -131,15 +209,19 @@ export const listOpportunities: MobileToolExecutor = (input, _context) =>
       const raw = await strategiesApi.getOpportunities({
         ...(tier ? { tier } : {}),
         ...(assetSymbol ? { asset_symbol: assetSymbol } : {}),
-        ...(chainId !== undefined ? { chain_id: chainId } : {}),
+        ...(effectiveChainId !== undefined
+          ? { chain_id: effectiveChainId }
+          : {}),
         ...(namespace ? { namespace } : {}),
         ...(liquidityProfile ? { liquidity_profile: liquidityProfile } : {}),
         ...(amountUsd !== undefined ? { amount_usd: amountUsd } : {}),
       });
       const opportunities = (raw ?? []).map(shapeOpportunity);
+
       if (__DEV__) {
         console.warn("[defi/listOpportunities] OK", {
           count: opportunities.length,
+          chainScope,
           slugs: opportunities.map((o) => o.protocol_slug),
         });
       }
@@ -148,6 +230,10 @@ export const listOpportunities: MobileToolExecutor = (input, _context) =>
         data: sanitizeApiResponse({
           opportunities,
           count: opportunities.length,
+          chain_scope: chainScope,
+          active_namespace: activeNamespace,
+          active_chain_id: activeChainId ?? null,
+          active_chain_name: activeChainName,
         }),
       };
     } catch (err) {

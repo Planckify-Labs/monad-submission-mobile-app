@@ -109,6 +109,14 @@ type OpportunityOutput = {
   data?: {
     opportunities?: OpportunityRow[];
     count?: number;
+    /** Which chain scope produced these rows (see the read executor). */
+    chain_scope?: string;
+    /** Namespace of the wallet's active chain at call time. */
+    active_namespace?: string;
+    /** Numeric id of the active chain, or null for non-EVM. */
+    active_chain_id?: number | null;
+    /** Display name of the active chain (e.g. "Base"), when resolvable. */
+    active_chain_name?: string | null;
   };
 };
 
@@ -735,6 +743,34 @@ const OpportunityListCard: React.FC<
       ? `Yield on your ${headerAsset}`
       : "Yield opportunities";
 
+  // The list is scoped to the wallet's active chain unless the user asked
+  // to leave it. When rows DO sit on other chains, say so plainly: they
+  // need a chain switch or a bridge before any of them is one tap away.
+  const activeNamespace = output?.data?.active_namespace;
+  const activeChainId = output?.data?.active_chain_id ?? null;
+  // Prefer the exact chain ("Base"); fall back to the family ("Sui") only
+  // for chains with no numeric id.
+  const activeChainLabel =
+    output?.data?.active_chain_name ??
+    (activeNamespace ? getChainFamilyLabel(activeNamespace) : null);
+  const isActiveChainScope = output?.data?.chain_scope === "active_chain";
+  // Off-chain means a different chain, not just a different family: on
+  // Base, an Arbitrum pool needs a bridge exactly like a Sui one.
+  const offActiveChain =
+    !!activeNamespace &&
+    allPools.length > 0 &&
+    allPools.every(
+      (p) =>
+        (p.namespace && p.namespace !== activeNamespace) ||
+        (activeChainId !== null &&
+          p.chain_id !== undefined &&
+          Number(p.chain_id) !== activeChainId),
+    );
+  const scopeNote =
+    offActiveChain && activeChainLabel
+      ? `Not on your active ${activeChainLabel} chain. You would need to switch chain or bridge first.`
+      : null;
+
   if (state === "input-streaming" || state === "input-available" || !output) {
     return (
       <View className="my-1.5 rounded-2xl border border-light-matte-black/10 bg-white px-3.5 py-3">
@@ -809,14 +845,22 @@ const OpportunityListCard: React.FC<
             {header}
           </Text>
         </View>
+        {/* The list never leaves the active chain on its own, so an empty
+            result usually means "nothing on THIS chain" rather than
+            "nothing anywhere". Name the chain, then offer the widening as
+            a tap instead of doing it silently. */}
         <Text className="text-sm text-light-matte-black/80 mt-1.5">
-          No matches for these filters right now.
+          {isActiveChainScope && activeChainLabel
+            ? `No yield options on ${activeChainLabel} right now.`
+            : "No matches for these filters right now."}
         </Text>
         {onUserPrompt ? (
           <TouchableOpacity
             onPress={() =>
               onUserPrompt(
-                "Show me yield options across all risk levels and chains, even smaller pools.",
+                isActiveChainScope
+                  ? "Show me yield options on every chain, not just my active one."
+                  : "Show me yield options across all risk levels and chains, even smaller pools.",
               )
             }
             activeOpacity={0.85}
@@ -824,7 +868,9 @@ const OpportunityListCard: React.FC<
           >
             <Search size={14} color={BRAND_RED} />
             <Text className="text-xs font-semibold text-light-primary-red">
-              See every yield option
+              {isActiveChainScope
+                ? "See options on other chains"
+                : "See every yield option"}
             </Text>
           </TouchableOpacity>
         ) : null}
@@ -915,6 +961,12 @@ const OpportunityListCard: React.FC<
           </Text>
         </View>
       </View>
+
+      {scopeNote ? (
+        <Text className="px-3.5 pb-2 text-[11px] text-gray-500">
+          {scopeNote}
+        </Text>
+      ) : null}
 
       <View className="gap-1.5-">
         {shownGroups.map((group, idx) => (
