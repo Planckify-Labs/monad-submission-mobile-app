@@ -28,7 +28,13 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react-native";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   Alert,
   Pressable,
@@ -68,14 +74,20 @@ import {
   listRenderableGrants,
   partitionGrants,
 } from "@/services/agentPermissionsHelpers";
+import type { Namespace } from "@/services/chains/types";
+import { confirmedCounterpartyStore } from "@/services/confirmedCounterpartyStore";
 import {
   type DelegationMeta,
   type GrantLifetime,
   getPermissionGrantStore,
   type PermissionGrant,
 } from "@/services/permissionGrantStore";
-import { formatChainLabel } from "@/services/walletKit/chainInfo";
+import {
+  chainBadgeLabel,
+  formatChainLabel,
+} from "@/services/walletKit/chainInfo";
 import type { DelegationStruct } from "@/services/walletKit/types";
+import { truncateAddress } from "@/utils/walletUtils";
 
 // --- Mode metadata ---------------------------------------------------------
 
@@ -192,6 +204,47 @@ export default function AgentPermissionsScreen() {
 
   const selectedWallet = wallets[selectedWalletIndex] ?? activeWallet;
   const address = (selectedWallet?.address ?? "") as `0x${string}`;
+
+  // Destinations this wallet has confirmed (deny-layer §4.0 extension).
+  // Re-read on every store mutation so a confirmation installed by a live
+  // approval sheet shows up here without a remount, mirroring how the
+  // grant list above stays in sync.
+  useSyncExternalStore(
+    confirmedCounterpartyStore.subscribe,
+    confirmedCounterpartyStore.getVersion,
+  );
+  const knownDestinations = address
+    ? confirmedCounterpartyStore.list(address)
+    : [];
+
+  /**
+   * Forgetting a destination does not undo anything already sent — it
+   * only means the agent must ask again next time, so the copy promises
+   * exactly that and nothing more.
+   */
+  const handleForgetDestination = useCallback(
+    (entry: { address: string; namespace: Namespace }) => {
+      Alert.alert(
+        "Forget this destination?",
+        "The agent will ask you to confirm the next time it sends here. Anything already sent is not affected.",
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Forget",
+            style: "destructive",
+            onPress: () => {
+              confirmedCounterpartyStore.revoke(
+                address,
+                entry.namespace,
+                entry.address,
+              );
+            },
+          },
+        ],
+      );
+    },
+    [address],
+  );
 
   // The SHARED per-wallet grant store (spec §6.7 P0). Settings, the live
   // agent session, and the approval flow all read/write this same instance
@@ -1171,6 +1224,47 @@ export default function AgentPermissionsScreen() {
                 </Text>
               </View>
             )}
+          </View>
+
+          {/* Known destinations (deny-layer §4.0 extension) */}
+          <View className="mx-4 mb-4">
+            <Text className="text-light-matte-black font-bold mb-1">
+              Known destinations
+            </Text>
+            <Text className="text-light-matte-black/60 text-xs mb-3 leading-4">
+              {knownDestinations.length > 0
+                ? "Places a transfer has already completed. The agent may send here again without asking. Anywhere else, it asks first, whatever the mode above says, including your other wallets."
+                : "Empty. The agent asks you to confirm the first time it sends anywhere, whatever the mode above says, and that includes your own wallets on other chains. Once a transfer completes, the address lands here and later sends there go through without asking."}
+            </Text>
+            {knownDestinations.map((entry) => (
+              <View
+                key={`${entry.namespace}:${entry.address}`}
+                className="bg-light rounded-2xl px-4 py-3 mb-2 flex-row items-center"
+              >
+                <View className="flex-1 pr-2">
+                  <Text className="text-light-matte-black font-semibold text-sm">
+                    {truncateAddress({
+                      address: entry.address,
+                      preset: "medium",
+                    })}
+                  </Text>
+                  <Text className="text-light-matte-black/60 text-xs mt-0.5">
+                    {chainBadgeLabel(entry.namespace)}
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => handleForgetDestination(entry)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Forget ${entry.address}`}
+                  hitSlop={8}
+                  className="px-3 py-1.5 rounded-xl border border-light-primary-red/30"
+                >
+                  <Text className="text-light-primary-red text-xs font-bold">
+                    Forget
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ))}
           </View>
 
           {/* Revoke all */}

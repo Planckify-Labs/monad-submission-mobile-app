@@ -32,6 +32,7 @@ import {
   specialWarning,
 } from "@/components/agent/ApprovalSheet";
 import { approvalSummaryFromToolInput } from "@/components/home/TakumiAgent/StructuredUI/approvalSummary";
+import { resolveAssetMeta } from "@/components/home/TakumiAgent/StructuredUI/resolveAssetMeta";
 import type {
   ConversationCache,
   ConversationListCache,
@@ -234,7 +235,7 @@ export default function AgentMode() {
     completeOnboarding,
   } = useAgentOnboarding();
 
-  const { activeWallet, activeChain } = useWallet();
+  const { activeWallet, activeChain, wallets } = useWallet();
   const { data: blockchains = [] } = useBlockchainsWithStorage({
     isActive: true,
   });
@@ -386,9 +387,10 @@ export default function AgentMode() {
       wallet: activeWallet,
       account: evmAccount,
       blockchains,
+      wallets,
       activeChainId,
     };
-  }, [activeWallet, evmAccount, blockchains, activeChainId]);
+  }, [activeWallet, evmAccount, blockchains, wallets, activeChainId]);
 
   // Points / redemption auth hint for `wallet_context.points_authenticated`
   // (protocol v1.1 §13). Read locally from secure storage on every
@@ -1666,6 +1668,16 @@ export default function AgentMode() {
             summary={approvalSummaryFromToolInput(
               approvalState.payload.input,
               approvalState.payload.meta.human_summary,
+              undefined,
+              // Amounts in the args are smallest units; the catalogue
+              // supplies the decimals so the sheet states a real number
+              // rather than "5000000".
+              resolveAssetMeta(
+                blockchains,
+                typeof approvalState.payload.input.from_asset === "string"
+                  ? approvalState.payload.input.from_asset
+                  : undefined,
+              ),
             )}
             warning={specialWarning(approvalState.payload.name)}
             grantOptions={approvalGrantOptions}

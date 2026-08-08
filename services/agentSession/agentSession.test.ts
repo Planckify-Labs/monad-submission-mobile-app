@@ -19,6 +19,8 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 
+import { confirmedCounterpartyStore } from "../confirmedCounterpartyStore.ts";
+
 import {
   type GrantStorageAdapter,
   PermissionGrantStore,
@@ -171,6 +173,9 @@ function makeToolPending(
 beforeEach(() => {
   process.env.EXPO_PUBLIC_AI_API_URL = "https://agent.test.local";
   process.env.EXPO_PUBLIC_SECRET_AI_KEY = "test-key";
+  // Confirmations persist across calls by design, so tests must start
+  // from "nothing is confirmed" or one case leaks into the next.
+  confirmedCounterpartyStore.__resetForTests(WALLET_ADDRESS);
 });
 
 // --- Tests ------------------------------------------------------------------
@@ -416,6 +421,13 @@ describe("agentSession — dispatcher", () => {
       wallet_address: WALLET_ADDRESS,
       granted_at: Date.now(),
     });
+    // The destination must already be confirmed, or the known-destination
+    // envelope correctly escalates this to `ask` and there is no run-down
+    // to assert on. Isolating the run-down is the point of this test.
+    confirmedCounterpartyStore.confirm(WALLET_ADDRESS, {
+      address: WALLET_ADDRESS,
+      namespace: "eip155",
+    });
     const session = makeSession(wallet);
     let previewShown = 0;
     session.ui.showPreviewCard = () => {
@@ -431,6 +443,153 @@ describe("agentSession — dispatcher", () => {
       session.pending_approvals.size,
       1,
       "pending until the veto window resolves",
+    );
+  });
+
+  /**
+   * Known-destination envelope, end to end through the dispatcher.
+   *
+   * A grant says the agent may act unattended; it never said the user
+   * accepts a destination they have not seen. Full auto + a brand-new
+   * address must therefore land on the two-step ask flow, not the 6 s
+   * run-down that executes on silence.
+   */
+  it("full-auto write to an UNCONFIRMED destination asks instead of running down", async () => {
+    const captured = installFetchStub();
+    const wallet = makeHotWallet();
+    wallet.grantStore.add({
+      scope: { kind: "global" },
+      lifetime: { type: "permanent" },
+      wallet_address: WALLET_ADDRESS,
+      granted_at: Date.now(),
+    });
+    const session = makeSession(wallet);
+    let previewShown = 0;
+    let proposalShown = 0;
+    session.ui.showPreviewCard = () => {
+      previewShown += 1;
+    };
+    session.ui.showProposalCard = () => {
+      proposalShown += 1;
+    };
+
+    await handleToolPending(makeToolPending("tool-unknown-dest"), session);
+
+    assert.equal(previewShown, 0, "no auto-executing run-down");
+    assert.equal(proposalShown, 1, "escalated to the two-step ask flow");
+    assert.equal(captured.length, 0, "nothing executed");
+  });
+
+  /**
+   * Being one of the user's own wallets is deliberately NOT enough. One
+   * seed derives an address on every namespace, so "own wallet" includes
+   * a dozen the user has never chosen — auto-trusting those is the same
+   * silent pick the envelope exists to catch. Only a destination value
+   * has actually reached before counts.
+   */
+  it("still escalates for an own wallet that has never been established", async () => {
+    const captured = installFetchStub();
+    const wallet = makeHotWallet();
+    wallet.grantStore.add({
+      scope: { kind: "global" },
+      lifetime: { type: "permanent" },
+      wallet_address: WALLET_ADDRESS,
+      granted_at: Date.now(),
+    });
+    const session = makeSession(wallet);
+    session.executorContext = {
+      wallets: [{ address: WALLET_ADDRESS, namespace: "eip155" }],
+    } as unknown as AgentSession["executorContext"];
+    let proposalShown = 0;
+    session.ui.showProposalCard = () => {
+      proposalShown += 1;
+    };
+
+    await handleToolPending(makeToolPending("tool-own-wallet"), session);
+
+    assert.equal(proposalShown, 1, "own-but-unestablished still asks");
+    assert.equal(captured.length, 0, "nothing executed synchronously");
+  });
+
+  /**
+   * Once established, the destination behaves like any other authorized
+   * write: run-down, no extra prompt. That is the ONLY difference bridge
+   * has from other tool calls — one precondition, then business as usual.
+   */
+  it("runs down normally once the destination is established", async () => {
+    installFetchStub();
+    const wallet = makeHotWallet();
+    wallet.grantStore.add({
+      scope: { kind: "global" },
+      lifetime: { type: "permanent" },
+      wallet_address: WALLET_ADDRESS,
+      granted_at: Date.now(),
+    });
+    confirmedCounterpartyStore.confirm(WALLET_ADDRESS, {
+      address: WALLET_ADDRESS,
+      namespace: "eip155",
+    });
+    const session = makeSession(wallet);
+    let previewShown = 0;
+    let proposalShown = 0;
+    session.ui.showPreviewCard = () => {
+      previewShown += 1;
+    };
+    session.ui.showProposalCard = () => {
+      proposalShown += 1;
+    };
+
+    await handleToolPending(makeToolPending("tool-established"), session);
+
+    assert.equal(proposalShown, 0, "no extra prompt once established");
+    assert.equal(previewShown, 1, "normal run-down applies");
+  });
+
+  /**
+   * A destination becomes established only when value has ACTUALLY gone
+   * there. Neither showing the sheet nor tapping approve is enough on its
+   * own — if the execution then fails, the address stays unknown and the
+   * next attempt asks again. This is what stops a standing default from
+   * pointing at somewhere a transfer has never landed.
+   */
+  it("does not establish a destination from approval alone when execution fails", async () => {
+    installFetchStub();
+    const wallet = makeHotWallet();
+    const session = makeSession(wallet);
+    let confirmSheet: (() => Promise<void>) | null = null;
+    session.ui.showProposalCard = (_p, onApprove) => {
+      onApprove();
+    };
+    session.ui.showApprovalSheet = (_p, onConfirm) => {
+      confirmSheet = onConfirm as () => Promise<void>;
+    };
+
+    await handleToolPending(makeToolPending("tool-record"), session);
+
+    // Sheet open but untouched — the store must not be logging proposals.
+    assert.equal(
+      confirmedCounterpartyStore.isConfirmed(
+        WALLET_ADDRESS,
+        "eip155",
+        WALLET_ADDRESS,
+      ),
+      false,
+      "not established merely by showing the sheet",
+    );
+
+    assert.ok(confirmSheet, "approval sheet was opened");
+    // The stubbed executor cannot actually send, so this approval ends in
+    // a failed result.
+    await confirmSheet?.();
+
+    assert.equal(
+      confirmedCounterpartyStore.isConfirmed(
+        WALLET_ADDRESS,
+        "eip155",
+        WALLET_ADDRESS,
+      ),
+      false,
+      "a failed execution establishes nothing",
     );
   });
 });

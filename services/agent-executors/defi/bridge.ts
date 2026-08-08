@@ -28,14 +28,24 @@ import type {
   TBridgeQuote,
   TBridgeQuoteResult,
 } from "@/api/types/bridge";
-import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
+import type { TWallet } from "@/constants/types/walletTypes";
+import {
+  buildChainConfigFromBlockchain,
+  groupWalletsIntoAccounts,
+} from "@/hooks/useWallet.helpers";
 import { parseCaip2, parseCaip19 } from "@/services/bridgeRoutes/caip";
+import { bridgeDestinationChoice } from "@/services/bridgeRoutes/destinationChoice";
 import {
   checkBridgeDestinationReadiness,
   isQuoteExpired,
   resolveSourceChain,
 } from "@/services/bridgeRoutes/execute";
+import { buildBridgeQuotePayload } from "@/services/bridgeRoutes/quotePayload";
 import { adapterForQuote } from "@/services/bridgeRoutes/registry";
+import type { Namespace } from "@/services/chains/types";
+import { confirmedCounterpartyStore } from "@/services/confirmedCounterpartyStore";
+import { addressesEqual } from "@/services/walletKit/chainInfo";
+import { walletKitRegistry } from "@/services/walletKit/registry";
 import {
   type ExecutorContext,
   ExecutorError,
@@ -83,6 +93,29 @@ function requireAmountRaw(input: ToolInput, key: string): string {
 }
 
 /**
+ * The user's own wallet on `namespace`, preferring the one derived from
+ * the SAME seed/account as the source wallet bound to this intent (the
+ * pairing the "Arrives at" card copy already promises: "Your Solana
+ * address, which is different from the one you are sending from"), and
+ * falling back to any other wallet on that namespace the device knows
+ * about. Never invents an address and never returns a wrong-namespace
+ * one — `groupWalletsIntoAccounts` can put a private-key-only account's
+ * single row first, so this checks `namespace` explicitly rather than
+ * trusting `walletForNamespace`'s any-row fallback.
+ */
+function findDefaultDestinationWallet(
+  wallets: TWallet[],
+  sourceAddress: string,
+  namespace: Namespace,
+): TWallet | undefined {
+  const account = groupWalletsIntoAccounts(wallets).find((a) =>
+    a.wallets.some((w) => w.address === sourceAddress),
+  );
+  const sameAccount = account?.wallets.find((w) => w.namespace === namespace);
+  return sameAccount ?? wallets.find((w) => w.namespace === namespace);
+}
+
+/**
  * Resolve the destination address for a CAIP-2 chain from the user's own
  * wallets.
  *
@@ -91,20 +124,92 @@ function requireAmountRaw(input: ToolInput, key: string): string {
  * the same mnemonic. The user has never seen it in this context, and
  * hiding it is how funds go missing. So we resolve it explicitly and
  * return it on the payload for the card to render.
+ *
+ * An `explicit` address is model-supplied free text (there is no
+ * structured picker feeding this argument), so it is validated against
+ * the DESTINATION namespace's own `WalletKitAdapter.validateAddress`
+ * before use — the same capability `app/send.tsx` and every other
+ * agent-executor that accepts a caller-supplied address already routes
+ * through. Without this, a malformed string sailed straight through to
+ * LI.FI and came back as an opaque 400 several layers downstream, instead
+ * of a curated failure the card could explain.
+ *
+ * `allowDefaultWallet` is the read/write split: `bridge_quote` passes
+ * `true` so a cross-namespace quote can still succeed and show the full
+ * disclosure card (fees, minimum received, "Arrives at" with its own
+ * "Change" switcher) without the user typing an address into chat first.
+ * `bridge_execute` passes `false` — a WRITE must always carry the exact
+ * address the quote showed and the user approved; silently re-deriving
+ * one at signing time would let the approval card's summary and the
+ * actual destination drift apart.
+ *
+ * The user's own pick (`bridgeDestinationChoice`, set when they use the
+ * card's wallet switcher) OUTRANKS both: it is the default when nothing is
+ * explicit, and an explicit address that CONTRADICTS it is refused as
+ * `stale_precondition` rather than signed. The model's arguments are
+ * generated from conversation history, so after a switch they can still
+ * carry the previous address, and the approval summary renders no address
+ * for the user to catch it with.
  */
 function resolveDestinationAddress(
   context: ExecutorContext,
   toChain: string,
-  explicit?: string,
+  explicit: string | undefined,
+  allowDefaultWallet: boolean,
 ): string {
-  if (explicit) return explicit;
-
-  const namespace = parseCaip2(toChain)?.namespace;
-  if (!namespace) {
+  const parsedNamespace = parseCaip2(toChain)?.namespace;
+  if (!parsedNamespace) {
     throw new ExecutorError(
       ExecutorErrorCode.InvalidInput,
       "invalid_to_chain_not_caip2",
     );
+  }
+  // CAIP-2 grammar is namespace-agnostic (`ParsedCaip2.namespace: string`);
+  // narrowing to `Namespace` here mirrors `assetContractFromCaip19` in
+  // `services/bridgeRoutes/caip.ts`, the sole precedent for this exact cast.
+  const namespace = parsedNamespace as Namespace;
+  const chosen = bridgeDestinationChoice.get(toChain);
+
+  // The user's own pick WINS over anything the model supplies.
+  //
+  // The model builds `to_address` from conversation history, so right
+  // after the user switches wallets on the card its argument still names
+  // the previous one. Treating that clash as a conflict to reject would
+  // make the correct action fail, which is why this used to need a chat
+  // round trip to re-sync the model. It doesn't: a tap on the wallet
+  // switcher is a direct user instruction, and a stale argument generated
+  // from memory does not get to override it. Same principle as
+  // facts-over-prose, applied to arguments.
+  //
+  // Safe against drift because the approval surface renders THIS address
+  // too (`BridgeProgressCard`), so what the user sees is what signs.
+  if (chosen) {
+    if (
+      walletKitRegistry.has(namespace) &&
+      !walletKitRegistry.get(namespace).validateAddress(chosen)
+    ) {
+      throw new ExecutorError(
+        ExecutorErrorCode.InvalidInput,
+        "invalid_to_address_format",
+      );
+    }
+    return chosen;
+  }
+
+  if (explicit) {
+    if (!walletKitRegistry.has(namespace)) {
+      throw new ExecutorError(
+        ExecutorErrorCode.UnsupportedChain,
+        "to_chain_kit_not_registered",
+      );
+    }
+    if (!walletKitRegistry.get(namespace).validateAddress(explicit)) {
+      throw new ExecutorError(
+        ExecutorErrorCode.InvalidInput,
+        "invalid_to_address_format",
+      );
+    }
+    return explicit;
   }
 
   // Same-namespace: the intent's wallet already holds the right address.
@@ -113,9 +218,47 @@ function resolveDestinationAddress(
     return context.wallet.address;
   }
 
+  // The wallet a completed bridge to this chain actually landed on. This
+  // is the standing default, and it OUTRANKS seed derivation: it is a
+  // destination the user picked and value has already reached, whereas a
+  // derived address is one nobody has ever chosen.
+  const established = confirmedCounterpartyStore.mostRecentFor(
+    context.wallet.address,
+    namespace,
+  );
+  if (established) return established.address;
+
+  // Nothing established yet: fall back to the wallet derived from the
+  // user's own seed on that chain. That is a fine DEFAULT to show — it is
+  // the address a first-time bridge would most likely want — and it is
+  // safe precisely because it is only a suggestion: the destination is
+  // still unestablished, so `authorizeToolCall`'s envelope escalates the
+  // eventual `bridge_execute` to `ask` and the user sees it before
+  // anything signs.
+  const derived = findDefaultDestinationWallet(
+    context.wallets,
+    context.wallet.address,
+    namespace,
+  );
+
+  if (allowDefaultWallet) {
+    if (derived) return derived.address;
+  } else if (derived) {
+    // WRITE with no explicit address. Deriving here would be the one case
+    // the envelope CANNOT catch: it reads the tool's arguments, so an
+    // omitted `to_address` means no counterparty to check and the call
+    // would sail through a grant on an address nobody ever saw. Send the
+    // agent back to re-quote instead, which fills the argument in from the
+    // card the user was shown.
+    throw new ExecutorError(
+      ExecutorErrorCode.StalePrecondition,
+      "destination_not_confirmed",
+    );
+  }
+
   throw new ExecutorError(
     ExecutorErrorCode.InvalidInput,
-    "missing_to_address_for_cross_namespace",
+    "no_wallet_on_destination_chain",
   );
 }
 
@@ -184,10 +327,14 @@ export const bridgeQuote: MobileToolExecutor = (input, context) =>
     const fromAsset = requireCaip19(input, "from_asset");
     const toAsset = requireCaip19(input, "to_asset");
     const amountRaw = requireAmountRaw(input, "amount_raw");
+    // Read-only: default to the user's own destination wallet so the
+    // quote can succeed and show the full disclosure card instead of
+    // hard-failing on a missing address (see `resolveDestinationAddress`).
     const toAddress = resolveDestinationAddress(
       context,
       toChain,
       optionalString(input, "to_address"),
+      true,
     );
 
     let result: TBridgeQuoteResult;
@@ -241,27 +388,12 @@ async function readinessFor(
  * — never from model prose (§8.1). An LLM paraphrasing "you'll get about
  * 99.75 USDC" is not an acceptable substitute for a rendered
  * `toAmountMin`.
+ *
+ * The mapping itself lives in `services/bridgeRoutes/quotePayload.ts`
+ * because the card re-quotes directly on a destination-wallet change and
+ * must produce the identical shape.
  */
-function quotePayload(quote: TBridgeQuote, blockers: TBridgeBlocker[]) {
-  return {
-    routable: true as const,
-    quote_id: quote.quoteId,
-    provider: quote.provider,
-    from: quote.from,
-    to: quote.to,
-    to_amount_min_raw: quote.toAmountMinRaw,
-    slippage_bps: quote.slippageBps,
-    fees: quote.fees,
-    receives_native_asset: quote.receivesNativeAsset,
-    duration_seconds: quote.durationSeconds,
-    duration_range_seconds: quote.durationRangeSeconds,
-    bridge: quote.bridge,
-    steps: quote.steps,
-    blockers,
-    issued_at: quote.issuedAt,
-    expires_at: quote.expiresAt,
-  };
-}
+const quotePayload = buildBridgeQuotePayload;
 
 // ── bridge_execute (WRITE) ────────────────────────────────────────────
 
@@ -290,12 +422,23 @@ export const bridgeExecute: MobileToolExecutor = (input, context) =>
     const fromAsset = requireCaip19(input, "from_asset");
     const toAsset = requireCaip19(input, "to_asset");
     const amountRaw = requireAmountRaw(input, "amount_raw");
+    // WRITE: never default. The address must be the exact one the quote
+    // showed and the user approved — see `resolveDestinationAddress`.
     const toAddress = resolveDestinationAddress(
       context,
       toChain,
       optionalString(input, "to_address"),
+      false,
     );
-    const minReceiveRaw = optionalString(input, "min_receive_raw");
+    // The floor the user actually read. When they re-priced the card by
+    // switching destination, the model's `min_receive_raw` still belongs
+    // to the pre-switch quote — enforcing it would either reject a
+    // transfer they already accepted (new route slightly worse) or
+    // guarantee less than the figure printed in front of them (new route
+    // better). The pick carries its own number for exactly that reason.
+    const choice = bridgeDestinationChoice.getChoice(toChain);
+    const minReceiveRaw =
+      choice?.minReceiveRaw ?? optionalString(input, "min_receive_raw");
 
     if (!context.account && context.wallet.namespace === "eip155") {
       throw new ExecutorError(ExecutorErrorCode.WalletCannotExecute);
@@ -435,6 +578,11 @@ export const bridgeExecute: MobileToolExecutor = (input, context) =>
       }
       throw new ExecutorError(ExecutorErrorCode.NetworkError);
     }
+
+    // Submitted — the pick has served its bridge, so retire the interlock.
+    // Leaving it set would measure a LATER bridge to this chain against a
+    // stale choice and fail closed on a perfectly good address.
+    bridgeDestinationChoice.clear(toChain);
 
     return {
       status: "success" as const,

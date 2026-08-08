@@ -24,6 +24,11 @@ export default defineConfig({
         __dirname,
         "services/chains/evm/rnCookies.mock.ts",
       ),
+      // `react-native-mmkv` is a Nitro native module. Stubbed at OUR module
+      // boundary so persistence-backed logic (the agent's confirmed
+      // destinations) stays testable; mirrored on the node side by the
+      // resolver hook's mmkv-storage stub.
+      "@/lib/storage/mmkv": path.resolve(__dirname, "lib/storage/mmkv.mock.ts"),
       "@": path.resolve(__dirname, "."),
     },
   },
@@ -61,11 +66,23 @@ export default defineConfig({
       // Cross-repo registry parity (server TOOL_REGISTRY ⇄ EXPECTED_MOBILE_TOOLS).
       // Runnable now that the expected list lives in an import-free module.
       "services/agent-executors/registryParity.test.ts",
+      // Known-destination envelope: every write tool must declare whether
+      // it has a user-supplied counterparty, so none skips the check.
+      "services/agent-executors/counterparty.test.ts",
+      // The confirmed-destination store + the own-wallet rule that keeps
+      // the envelope from prompting on the user's own addresses.
+      "services/confirmedCounterpartyStore.test.ts",
       // Bridge capability (docs/bridge-capability-spec.md). Pure CAIP
       // parsing + the adapter-registry seam, and the card formatters
       // whose per-token decimals handling §6 depends on.
       "services/bridgeRoutes/caip.test.ts",
+      // The destination-wallet interlock: what stops a `bridge_execute`
+      // signing an address the user has already replaced (§7.4).
+      "services/bridgeRoutes/destinationChoice.test.ts",
       "components/home/TakumiAgent/StructuredUI/cards/bridgeFormat.test.ts",
+      // Facts-first approval text — the surface a confirmation is
+      // recorded against, so it must state amount + destination.
+      "components/home/TakumiAgent/StructuredUI/approvalSummary.test.ts",
       // Once-per-turn consolidation of repeated list-tool cards.
       "components/home/TakumiAgent/StructuredUI/mergeToolParts.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)

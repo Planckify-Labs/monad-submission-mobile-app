@@ -27,6 +27,8 @@
 // specifier — posthog-react-native ships RN/Flow syntax that can't load
 // outside a Metro/RN transform. See services/analytics/posthog.mock.ts.
 import { track } from "@/services/analytics/posthog";
+import type { ToolCounterparty } from "../agent-executors/counterparty.ts";
+import { confirmedCounterpartyStore } from "../confirmedCounterpartyStore.ts";
 import { pendingTxStore } from "../pendingTxStore.ts";
 import type { ConnectedWallet } from "../resolveUxTreatment.ts";
 import type { AgentSession } from "./agentSession.ts";
@@ -91,6 +93,26 @@ export async function handleToolPending(
       // Headless runs (no human to approve) fail an `ask` closed — see
       // authorizeToolCall. The chat screen is always interactive.
       interactive: session.interactive ?? true,
+      // Known-destination envelope: the gate reads the tool's own args to
+      // find the counterparty, and asks the store whether the user has
+      // ever confirmed it. Injected (not imported there) so the gate stays
+      // a pure, synchronous decision function.
+      input: payload.input,
+      // Optional-chained: a host may bind a session before its executor
+      // context is fully populated, and a missing namespace must degrade
+      // to "no envelope" rather than throw inside the gate.
+      walletNamespace: session.executorContext?.wallet?.namespace,
+      // Being one of the user's OWN wallets is deliberately NOT enough.
+      // The device derives an address on every namespace from one seed, so
+      // "own wallet" includes a dozen the user has never chosen — trusting
+      // those is the same silent auto-pick the envelope exists to catch.
+      // What counts is that value has actually gone there before.
+      isCounterpartyConfirmed: (counterparty) =>
+        confirmedCounterpartyStore.isConfirmed(
+          wallet.address,
+          counterparty.namespace,
+          counterparty.address,
+        ),
     });
   } catch (err) {
     session.pending_approvals.delete(toolCallId);
@@ -197,7 +219,7 @@ export async function handleToolPending(
         // Step 2 Confirm: execute (and the sheet may install a grant so
         // the next call resolves `authorized`).
         async () => {
-          await runNonInteractive(payload, session, token);
+          await runNonInteractive(payload, session, token, auth.counterparty);
         },
         rejectDeclined,
       );
@@ -247,6 +269,11 @@ async function runNonInteractive(
   payload: ToolPendingPayload,
   session: AgentSession,
   token: AuthorizationToken,
+  /**
+   * Recorded as an established destination once this call SUCCEEDS. Only
+   * passed on the paths a human actually cleared.
+   */
+  counterparty?: ToolCounterparty,
 ): Promise<void> {
   // Start the delay-hint timer BEFORE kicking off the executor. If the
   // executor resolves (success or failure) within DELAY_HINT_MS we
@@ -316,6 +343,30 @@ async function runNonInteractive(
   // After a successful submission we also kick off a background receipt
   // poller so the card auto-transitions to confirmed/failed without
   // requiring the agent to call `get_transaction` explicitly.
+  // --- Establish the destination (deny-layer §4.0 extension) --------
+  // Recorded on SUCCESS, not on approval: the rule is that value has
+  // actually gone there. An approval the executor then failed to carry
+  // out proves the user's intent but not the destination's usability, and
+  // the whole point of this record is to become a standing default —
+  // defaulting to somewhere a transfer has never actually landed is the
+  // guess we are trying to eliminate.
+  const payingWallet = session.connectedWallet?.address;
+  if (counterparty && payingWallet && result.status === "success") {
+    try {
+      confirmedCounterpartyStore.confirm(payingWallet, {
+        address: counterparty.address,
+        namespace: counterparty.namespace,
+        tool_name: payload.name,
+      });
+    } catch (err) {
+      // Bookkeeping must never fail a completed transfer — worst case the
+      // user is asked once more next time.
+      console.warn(
+        `[agentSession] failed to record destination: ${String(err)}`,
+      );
+    }
+  }
+
   if (payload.meta.capability === "write" && result.tx_hash) {
     // Agent may omit `chain_id` from the tool input (common for points
     // tools that infer it from wallet context), so fall back to the

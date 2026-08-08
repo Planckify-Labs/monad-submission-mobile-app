@@ -92,11 +92,21 @@ export type ToolInput = Record<string, unknown>;
  *   viem clients. The dispatcher is responsible for keeping this fresh —
  *   executors treat it as a read-only snapshot for the duration of the
  *   call.
+ * - `wallets` — every wallet on the device, all namespaces, all accounts
+ *   (from the same `useWallet()` call `wallet` comes from). Most
+ *   executors only ever need `wallet`; this exists for the rare case
+ *   where an executor legitimately needs to resolve one of the user's
+ *   OTHER wallets without an explicit tool argument (e.g. a cross-
+ *   namespace bridge defaulting its destination to the user's own wallet
+ *   on that chain, `services/agent-executors/defi/bridge.ts`). Never use
+ *   this to substitute for `wallet` on a signing path — that is exactly
+ *   the `activeWallet` fallback `feedback_dapp_bridge_isolation` forbids.
  */
 export interface ExecutorContext {
   wallet: TWallet;
   account: Account | null;
   blockchains: TBlockchain[];
+  wallets: TWallet[];
   /**
    * Chain id of the wallet's currently-active chain. Used as a
    * fallback when a tool input omits `chain_id` — the server-side

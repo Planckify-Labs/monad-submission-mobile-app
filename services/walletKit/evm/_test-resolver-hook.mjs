@@ -34,11 +34,20 @@ const STUB_SOURCES = {
       clearAll: async () => true,
     };
   `,
+  // In-memory MMKV stub. Deliberately a REAL map, not a no-op: modules
+  // that persist through it (the agent's confirmed-counterparty store) are
+  // only meaningfully testable if a write can be read back. A no-op stub
+  // silently makes every lookup miss, which for a security store reads as
+  // "nothing is ever confirmed" and hides regressions in both directions.
+  // \`remove\` is the API the app actually calls (not \`delete\`).
   "mmkv-storage": `
+    const mem = new Map();
     export const storage = {
-      getString: () => undefined,
-      set: () => {},
-      delete: () => {},
+      getString: (k) => (mem.has(k) ? mem.get(k) : undefined),
+      set: (k, v) => { mem.set(k, String(v)); },
+      remove: (k) => { mem.delete(k); },
+      delete: (k) => { mem.delete(k); },
+      clearAll: () => { mem.clear(); },
     };
   `,
   // posthog-react-native (+ expo-application/expo-device peers) ships

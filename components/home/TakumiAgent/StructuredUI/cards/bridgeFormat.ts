@@ -20,6 +20,7 @@ import type {
   TBridgePhase,
   TBridgeToken,
 } from "@/api/types/bridge";
+import { CHAIN_NAMES } from "../approvalSummary";
 
 /**
  * Format a smallest-unit amount using the token's own decimals.
@@ -239,19 +240,28 @@ export function phaseCopy(phase: TBridgePhase | undefined): string {
  * Takes the name from DATA, never from a namespace branch. The backend
  * resolves display names from each provider's own chain list and puts
  * them on the wire (`from.chainName` / `to.chainName`, and the support
- * matrix), so this is a lookup, not a derivation.
+ * matrix), so `known` is a lookup, not a derivation.
  *
  * That matters beyond tidiness: comparing the chain family inside a
  * component is exactly what `pnpm check:chains` forbids, because it is
  * the pattern that makes adding a chain an edit to shared UI instead of a
  * registration.
+ *
+ * Falls back to the shared `CHAIN_NAMES` table (same one
+ * `approvalSummary.ts` uses) before giving up and showing the raw CAIP-2
+ * id, because the backend's resolved name is NOT always present: LI.FI's
+ * `chainNameFor` only reads a warm chains-list cache and returns
+ * `undefined` on a cold one, which previously surfaced as "eip155:8453"
+ * verbatim in the card on the first quote after a deploy.
  */
 export function chainLabel(
   caip2: string | undefined,
   known: Array<{ chain: string; name: string }> = [],
 ): string {
   if (!caip2) return "Unknown chain";
-  return known.find((c) => c.chain === caip2)?.name ?? caip2;
+  return (
+    known.find((c) => c.chain === caip2)?.name ?? CHAIN_NAMES[caip2] ?? caip2
+  );
 }
 
 /** Middle-truncate an address for display without hiding its ends. */

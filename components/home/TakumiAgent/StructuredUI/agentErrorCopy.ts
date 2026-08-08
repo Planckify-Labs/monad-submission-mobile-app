@@ -47,6 +47,13 @@ const COPY: Record<string, string> = {
   invalid_intent: "I couldn't read that plan. Try rephrasing what you want.",
   unsupported_asset: "That asset isn't available on this network.",
   no_onchain_balance: "You don't hold that asset on this network.",
+  no_wallet_on_destination_chain:
+    "You don't have a wallet on the destination chain yet. Set one up, then try again.",
+  // Recovery is a re-quote, which fills in the destination the card shows.
+  destination_not_confirmed:
+    "Let me price this again so you can see exactly which wallet it lands in before you approve.",
+  invalid_to_address_format:
+    "That doesn't look like a valid address for the destination chain.",
   // swap-specific reasons surfaced by the Sui Intent preview path
   amount_below_minimum:
     "That amount is below the minimum for this swap. Try a larger amount.",

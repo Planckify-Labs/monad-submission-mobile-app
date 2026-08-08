@@ -34,7 +34,11 @@ export function truncateAddress(addr: string): string {
  * `pnpm check:chains`). An unknown chain falls back to the CAIP-2 id,
  * which is honest rather than wrong.
  */
-const CHAIN_NAMES: Record<string, string> = {
+// Also the last-resort fallback for `bridgeFormat.ts`'s `chainLabel` when
+// the backend's own resolved name is unavailable (cold LI.FI chains cache
+// - see lifi.adapter.ts `chainNameFor`). One table, so the approval gate
+// and the display cards never disagree on a chain's name.
+export const CHAIN_NAMES: Record<string, string> = {
   "eip155:1": "Ethereum",
   "eip155:10": "OP Mainnet",
   "eip155:56": "BNB Chain",
@@ -68,6 +72,45 @@ function assetSymbolFromCaip19(asset: string | undefined): string | undefined {
   if (asset.endsWith("::sui::SUI")) return "SUI";
   if (asset.includes("/native")) return "XLM";
   return undefined;
+}
+
+/**
+ * Smallest-units → human amount, but ONLY when the decimals are actually
+ * known. Returns `undefined` otherwise so the caller omits the number
+ * entirely: on an approval screen, no amount is recoverable ("check the
+ * card"), while a wrong amount is actively dangerous — "5000000" and "5"
+ * are the same argument rendered with and without this information.
+ *
+ * bigint arithmetic, not `Number`: a 78-digit raw amount loses precision
+ * through a float, and this string is what the user approves against.
+ */
+function formatSmallestUnits(
+  amountRaw: string | undefined,
+  decimals: number | undefined,
+): string | undefined {
+  if (!amountRaw || typeof decimals !== "number" || decimals < 0) {
+    return undefined;
+  }
+  if (!/^[0-9]+$/.test(amountRaw)) return undefined;
+
+  let value: bigint;
+  try {
+    value = BigInt(amountRaw);
+  } catch {
+    return undefined;
+  }
+
+  const base = 10n ** BigInt(decimals);
+  const whole = (value / base).toLocaleString("en-US");
+  const fraction = value % base;
+  if (decimals === 0 || fraction === 0n) return whole;
+
+  const trimmed = fraction
+    .toString()
+    .padStart(decimals, "0")
+    .slice(0, 6)
+    .replace(/0+$/, "");
+  return trimmed ? `${whole}.${trimmed}` : whole;
 }
 
 export type ApprovalFacts = {
@@ -144,6 +187,14 @@ export function approvalSummaryFromToolInput(
   input: Record<string, unknown>,
   serverSummary: string | undefined,
   fallback = "This action",
+  /**
+   * Token metadata the raw tool args cannot carry. Amounts arrive as
+   * SMALLEST UNITS, so without decimals the only honest options are to
+   * omit the number or print "5000000" for 5 USDC. Callers that can reach
+   * the token catalogue (see `resolveAssetMeta`) supply it so the
+   * approval can state the real amount.
+   */
+  assetMeta?: { symbol?: string; decimals?: number },
 ): string {
   const str = (k: string): string | undefined =>
     typeof input[k] === "string" && (input[k] as string).trim().length > 0
@@ -154,23 +205,29 @@ export function approvalSummaryFromToolInput(
   const to = str("to") ?? spender ?? str("destination") ?? str("recipient");
 
   // Bridge writes (bridge-capability-spec §8.1). A bridge's identity is
-  // the ROUTE, not a recipient — the destination address is usually the
-  // user's own wallet on another chain, so "Send X to 0xab…cd" reads as a
-  // transfer to a stranger. Build the route clause from the args instead,
-  // and never fall back to the model's `human_summary` for a write that
-  // moves value across chains.
+  // the ROUTE, not a recipient — but the DESTINATION ADDRESS is still
+  // load-bearing and must appear: it is what the known-destination
+  // envelope asks the user to confirm, and an approval that hides the
+  // address would record a confirmation for something never seen.
   const fromChain = str("from_chain");
   const toChain = str("to_chain");
   if (fromChain && toChain) {
+    const symbol =
+      assetMeta?.symbol ?? assetSymbolFromCaip19(str("from_asset"));
+    const amount = formatSmallestUnits(str("amount_raw"), assetMeta?.decimals);
+    const toAddress = str("to_address");
+    const route = `from ${chainName(fromChain)} to ${chainName(toChain)}`;
     return factsFirstSummary(
       {
         action: "Bridge",
-        amount: str("amount_raw"),
-        asset: assetSymbolFromCaip19(str("from_asset")),
-        suffix: `from ${chainName(fromChain)} to ${chainName(toChain)}`,
+        amount,
+        asset: symbol,
+        suffix: toAddress
+          ? `${route}, arriving at ${truncateAddress(toAddress)}`
+          : route,
       },
       {},
-      `Bridge from ${chainName(fromChain)} to ${chainName(toChain)}`,
+      `Bridge ${route}`,
     );
   }
 

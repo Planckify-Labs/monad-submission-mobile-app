@@ -225,3 +225,181 @@ describe("authorizeToolCall — INV-1", () => {
     assert.ok(authorize(watchOnlyWallet()).token, "deny path mints a token");
   });
 });
+
+/**
+ * The known-destination envelope (§4.0 extension).
+ *
+ * A grant answers "may the agent act unattended?", never "do I accept
+ * THIS destination?". Without this, a user who granted Full auto had no
+ * protection against value being pointed at an address they had never
+ * seen — and for a cross-namespace bridge that address is one the wallet
+ * derives, not one the user ever typed.
+ */
+describe("authorizeToolCall — known-destination envelope", () => {
+  /** Full-auto wallet: everything below would otherwise be `authorized`. */
+  function fullAutoWallet(): ConnectedWallet {
+    const w = hotWallet();
+    w.grantStore.add({
+      scope: { kind: "global" },
+      lifetime: { type: "permanent" },
+      wallet_address: WALLET,
+      granted_at: Date.now(),
+    });
+    return w;
+  }
+
+  const sendArgs = {
+    toolName: "send_native_token",
+    input: { to: "0xdeadbeef" },
+    walletNamespace: "eip155" as const,
+  };
+
+  /**
+   * SCOPE: the envelope only ever narrows the `authorized` case. With no
+   * grant the call already asks, so there is nothing to escalate and the
+   * behaviour must be byte-identical to before this feature existed —
+   * same decision, and NOT flagged as an escalation (it wasn't one).
+   *
+   * This is what keeps the feature honest: it can only ever turn Auto
+   * into Ask, never Ask into Auto, and never touches the default path a
+   * user without permissions is on.
+   */
+  it("leaves the no-grant path untouched — still a plain ask", () => {
+    const r = authorize(hotWallet(), {
+      ...sendArgs,
+      isCounterpartyConfirmed: () => false,
+    });
+    assert.equal(r.decision, "ask");
+    assert.equal(r.treatment, "ask");
+    assert.equal(r.escalated, undefined, "a normal ask is not an escalation");
+  });
+
+  it("does not consult the confirmation store at all without a grant", () => {
+    let consulted = 0;
+    authorize(hotWallet(), {
+      ...sendArgs,
+      isCounterpartyConfirmed: () => {
+        consulted += 1;
+        return false;
+      },
+    });
+    assert.equal(
+      consulted,
+      0,
+      "no-grant path short-circuits before the envelope",
+    );
+  });
+
+  it("escalates an authorized write to ask for an unconfirmed destination", () => {
+    const r = authorize(fullAutoWallet(), {
+      ...sendArgs,
+      isCounterpartyConfirmed: () => false,
+    });
+    assert.equal(r.decision, "ask");
+    assert.equal(r.treatment, "ask");
+    assert.equal(r.escalated, "unknown_counterparty");
+    assert.equal(r.counterparty?.address, "0xdeadbeef");
+  });
+
+  it("lets a confirmed destination through on the normal run-down", () => {
+    const r = authorize(fullAutoWallet(), {
+      ...sendArgs,
+      isCounterpartyConfirmed: () => true,
+    });
+    assert.equal(r.decision, "authorized");
+    assert.equal(r.treatment, "rundown");
+    assert.equal(r.escalated, undefined);
+  });
+
+  // Escalation must never LOOSEN anything: a denied call stays denied.
+  it("does not resurrect a denied call", () => {
+    const w = watchOnlyWallet();
+    const r = authorize(w, {
+      ...sendArgs,
+      isCounterpartyConfirmed: () => false,
+    });
+    assert.equal(r.decision, "deny");
+  });
+
+  it("fails closed to deny when headless and the destination is unknown", () => {
+    const r = authorize(fullAutoWallet(), {
+      ...sendArgs,
+      interactive: false,
+      isCounterpartyConfirmed: () => false,
+    });
+    assert.equal(r.decision, "deny");
+    assert.equal(r.reason, "approval_unavailable");
+  });
+
+  // A store that throws must not read as "confirmed" — that would turn a
+  // storage bug into silent authorization.
+  it("treats a throwing lookup as unconfirmed", () => {
+    const r = authorize(fullAutoWallet(), {
+      ...sendArgs,
+      isCounterpartyConfirmed: () => {
+        throw new Error("mmkv exploded");
+      },
+    });
+    assert.equal(r.decision, "ask");
+    assert.equal(r.escalated, "unknown_counterparty");
+  });
+
+  it("does not apply to reads", () => {
+    const r = authorize(fullAutoWallet(), {
+      capability: "read",
+      toolName: "get_balance",
+      input: { to: "0xdeadbeef" },
+      walletNamespace: "eip155",
+      isCounterpartyConfirmed: () => false,
+    });
+    assert.equal(r.decision, "authorized");
+    assert.equal(r.treatment, "silent");
+  });
+
+  // Exempt tools (protocol contracts, x402 allowance, first-party rails)
+  // have no user-supplied counterparty to vet.
+  it("does not escalate a tool with no counterparty", () => {
+    const r = authorize(fullAutoWallet(), {
+      toolName: "defi_deposit",
+      input: { to: "0xdeadbeef" },
+      walletNamespace: "eip155",
+      isCounterpartyConfirmed: () => false,
+    });
+    assert.equal(r.decision, "authorized");
+    assert.equal(r.treatment, "rundown");
+  });
+
+  // Backwards compatibility: callers that don't opt in behave exactly as
+  // before, so the envelope can't silently change an untouched path.
+  it("is inert when no confirmation check is supplied", () => {
+    const r = authorize(fullAutoWallet(), sendArgs);
+    assert.equal(r.decision, "authorized");
+    assert.equal(r.treatment, "rundown");
+  });
+
+  it("is inert when the destination argument is absent", () => {
+    const r = authorize(fullAutoWallet(), {
+      toolName: "send_native_token",
+      walletNamespace: "eip155",
+      isCounterpartyConfirmed: () => false,
+    });
+    assert.equal(r.decision, "authorized");
+  });
+
+  it("takes a bridge destination's namespace from its to_chain", () => {
+    const seen: string[] = [];
+    authorize(fullAutoWallet(), {
+      toolName: "bridge_execute",
+      input: {
+        to_address: "9YTiQ3",
+        to_chain: "solana:5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+      },
+      walletNamespace: "eip155",
+      isCounterpartyConfirmed: (cp) => {
+        seen.push(cp.namespace);
+        return true;
+      },
+    });
+    assert.deepEqual(seen, ["solana"]);
+  });
+});

@@ -35,6 +35,7 @@ import {
   Info,
 } from "lucide-react-native";
 import type React from "react";
+import { useSyncExternalStore } from "react";
 import { Linking, Pressable, Text, View } from "react-native";
 import type {
   TBridgeOutcome,
@@ -42,9 +43,14 @@ import type {
   TBridgeRouteStep,
   TBridgeToken,
 } from "@/api/types/bridge";
+import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
+import { bridgeDestinationChoice } from "@/services/bridgeRoutes/destinationChoice";
 import { tapFeedback } from "@/utils/hapticsUtils";
 import { agentErrorCopy } from "../agentErrorCopy";
+import { approvalSummaryFromToolInput } from "../approvalSummary";
+import { resolveAssetMeta } from "../resolveAssetMeta";
 import type { ToolComponentProps } from "../types";
+import WriteApprovalGate from "../WriteApprovalGate";
 import {
   chainLabel,
   formatTokenValue,
@@ -52,6 +58,7 @@ import {
   phaseCopy,
   truncateAddress,
 } from "./bridgeFormat";
+import { ChainIcon } from "./ChainIcon";
 
 const BRAND_RED = "#c71c4b";
 const MUTED = "#6b7280";
@@ -62,6 +69,15 @@ type BridgeProgressInput = {
   from_chain?: string;
   to_chain?: string;
   source_tx_hash?: string;
+  // Present only on a `bridge_execute` call (schema-required there,
+  // absent from `bridge_status`) — the signal this card uses to tell
+  // "awaiting approval to submit" apart from "polling an existing
+  // submission's status".
+  from_asset?: string;
+  to_asset?: string;
+  amount_raw?: string;
+  to_address?: string;
+  min_receive_raw?: string;
 };
 
 type BridgeProgressData = {
@@ -90,6 +106,8 @@ type BridgeProgressOutput = {
   error?: string;
   reason?: string;
   data?: BridgeProgressData;
+  /** Set by the approval gate below, read by `handleAddToolResult`. */
+  user_decision?: "approved" | "rejected";
 };
 
 /**
@@ -202,10 +220,12 @@ function TxLink({
   label,
   hash,
   url,
+  chain,
 }: {
   label: string;
   hash: string | undefined;
   url?: string;
+  chain?: string;
 }) {
   if (!hash) return null;
   const openable = Boolean(url);
@@ -221,7 +241,10 @@ function TxLink({
       accessibilityLabel={`${label} ${hash}`}
       className="flex-row items-center justify-between py-1 active:opacity-70"
     >
-      <Text className="text-[11px] text-gray-500">{label}</Text>
+      <View className="flex-row items-center gap-1">
+        <ChainIcon caip2={chain} size={11} />
+        <Text className="text-[11px] text-gray-500">{label}</Text>
+      </View>
       <View className="flex-row items-center gap-1">
         <Text className="text-[11px] font-semibold text-light-matte-black">
           {truncateAddress(hash)}
@@ -234,8 +257,68 @@ function TxLink({
 
 const BridgeProgressCard: React.FC<
   ToolComponentProps<BridgeProgressInput, BridgeProgressOutput>
-> = ({ state, input, output, onUserPrompt }) => {
+> = ({
+  state,
+  input,
+  output,
+  onUserPrompt,
+  mode,
+  addToolResult,
+  decision,
+  onRequestApproval,
+}) => {
+  // Re-read on every mutation of the pick so a live approval card reacts
+  // the moment the user switches wallets on the quote card above it.
+  useSyncExternalStore(
+    bridgeDestinationChoice.subscribe,
+    bridgeDestinationChoice.getVersion,
+  );
+  // Raw tool args carry `amount_raw` in smallest units; without decimals
+  // the approval would read "Bridge 5000000".
+  const { data: blockchains } = useBlockchainsWithStorage({ isActive: true });
+  const assetMeta = resolveAssetMeta(blockchains, input.from_asset);
+  // The user's own pick overrides the model's `to_address`, which is built
+  // from conversation history and still names the previous wallet right
+  // after a switch. The executor resolves the SAME way, so approving what
+  // is on screen is approving what signs — no drift, and no chat round
+  // trip needed to re-sync the model.
+  const chosenDestination = bridgeDestinationChoice.get(input.to_chain);
+  const approvalInput = chosenDestination
+    ? { ...input, to_address: chosenDestination }
+    : input;
+
   if (!output || state === "input-available" || state === "input-streaming") {
+    // Only `bridge_execute` (schema-required `amount_raw`) moves funds and
+    // needs a gate; `bridge_status` shares this card for its post-submit
+    // polling and must stay non-interactive — it never sets `amount_raw`.
+    const isExecuteCall = typeof input.amount_raw === "string";
+
+    if (
+      isExecuteCall &&
+      mode === "live" &&
+      (state === "input-available" || state === "input-streaming") &&
+      addToolResult
+    ) {
+      return (
+        <WriteApprovalGate
+          decision={decision}
+          summary={approvalSummaryFromToolInput(
+            approvalInput as Record<string, unknown>,
+            undefined,
+            undefined,
+            assetMeta,
+          )}
+          onApprove={() =>
+            addToolResult({ status: "success", user_decision: "approved" })
+          }
+          onReject={() =>
+            addToolResult({ status: "failed", user_decision: "rejected" })
+          }
+          onRequestApproval={onRequestApproval}
+        />
+      );
+    }
+
     return (
       <View className="my-1.5 rounded-2xl border border-light-matte-black/10 bg-white px-4 py-3.5">
         <Text className="text-[10px] font-bold uppercase tracking-wide text-gray-400">
@@ -349,10 +432,12 @@ const BridgeProgressCard: React.FC<
           label={`Sent on ${data.from_chain_name ?? chainLabel(data.from_chain)}`}
           hash={data.source_tx_hash}
           url={data.explorer_url}
+          chain={data.from_chain}
         />
         <TxLink
           label={`Received on ${data.to_chain_name ?? chainLabel(data.to_chain)}`}
           hash={data.destination_tx_hash}
+          chain={data.to_chain}
         />
       </View>
 
