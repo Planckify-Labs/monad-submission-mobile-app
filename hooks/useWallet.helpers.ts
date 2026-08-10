@@ -13,6 +13,7 @@ import type { TBlockchain } from "@/api/types/blockchain";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import type { TWallet } from "@/constants/types/walletTypes";
 import type { Namespace } from "@/services/chains/types";
+import { registerProxyOrigin } from "@/services/rpc/proxyAuth";
 
 /**
  * `TBlockchain` may gain a `namespace` field in a future API revision.
@@ -194,6 +195,12 @@ export function buildChainConfigFromBlockchain(
 ): ChainConfig {
   const b = blockchain as BlockchainWithMaybeNamespace;
   const namespace = resolveNamespace(b);
+
+  // `rpcUrl` from the backend feed IS the rpc-proxy endpoint, so this is where
+  // we learn which origin our proxy key may be sent to. Registering here (rather
+  // than hardcoding an origin) keeps the app correct when the proxy moves
+  // between localhost, a LAN IP, and a production domain.
+  registerProxyOrigin(b.rpcUrl);
 
   if (namespace === "solana") {
     const lowerName = b.name.toLowerCase();

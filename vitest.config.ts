@@ -39,6 +39,7 @@ export default defineConfig({
   define: { __DEV__: "false" },
   test: {
     include: [
+      "services/rpc/proxyAuth.test.ts",
       "services/chains/addressCompare.test.ts",
       "services/agent-executors/sui.test.ts",
       "services/chains/solana/takumiPay/pda.test.ts",

@@ -1,4 +1,6 @@
 import {
+  arbitrum,
+  arbitrumSepolia,
   bsc,
   goerli,
   mainnet,
@@ -167,6 +169,15 @@ export const supportedChains: ChainConfig[] = [
     chain: polygon,
     iconUrl: "https://polygon.technology/favicon.ico",
   },
+  // Arbitrum One — the backend serves this chain (active, with a USDT token
+  // row), but it was missing here, so `findEvmChainById(42161)` returned
+  // undefined and `batchBalanceOf` short-circuited to an empty map: held
+  // balances rendered as 0 rather than as an error.
+  {
+    namespace: "eip155",
+    chain: arbitrum,
+    iconUrl: "https://arbitrum.io/favicon.ico",
+  },
   {
     namespace: "eip155",
     chain: bsc,
@@ -183,6 +194,12 @@ export const supportedChains: ChainConfig[] = [
     namespace: "eip155",
     chain: polygonMumbai,
     iconUrl: "https://polygon.technology/favicon.ico",
+    isTestnet: true,
+  },
+  {
+    namespace: "eip155",
+    chain: arbitrumSepolia,
+    iconUrl: "https://arbitrum.io/favicon.ico",
     isTestnet: true,
   },
   // Sui mainnet — public Mysten fullnode is the v1 endpoint. Swap for a

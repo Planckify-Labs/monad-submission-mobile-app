@@ -9,6 +9,7 @@ import {
   findEvmChainById,
   getEvmSupportedChains,
 } from "@/constants/configs/chainConfig";
+import { chainRpcUrl, rpcFetchOptions } from "./proxyAuth";
 import { initBucket, tryConsume } from "./rateLimiter";
 import type {
   HealthStatus,
@@ -171,7 +172,14 @@ export async function checkHealth(chainId: number): Promise<void> {
 }
 
 function createClient(chain: Chain, url?: string): PublicClient {
-  return createPublicClient({ chain, transport: http(url || undefined) });
+  // Explicit `url` wins (a specific provider row); otherwise fall back to the
+  // chain's own endpoint. Either way the bearer is only attached when the target
+  // is rpc-proxy — see services/rpc/proxyAuth.ts.
+  const target = url || chainRpcUrl(chain);
+  return createPublicClient({
+    chain,
+    transport: http(target || undefined, rpcFetchOptions(target)),
+  });
 }
 
 export function getFailoverClient(chainId: number): PublicClient {
