@@ -3,8 +3,7 @@ import { useCallback, useMemo } from "react";
 import type { Address, Hash } from "viem";
 import { getContract } from "viem";
 import { useWallet } from "@/hooks/useWallet";
-import AbiTakumiPointDeposit from "../abis/AbiTakumiPointDeposit";
-import AbiTakumiWallet from "../abis/AbiTakumiWallet";
+import AbiTakumiPay from "../abis/AbiTakumiPay";
 import type {
   TCreateTransactionParams,
   TDepositPointsParams,
@@ -41,7 +40,7 @@ export function useTakumiWalletContract({
     if (!publicClient) return null;
     return getContract({
       address: contractAddress,
-      abi: AbiTakumiWallet,
+      abi: AbiTakumiPay,
       client: publicClient,
     });
   }, [contractAddress, publicClient]);
@@ -50,7 +49,7 @@ export function useTakumiWalletContract({
     if (!walletClient) return null;
     return getContract({
       address: contractAddress,
-      abi: AbiTakumiWallet,
+      abi: AbiTakumiPay,
       client: walletClient,
     });
   }, [contractAddress, walletClient]);
@@ -128,7 +127,7 @@ export function useTakumiWalletContract({
 
       const hash = await walletClient.writeContract({
         address: contractAddress,
-        abi: AbiTakumiWallet,
+        abi: AbiTakumiPay,
         functionName: "createTransaction",
         args: [
           params.bookingId,
@@ -151,7 +150,7 @@ export function useTakumiWalletContract({
         throw new Error("Wallet not connected");
       const hash = await walletClient.writeContract({
         address: contractAddress,
-        abi: AbiTakumiWallet,
+        abi: AbiTakumiPay,
         functionName: "withdraw",
         args: [params.token, params.to, params.amount],
         chain: walletClient.chain,
@@ -168,7 +167,7 @@ export function useTakumiWalletContract({
 
       const hash = await walletClient.writeContract({
         address: contractAddress,
-        abi: AbiTakumiPointDeposit,
+        abi: AbiTakumiPay,
         functionName: "depositPoints",
         args: [
           params.tokenAddress,
@@ -188,7 +187,7 @@ export function useTakumiWalletContract({
         throw new Error("Wallet not connected");
       const hash = await walletClient.writeContract({
         address: contractAddress,
-        abi: AbiTakumiWallet,
+        abi: AbiTakumiPay,
         functionName: "withdrawAll",
         args: [params.token, params.to],
         chain: walletClient.chain,
@@ -209,7 +208,7 @@ export function useTakumiWalletContract({
 
         const unwatch = publicClient.watchContractEvent({
           address: contractAddress,
-          abi: AbiTakumiWallet,
+          abi: AbiTakumiPay,
           eventName: "TransactionCreated",
           onLogs: onTransactionCreated,
         });
@@ -233,7 +232,7 @@ export function useTakumiWalletContract({
 
         const unwatch = publicClient.watchContractEvent({
           address: contractAddress,
-          abi: AbiTakumiWallet,
+          abi: AbiTakumiPay,
           eventName: "NativeDeposit",
           onLogs: onNativeDeposit,
         });
@@ -257,7 +256,7 @@ export function useTakumiWalletContract({
 
         const unwatch = publicClient.watchContractEvent({
           address: contractAddress,
-          abi: AbiTakumiWallet,
+          abi: AbiTakumiPay,
           eventName: "Withdraw",
           onLogs: onWithdraw,
         });
@@ -291,7 +290,7 @@ export function useTakumiWalletContract({
       if (!publicClient) throw new Error("Public client not available");
       return await publicClient.getContractEvents({
         address: contractAddress,
-        abi: AbiTakumiWallet,
+        abi: AbiTakumiPay,
         eventName,
         fromBlock,
         toBlock,

@@ -119,6 +119,65 @@ describe("buildChainConfigFromBlockchain — EVM branch", () => {
     assert.equal(cc.chain.nativeCurrency.name, row.name);
     assert.equal(cc.chain.nativeCurrency.decimals, 18);
   });
+
+  // Native-alias chains (Arc). The gas coin IS USDC there, so ONE balance is
+  // exposed at two precisions: 18-decimal wei via eth_getBalance, 6-decimal
+  // micros via balanceOf. The feed models that as two rows — a native row
+  // (no address) plus the ERC-20 row — and this helper must read the native
+  // one. These pin the data contract that keeps the mapping a plain lookup
+  // instead of needing an Arc special case.
+  it("takes native precision from the native row, not the aliased ERC-20 row", () => {
+    const cc = buildChainConfigFromBlockchain(
+      makeEvmBlockchain({
+        name: "Arc Testnet",
+        chainId: 5042002,
+        tokens: [
+          {
+            name: "USD Coin",
+            symbol: "USDC",
+            decimals: 18,
+            contractAddress: null,
+            isNativeCurrency: true,
+          },
+          {
+            name: "USD Coin",
+            symbol: "USDC",
+            decimals: 6,
+            contractAddress: "0x3600000000000000000000000000000000000000",
+            isNativeCurrency: false,
+          },
+        ] as TBlockchain["tokens"],
+      }),
+    );
+    if (cc.namespace !== "eip155") throw new Error("narrowing guard");
+    // 6 here would format an 18-decimal eth_getBalance result at 6dp and
+    // overstate the balance pill by 1e12.
+    assert.equal(cc.chain.nativeCurrency.decimals, 18);
+    // Gas on Arc really is USDC — the symbol is not a fallback.
+    assert.equal(cc.chain.nativeCurrency.symbol, "USDC");
+  });
+
+  it("honors a native row whose precision is not 18", () => {
+    // Native precision genuinely varies: of the chains viem ships, Tron uses
+    // 6 and Nautilus 9. So this must come from the row, never a hardcoded 18.
+    const cc = buildChainConfigFromBlockchain(
+      makeEvmBlockchain({
+        name: "Tron",
+        chainId: 728126428,
+        tokens: [
+          {
+            name: "Tronix",
+            symbol: "TRX",
+            decimals: 6,
+            contractAddress: null,
+            isNativeCurrency: true,
+          },
+        ] as TBlockchain["tokens"],
+      }),
+    );
+    if (cc.namespace !== "eip155") throw new Error("narrowing guard");
+    assert.equal(cc.chain.nativeCurrency.decimals, 6);
+  });
 });
 
 describe("buildChainConfigFromBlockchain — Solana branch (§7.5)", () => {

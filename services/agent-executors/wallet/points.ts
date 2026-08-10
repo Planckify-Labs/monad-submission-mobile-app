@@ -51,7 +51,7 @@ import { productApi } from "@/api/endpoints/products";
 import { redeemApi } from "@/api/endpoints/redeem";
 import { smartContractApi } from "@/api/endpoints/smart-contracts";
 import type { TProductInputField } from "@/api/types/product";
-import AbiTakumiPointDeposit from "@/contracts/abis/AbiTakumiPointDeposit";
+import AbiTakumiPay from "@/contracts/abis/AbiTakumiPay";
 import { toCatalogDisplayProducts } from "@/services/catalog/catalogDisplay";
 import { requireWalletClient, resolveChainClients } from "../chainRouter";
 import { checkPointsAuth } from "../pointsAuth";
@@ -813,7 +813,7 @@ export const depositPoints: MobileToolExecutor = (input, context) =>
       account,
       chain: walletClient.chain,
       address: contractAddress,
-      abi: AbiTakumiPointDeposit,
+      abi: AbiTakumiPay,
       functionName: "depositPoints",
       args: [tokenAddress, refId, amountWei],
     });

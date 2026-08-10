@@ -88,6 +88,7 @@ import {
   type PaymentToken,
   usePaymentTokens,
 } from "@/hooks/queries/usePaymentTokens";
+import type { TBlockchain } from "@/api/types/blockchain";
 import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
 import { useWallet } from "@/hooks/useWallet";
 import {
@@ -196,6 +197,28 @@ const formatUsdcMicros = (micros: string): string => {
   } catch {
     return `${micros} µUSDC`;
   }
+};
+
+/**
+ * Resolves an EVM `ChainConfig` by viem chain id, preferring the backend
+ * `/blockchains` feed and falling back to the static `supportedChains` list.
+ *
+ * The feed is the source of truth for which chains exist — `ChainSelector`
+ * and `useWallet` already build their configs from it. The static list is a
+ * bundled subset (mainnet/polygon/arbitrum/…), so resolving against it alone
+ * makes any backend-only chain unreachable: Arc Testnet (5042002) is served
+ * and active, but absent from `supportedChains`, so `findEvmChainById`
+ * returned undefined and this screen failed with `chain_mismatch` before it
+ * ever reached the wallet. Falling back keeps chains that are only in the
+ * bundle (or a feed that hasn't loaded yet) working exactly as before.
+ */
+const resolveEvmChainConfig = (
+  chainId: number,
+  blockchains: TBlockchain[] | undefined,
+): ChainConfig | undefined => {
+  const row = blockchains?.find((b) => b.chainId === chainId);
+  if (row) return buildChainConfigFromBlockchain(row);
+  return findEvmChainById(chainId);
 };
 
 const resolveKind = (
@@ -343,6 +366,9 @@ function IntentFlow({
     getActiveWalletKit,
     changeActiveChainToConfig,
   } = useWallet();
+  const { data: allBlockchains } = useBlockchainsWithStorage({
+    isActive: true,
+  });
   const intentQ = useIntentStatus(intentId, walletAddress);
   const submit = useSubmitNanopay();
 
@@ -434,7 +460,10 @@ function IntentFlow({
     // flip via the shared overlay so biometrics prompt against the
     // right network.
     const sourceChainId = intent.nanopay?.sourceChainId ?? ARC_TESTNET_CHAIN_ID;
-    const sourceChainConfig = findEvmChainById(sourceChainId);
+    const sourceChainConfig = resolveEvmChainConfig(
+      sourceChainId,
+      allBlockchains,
+    );
     if (!sourceChainConfig) {
       setError(
         makeLocalError(
@@ -478,6 +507,7 @@ function IntentFlow({
   }, [
     activeChain,
     activeWallet,
+    allBlockchains,
     changeActiveChainToConfig,
     getActiveWalletKit,
     intent,
@@ -625,6 +655,9 @@ function PathACard({
     getActiveWalletKit,
     changeActiveChainToConfig,
   } = useWallet();
+  const { data: allBlockchains } = useBlockchainsWithStorage({
+    isActive: true,
+  });
 
   const [phase, setPhase] = useState<LocalPhase>("idle");
   const [error, setError] = useState<LocalError | null>(null);
@@ -642,7 +675,10 @@ function PathACard({
     // switch so biometrics prompt on the right network.
     const sourceChainId =
       intent.nanopayUsdcSourceChainId ?? ARC_TESTNET_CHAIN_ID;
-    const sourceChainConfig = findEvmChainById(sourceChainId);
+    const sourceChainConfig = resolveEvmChainConfig(
+      sourceChainId,
+      allBlockchains,
+    );
     if (!sourceChainConfig) {
       setError(
         makeLocalError(
@@ -705,6 +741,7 @@ function PathACard({
   }, [
     activeChain,
     activeWallet,
+    allBlockchains,
     changeActiveChainToConfig,
     getActiveWalletKit,
     intent,

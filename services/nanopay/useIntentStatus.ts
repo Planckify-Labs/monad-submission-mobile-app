@@ -141,7 +141,7 @@ export function useSubmitNanopay() {
 
 /**
  * POST /pay/intents/:id/onchain — notifies the backend that the
- * user settled via the onchain settlement rail (TakumiWallet contract).
+ * user settled via the onchain settlement rail (TakumiPay contract).
  * The backend reconciles via on-chain events; this POST is a latency hint.
  */
 export function useSubmitOnchain() {

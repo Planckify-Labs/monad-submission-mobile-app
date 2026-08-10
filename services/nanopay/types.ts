@@ -113,7 +113,7 @@ export interface NanopayPayload {
 /**
  * Quote commitment for the onchain settlement rail. The backend signs
  * this struct and the wallet calls `processMerchantPayment(quote, sig)`
- * on the TakumiWallet contract. Every field matches the Solidity
+ * on the TakumiPay contract. Every field matches the Solidity
  * `QuoteCommitment` struct layout exactly.
  */
 export interface QuoteCommitment {
@@ -194,7 +194,7 @@ export interface PaymentIntentResponse {
   quoteCommitment?: QuoteCommitment;
   /** Backend ECDSA signature over the `quoteCommitment` struct. */
   quoteSignature?: `0x${string}`;
-  /** TakumiWallet contract address for onchain settlement. */
+  /** TakumiPay contract address for onchain settlement. */
   contractAddress?: `0x${string}`;
   quoteCommitmentSvm?: QuoteCommitmentSvm;
   quoteSignatureSvm?: string;

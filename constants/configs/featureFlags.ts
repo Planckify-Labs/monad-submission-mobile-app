@@ -50,3 +50,22 @@ export const FEATURE_DEFI_SUI_ADAPTERS = flag(
   "EXPO_PUBLIC_FF_DEFI_SUI_ADAPTERS",
   true,
 );
+
+/**
+ * Allows the EVM onchain-settlement rail (`processMerchantPayment` on the
+ * TakumiPay contract) to run on NON-testnet chains.
+ *
+ * Default OFF, so the rail is testnet-only. The first deployment it targets
+ * is Arc Testnet, where two things are still true — both release blockers
+ * rather than code problems:
+ *   - `backendSigner` derives from a private key committed in the API's
+ *     `.env.example`, so anyone can forge a quote the contract accepts.
+ *   - the contract owner is still the deploying EOA, not the intended owner.
+ *
+ * Flip this only once the signer key has been rotated via
+ * `rotateBackendSigner()` and ownership has been transferred and accepted.
+ */
+export const FEATURE_EVM_ONCHAIN_SETTLEMENT_MAINNET = flag(
+  "EXPO_PUBLIC_FF_EVM_ONCHAIN_SETTLEMENT_MAINNET",
+  false,
+);

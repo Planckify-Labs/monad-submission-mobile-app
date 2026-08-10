@@ -3,7 +3,7 @@
  * for merchant payments (spec onchain-settlement extension, milestone M6).
  *
  * Customers pay by calling `processMerchantPayment(quoteCommitment,
- * backendSignature)` on the TakumiWallet smart contract. After the tx
+ * backendSignature)` on the TakumiPay smart contract. After the tx
  * confirms, the mobile app POSTs the txHash to
  * `POST /pay/intents/:id/onchain` so the backend can reconcile.
  *
@@ -20,18 +20,19 @@
  *     fact via `postOnchainSubmit`. Mobile never asks the server to
  *     settle — the chain IS the settle.
  *   - Chain-extension discipline: the guard is `chain.namespace ===
- *     "eip155"` — any EVM chain with the TakumiWallet contract deployed
+ *     "eip155"` — any EVM chain with the TakumiPay contract deployed
  *     is eligible.
  *   - Copy-audience rule: user-facing copy in `app/pay-merchant.tsx`
  *     says "Pay" — no contract / calldata / ABI jargon in user copy.
  */
 
 import { HTTPError } from "ky";
-import { type Address, encodeFunctionData } from "viem";
+import { type Address, encodeFunctionData, erc20Abi } from "viem";
 import type {
   ChainConfig,
   EvmChainConfig,
 } from "../../constants/configs/chainConfig.ts";
+import { FEATURE_EVM_ONCHAIN_SETTLEMENT_MAINNET } from "../../constants/configs/featureFlags.ts";
 import type { TWallet } from "../../constants/types/walletTypes.ts";
 import type { WalletKitAdapter } from "../walletKit/types.ts";
 import type { PaymentIntentResponse } from "./types.ts";
@@ -119,8 +120,9 @@ function fiatCurrencyToBytes3(currency: string): `0x${string}` {
  *
  * For native-token payments (tokenAddress = zero address), the token
  * `amount` is attached as `msg.value` so the contract can pull it from
- * the caller's balance. For ERC-20 payments, `value` is `0n` — the
- * contract pulls via `transferFrom` (approval handled upstream).
+ * the caller's balance. For ERC-20 payments, `value` is `0n` and the
+ * contract pulls via `transferFrom`, so this function first ensures an
+ * exact-amount allowance (see the approval block below).
  */
 export async function executeOnchainSettlement(
   args: ExecuteOnchainSettlementArgs,
@@ -148,9 +150,69 @@ export async function executeOnchainSettlement(
     );
   }
 
+  // Testnet-only until the deployment's release blockers are cleared — the
+  // quote signer key is public and ownership still sits with the deployer.
+  // See `FEATURE_EVM_ONCHAIN_SETTLEMENT_MAINNET`.
+  if (!chain.isTestnet && !FEATURE_EVM_ONCHAIN_SETTLEMENT_MAINNET) {
+    throw new OnchainSettlementError(
+      "RAIL_DISABLED",
+      "Onchain settlement is not enabled on mainnet chains",
+    );
+  }
+
   const qc = intent.quoteCommitment;
   const isNativeToken =
     qc.tokenAddress === "0x0000000000000000000000000000000000000000";
+
+  // ERC-20 approval. `processMerchantPayment` pulls via `transferFrom`, so
+  // without an allowance the payment reverts — the header's "approval handled
+  // upstream" was aspirational; nothing upstream ever set one.
+  //
+  // This was survivable while EVM merchant payments were native-token only.
+  // It is not on a native-alias chain like Arc, where the contract refuses
+  // address(0) outright (`NativeDisabledOnAliasChain`) and the ERC-20 is the
+  // ONLY payable route, so every payment needs an allowance first.
+  //
+  // Approve exactly `qc.amount`, never unlimited: the user is confirming one
+  // payment of a known size, and the quote's own expiry bounds the window.
+  // A leftover allowance would outlive the intent it was granted for.
+  if (!isNativeToken) {
+    const amount = BigInt(qc.amount);
+    const token = qc.tokenAddress as Address;
+
+    // Presence-checked, per chain-extension discipline: a kit without these
+    // reads (non-EVM) never reaches here, since we already required
+    // `sendContractTransaction` and an eip155 chain above.
+    const allowance = walletKit.getTokenAllowance
+      ? await walletKit.getTokenAllowance({
+          owner: wallet.address,
+          spender: contractAddress,
+          tokenAddress: token,
+          chain,
+        })
+      : 0n;
+
+    if (allowance < amount) {
+      const approveHash = (await walletKit.sendContractTransaction({
+        wallet,
+        chain,
+        to: token,
+        data: encodeFunctionData({
+          abi: erc20Abi,
+          functionName: "approve",
+          args: [contractAddress, amount],
+        }),
+        value: 0n,
+      })) as `0x${string}`;
+
+      // Must confirm before the payment is broadcast. Both land in the same
+      // block otherwise and `transferFrom` can execute against the old
+      // allowance, reverting the payment the user just authorized.
+      if (walletKit.waitForTransaction) {
+        await walletKit.waitForTransaction({ hash: approveHash, chain });
+      }
+    }
+  }
 
   const calldata = encodeFunctionData({
     abi: PROCESS_MERCHANT_PAYMENT_ABI,

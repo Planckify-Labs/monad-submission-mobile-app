@@ -295,7 +295,7 @@ export interface TruncateAddressOptions {
  * Arguments for `WalletKitAdapter.sendContractTransaction` — sends an
  * arbitrary contract call (pre-encoded calldata) via the wallet's signer.
  * Used by the onchain settlement rail to call `processMerchantPayment`
- * on the TakumiWallet contract.
+ * on the TakumiPay contract.
  */
 export interface SendContractTransactionArgs {
   wallet: TWallet;
@@ -303,6 +303,28 @@ export interface SendContractTransactionArgs {
   to: `0x${string}`;
   data: `0x${string}`;
   value?: bigint;
+}
+
+/**
+ * Arguments for `WalletKitAdapter.getTokenAllowance` — reads how much of
+ * `tokenAddress` the `owner` has approved `spender` to pull.
+ */
+export interface GetTokenAllowanceArgs {
+  owner: string;
+  spender: `0x${string}`;
+  tokenAddress: `0x${string}`;
+  chain: ChainConfig;
+}
+
+/**
+ * Arguments for `WalletKitAdapter.waitForTransaction` — blocks until the
+ * transaction is mined. Needed to order a dependent pair of transactions
+ * (approve → pull), where broadcasting the second before the first
+ * confirms would revert.
+ */
+export interface WaitForTransactionArgs {
+  hash: `0x${string}`;
+  chain: ChainConfig;
 }
 
 /**
@@ -1145,10 +1167,22 @@ export interface WalletKitAdapter {
   /**
    * Sends a raw contract transaction with pre-encoded calldata. Used by
    * the onchain settlement rail (`pathOnchainSettlement.ts`) to call
-   * `processMerchantPayment` on the TakumiWallet contract. EVM-only;
+   * `processMerchantPayment` on the TakumiPay contract. EVM-only;
    * Solana kit leaves this `undefined`. Consumers presence-check.
    */
   sendContractTransaction?(args: SendContractTransactionArgs): Promise<string>;
+
+  /**
+   * Reads an ERC-20 allowance. EVM-only; chains whose token transfers are
+   * authorized inline (Solana, Stellar) leave this `undefined` and their
+   * settlement paths never ask. Consumers presence-check.
+   */
+  getTokenAllowance?(args: GetTokenAllowanceArgs): Promise<bigint>;
+
+  /**
+   * Waits for a transaction to be mined. EVM-only. Consumers presence-check.
+   */
+  waitForTransaction?(args: WaitForTransactionArgs): Promise<void>;
 
   /**
    * Broadcasts a Solana transaction containing Anchor program instructions.

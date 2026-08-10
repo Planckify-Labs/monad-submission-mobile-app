@@ -51,6 +51,7 @@ import type {
   EstimateMaxTransferableArgs,
   GetRelayerFeeDataArgs,
   GetRelayerStatusArgs,
+  GetTokenAllowanceArgs,
   NativeTransferArgs,
   RelayerAuthorizationEntry,
   RelayerCapabilities,
@@ -70,6 +71,7 @@ import type {
   TruncateAddressOptions,
   UpgradeToSmartAccountArgs,
   UpgradeToSmartAccountResult,
+  WaitForTransactionArgs,
   WalletKitAdapter,
 } from "../types.ts";
 import {
@@ -330,7 +332,7 @@ export function createEvmWalletKit(): WalletKitAdapter {
     //
     // Sends a raw contract transaction with pre-encoded calldata.
     // Used by the onchain settlement path to call
-    // `processMerchantPayment` on the TakumiWallet contract.
+    // `processMerchantPayment` on the TakumiPay contract.
     async sendContractTransaction({
       wallet,
       chain,
@@ -347,6 +349,31 @@ export function createEvmWalletKit(): WalletKitAdapter {
       }
       const wc = getWalletClient(account, chain.chain);
       return wc.sendTransaction({ to, data, value: value ?? 0n });
+    },
+
+    async getTokenAllowance({
+      owner,
+      spender,
+      tokenAddress,
+      chain,
+    }: GetTokenAllowanceArgs): Promise<bigint> {
+      assertEvm(chain);
+      const pc = getPublicClient(chain.chain);
+      return (await pc.readContract({
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: "allowance",
+        args: [owner as `0x${string}`, spender],
+      })) as bigint;
+    },
+
+    async waitForTransaction({
+      hash,
+      chain,
+    }: WaitForTransactionArgs): Promise<void> {
+      assertEvm(chain);
+      const pc = getPublicClient(chain.chain);
+      await pc.waitForTransactionReceipt({ hash });
     },
 
     async estimateMaxTransferable({
