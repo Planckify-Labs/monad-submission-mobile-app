@@ -1,10 +1,9 @@
 import { Store } from "lucide-react-native";
 import React from "react";
 import { Text, View } from "react-native";
-import { formatUnits } from "viem";
 import type { TPaymentTransactionDetail } from "@/api/types/transaction";
 
-import { formatTokenAmount } from "@/utils/helperUtils";
+import { formatExactTokenAmount } from "@/utils/tokenAmount";
 
 interface MerchantPaymentHeadingProps {
   payment: TPaymentTransactionDetail;
@@ -22,18 +21,12 @@ const formatIdrMinor = (minor: number): string => {
 export default function MerchantPaymentHeading({
   payment,
 }: MerchantPaymentHeadingProps) {
-  const formatAmount = () => {
-    if (!payment.amount) return "0";
-    try {
-      const decimalAmount = formatUnits(
-        BigInt(payment.amount),
-        payment.token?.decimals as number,
-      );
-      return formatTokenAmount(decimalAmount);
-    } catch {
-      return payment.amount;
-    }
-  };
+  // Full precision on purpose: this is a receipt, so the hero figure has
+  // to match the Amount row in the card below it exactly.
+  const amount = formatExactTokenAmount(
+    payment.amount,
+    payment.token?.decimals,
+  );
 
   const merchantName =
     payment.intent?.merchant?.displayName ?? payment.merchantName ?? "Merchant";
@@ -45,7 +38,7 @@ export default function MerchantPaymentHeading({
       </View>
 
       <Text className="text-light-primary-red font-extrabold text-2xl text-center">
-        {formatAmount()} {payment.token?.symbol}
+        {amount} {payment.token?.symbol}
       </Text>
       <Text className="text-light-matte-black font-bold text-base text-center">
         {merchantName}

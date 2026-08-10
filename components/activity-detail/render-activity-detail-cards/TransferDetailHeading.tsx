@@ -1,10 +1,9 @@
 import { Send } from "lucide-react-native";
 import React from "react";
 import { Text, View } from "react-native";
-import { formatUnits } from "viem";
 import { TTransaction } from "@/api/types/transaction";
 import OptimizedImage from "@/components/common/OptimizedImage";
-import { formatTokenAmount } from "@/utils/helperUtils";
+import { formatExactTokenAmount } from "@/utils/tokenAmount";
 
 interface TransferDetailHeadingProps {
   transfer: TTransaction;
@@ -13,18 +12,13 @@ interface TransferDetailHeadingProps {
 export default function TransferDetailHeading({
   transfer,
 }: TransferDetailHeadingProps) {
-  const formatAmount = () => {
-    if (!transfer.amount) return "0";
-    try {
-      const decimalAmount = formatUnits(
-        BigInt(transfer.amount),
-        transfer.token?.decimals as number,
-      );
-      return formatTokenAmount(decimalAmount);
-    } catch {
-      return transfer.amount;
-    }
-  };
+  // Full precision on purpose: a detail screen is a receipt, so it shows
+  // the amount that actually moved, not a rounded one.
+  const amount = formatExactTokenAmount(
+    transfer.amount,
+    transfer.token?.decimals,
+  );
+
   return (
     <View className="items-center mb-6">
       <View className="w-24 h-24 rounded-3xl mb-4 overflow-hidden bg-light-main-container">
@@ -43,7 +37,7 @@ export default function TransferDetailHeading({
       </View>
 
       <Text className="text-light-primary-red font-extrabold text-2xl text-center">
-        {formatAmount()} {transfer.token?.symbol}
+        {amount} {transfer.token?.symbol}
       </Text>
       <Text className="text-light-matte-black/70 text-base mb-3 text-center font-medium">
         Transfer Amount

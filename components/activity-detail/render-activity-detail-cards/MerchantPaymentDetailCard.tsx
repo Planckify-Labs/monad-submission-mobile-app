@@ -2,10 +2,10 @@ import { openBrowserAsync } from "expo-web-browser";
 import { Clock, Copy, ExternalLink, Store } from "lucide-react-native";
 import React, { useCallback } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
-import { formatUnits } from "viem/utils";
 import type { TPaymentTransactionDetail } from "@/api/types/transaction";
 import { formatDate } from "@/utils/dateUtils";
 import { copyToClipboard } from "@/utils/helperUtils";
+import { formatExactTokenAmount } from "@/utils/tokenAmount";
 import { buildExplorerTxUrl, truncateAddress } from "@/utils/walletUtils";
 
 interface MerchantPaymentDetailCardProps {
@@ -39,16 +39,10 @@ const MerchantPaymentDetailCard = React.memo(
       preset: "short",
     });
 
-    const formatAmount = () => {
-      if (!payment.amount) return "0";
-      try {
-        const cleanAmount = payment.amount.replace(/[^\d]/g, "");
-        if (!cleanAmount || cleanAmount === "0") return "0";
-        return formatUnits(BigInt(cleanAmount), payment.token?.decimals || 18);
-      } catch {
-        return payment.amount;
-      }
-    };
+    const amount = formatExactTokenAmount(
+      payment.amount,
+      payment.token?.decimals,
+    );
 
     const merchantName =
       payment.intent?.merchant?.displayName ??
@@ -117,7 +111,7 @@ const MerchantPaymentDetailCard = React.memo(
                   Amount
                 </Text>
                 <Text className="text-light-matte-black/70 text-sm">
-                  {formatAmount()} {payment.token?.symbol}
+                  {amount} {payment.token?.symbol}
                 </Text>
               </View>
 
