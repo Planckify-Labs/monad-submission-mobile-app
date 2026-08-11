@@ -1374,6 +1374,18 @@ export interface WalletKitAdapter {
   // ── Optional capability flags ───────────────────────────────────────
   /** Whether this kit supports non-native token transfers. */
   supportsTokenTransfer?: boolean;
+  /**
+   * Whether the app has a point-deposit ("Add Points") execution path for
+   * this chain family — EVM's `depositPoints` contract call and Stellar's
+   * Soroban `deposit_points` invocation set it; Solana / Sui omit it.
+   *
+   * This is the *family* gate only. A specific network is still unavailable
+   * when the backend has no `/blockchains` row or no `takumi_pay` contract
+   * for it, which `hooks/deposit/depositSupport.ts` resolves on top of this
+   * flag. Shared code reads it via `chainInfo#supportsPointDeposit` so the
+   * deposit screen never tests namespaces to decide what to offer.
+   */
+  supportsPointDeposit?: boolean;
   /** `true` by default; future MPC / HW-only chains return `false`. */
   supportsPrivateKeyImport?: boolean;
   /** Human-readable chain family label for UI pickers. */

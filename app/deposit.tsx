@@ -1,5 +1,6 @@
+import { useIsFocused } from "@react-navigation/native";
 import { ChevronDown } from "lucide-react-native";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useRef, useState } from "react";
 import {
   Platform,
   ScrollView,
@@ -33,6 +34,10 @@ import { useDepositState } from "@/hooks/deposit/useDepositState";
 import { useGoToAuth } from "@/hooks/useGoToAuth";
 import { useNavigationReady } from "@/hooks/useNavigationReady";
 import { useWallet } from "@/hooks/useWallet";
+import {
+  formatChainLabel,
+  getNativeSymbol,
+} from "@/services/walletKit/chainInfo";
 
 interface DepositContentProps {
   bottomOffset: number;
@@ -47,33 +52,12 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
     activeChain,
   } = useWallet();
 
-  // Deposit flow is EVM-only (smart-contract path). Derive display
-  // fields from the discriminated-union chain config without throwing:
-  //   - EVM active → read from `activeChain.chain.*`.
-  //   - Non-EVM active → placeholders; `useDepositState` returns
-  //     `hasContract: false` which triggers `DepositUnsupportedChainModal`
-  //     below (same modal the EVM-without-contract case shows).
-  const isEvm = activeChain.namespace === "eip155";
-  const isStellar = activeChain.namespace === "stellar";
-  const nativeCurrencySymbol = isEvm
-    ? activeChain.chain.nativeCurrency.symbol
-    : isStellar
-      ? "XLM"
-      : "";
-  const chainDisplayName =
-    activeChain.namespace === "eip155"
-      ? activeChain.chain.name
-      : activeChain.namespace === "solana"
-        ? `Solana ${activeChain.cluster === "devnet" ? "Devnet" : "Mainnet"}`
-        : activeChain.namespace === "stellar"
-          ? `Stellar ${activeChain.network === "testnet" ? "Testnet" : "Mainnet"}`
-          : `Sui ${
-              activeChain.network === "mainnet"
-                ? "Mainnet"
-                : activeChain.network === "testnet"
-                  ? "Testnet"
-                  : "Devnet"
-            }`;
+  // Display fields come from the wallet kit, so a new chain labels itself
+  // correctly here without this screen growing another namespace ternary
+  // (the old chain of them had already gone stale once — every non-EVM,
+  // non-Solana chain rendered as "Sui …").
+  const nativeCurrencySymbol = getNativeSymbol(activeChain) ?? "";
+  const chainDisplayName = formatChainLabel(activeChain);
   const {
     selectedToken,
     amount,
@@ -83,8 +67,8 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
     stablecoinTokens,
     tokenAmountNeeded,
     isAuthenticated,
-    hasContract,
-    isContractFetching,
+    depositSupport,
+    chainKey,
     contractAddress,
     nativeBalanceFormatted,
     tokenBalanceFormatted,
@@ -105,30 +89,22 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
   const [tokenModalVisible, setTokenModalVisible] = useState(false);
   const [pinModalVisible, setPinModalVisible] = useState(false);
   const [approvalModalVisible, setApprovalModalVisible] = useState(false);
-  const [unsupportedChainModalVisible, setUnsupportedChainModalVisible] =
-    useState(false);
+  // Which chain the user last dismissed the sheet for. Keyed per network so
+  // dismissing it on one unsupported chain doesn't silently suppress it on
+  // the next one the user switches to.
+  const [dismissedChainKey, setDismissedChainKey] = useState<string | null>(
+    null,
+  );
 
-  // Show the unsupported chain modal once when the user is authenticated
-  // and the active chain has no contract, but only after fetching is done.
-  // Deposits are available on EVM (smart-contract path) and Stellar
-  // (Soroban `deposit_points` path). Any other namespace has no deposit path.
-  const supportsDeposit = isEvm || isStellar;
-  useEffect(() => {
-    // Chains with no deposit path → structurally unsupported. Fire the modal
-    // immediately without requiring auth, since there's no contract lookup to
-    // wait on.
-    if (!supportsDeposit) {
-      setUnsupportedChainModalVisible(true);
-      return;
-    }
-    // Supported chain: show the modal only when the user is authenticated but
-    // the chain has no deposit contract available.
-    if (isAuthenticated && !isContractFetching && !hasContract) {
-      setUnsupportedChainModalVisible(true);
-    } else {
-      setUnsupportedChainModalVisible(false);
-    }
-  }, [supportsDeposit, isAuthenticated, isContractFetching, hasContract]);
+  // `Modal` renders in its own window on top of the whole app, not inside
+  // this screen — so it must be gated on focus. Without that, a deposit
+  // route still mounted underneath (or mid pop-animation) kept reacting to
+  // chain switches and threw this sheet over the home screen.
+  const isFocused = useIsFocused();
+  const showUnsupportedChainModal =
+    isFocused &&
+    depositSupport === "unsupported" &&
+    dismissedChainKey !== chainKey;
 
   const handleSelectWallet = useCallback(
     (index: number) => {
@@ -292,7 +268,9 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
               disabled={
                 navigatingToAuth ||
                 (isAuthenticated !== false &&
-                  (hasInsufficientNative || hasInsufficientToken))
+                  (depositSupport === "unsupported" ||
+                    hasInsufficientNative ||
+                    hasInsufficientToken))
               }
               label={
                 isAuthenticated === false
@@ -352,9 +330,9 @@ function DepositContent({ bottomOffset }: DepositContentProps) {
       )}
 
       <DepositUnsupportedChainModal
-        visible={unsupportedChainModalVisible}
+        visible={showUnsupportedChainModal}
         chainName={chainDisplayName}
-        onClose={() => setUnsupportedChainModalVisible(false)}
+        onClose={() => setDismissedChainKey(chainKey)}
         onSwitchNetwork={() => chainSelectorRef.current?.open()}
       />
     </SafeAreaView>

@@ -66,7 +66,6 @@ ALLOWLIST=(
   # paths. Each should eventually consume a `getNativeCurrency` kit
   # hook; listed here as known debt.
   "app/send.tsx"
-  "app/deposit.tsx"
   "app/dapps-browser.tsx"
   "app/transfer-thresholds.tsx"
   "hooks/useWallet.ts"

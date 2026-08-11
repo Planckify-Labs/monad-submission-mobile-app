@@ -142,6 +142,9 @@ export function createEvmWalletKit(): WalletKitAdapter {
     namespace: EVM_NAMESPACE,
     supportsTokenTransfer: true,
     supportsPrivateKeyImport: true,
+    // `TakumiPay.depositPoints` — the ERC-20 approve + deposit path in
+    // `hooks/deposit/useDepositState.ts`.
+    supportsPointDeposit: true,
     displayName: "Ethereum",
     brandColor: "#627EEA",
     preferredPaymentRail: "evm",

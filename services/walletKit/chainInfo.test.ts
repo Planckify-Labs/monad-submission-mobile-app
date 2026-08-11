@@ -23,9 +23,11 @@ import {
   addressesEqual,
   canonicalizeAddress,
   getAuthChainSlug,
+  getChainKey,
   getNonceParams,
   matchesBlockchainRow,
   preferredChainRail,
+  supportsPointDeposit,
 } from "./chainInfo.ts";
 import { createEvmWalletKit } from "./evm/EvmWalletKit.ts";
 import { walletKitRegistry } from "./registry.ts";
@@ -164,6 +166,46 @@ describe("chainInfo.preferredChainRail", () => {
     assert.equal(preferredChainRail(solanaMainnet), "solana");
     assert.equal(preferredChainRail(ethereumChain), "evm");
     assert.equal(preferredChainRail(suiTestnet), "evm");
+  });
+});
+
+describe("chainInfo.getChainKey", () => {
+  it("is distinct per network, not just per namespace", () => {
+    assert.equal(getChainKey(ethereumChain), "eip155:1");
+    assert.equal(getChainKey(solanaDevnet), "solana:devnet");
+    assert.equal(getChainKey(solanaMainnet), "solana:mainnet-beta");
+    assert.notEqual(getChainKey(solanaDevnet), getChainKey(solanaMainnet));
+  });
+
+  it("falls back to the bare namespace with no registered kit", () => {
+    // Stellar is not registered in this suite.
+    assert.equal(
+      getChainKey({
+        namespace: "stellar",
+        network: "testnet",
+        horizonUrl: "https://horizon-testnet.stellar.org",
+      }),
+      "stellar",
+    );
+  });
+});
+
+describe("chainInfo.supportsPointDeposit", () => {
+  it("true only for families with an Add Points execution path", () => {
+    assert.equal(supportsPointDeposit(ethereumChain), true);
+    assert.equal(supportsPointDeposit(solanaMainnet), false);
+    assert.equal(supportsPointDeposit(suiTestnet), false);
+  });
+
+  it("false for a namespace with no registered kit", () => {
+    assert.equal(
+      supportsPointDeposit({
+        namespace: "stellar",
+        network: "mainnet",
+        horizonUrl: "https://horizon.stellar.org",
+      }),
+      false,
+    );
   });
 });
 

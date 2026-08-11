@@ -41,6 +41,29 @@ export function getChainId(chain: ChainConfig): number | string | null {
 }
 
 /**
+ * Stable identity for a specific *network* — `"eip155:8453"`,
+ * `"stellar:testnet"`, `"solana:mainnet-beta"`. Use it to key UI state that
+ * must reset when the user switches networks (e.g. the deposit screen's
+ * per-chain "unsupported network" dismissal, which otherwise stays dismissed
+ * across a switch to a different unsupported chain). Falls back to the bare
+ * namespace when the kit exposes no identifier.
+ */
+export function getChainKey(chain: ChainConfig): string {
+  const id = getChainId(chain);
+  return id === null ? chain.namespace : `${chain.namespace}:${id}`;
+}
+
+/**
+ * True when the app has a point-deposit ("Add Points") execution path for
+ * `chain`'s family. Family-level only — see `WalletKitAdapter#supportsPointDeposit`
+ * and `hooks/deposit/depositSupport.ts` for the per-network verdict.
+ */
+export function supportsPointDeposit(chain: ChainConfig): boolean {
+  if (!walletKitRegistry.has(chain.namespace)) return false;
+  return walletKitRegistry.get(chain.namespace).supportsPointDeposit === true;
+}
+
+/**
  * EVM-typed convenience — returns the viem `chain.id` number, or
  * `undefined` for anything non-EVM. Direct drop-in for call sites doing
  * `activeChain.namespace === "eip155" ? activeChain.chain.id : undefined`.

@@ -19,6 +19,12 @@ import { useWallet } from "@/hooks/useWallet";
 import { toChainTag } from "@/services/analytics/chainTag";
 import { track } from "@/services/analytics/posthog";
 import { executePointDepositStellar } from "@/services/nanopay/pathPointDepositStellar";
+import {
+  getChainKey,
+  matchesBlockchainRow,
+  supportsPointDeposit,
+} from "@/services/walletKit/chainInfo";
+import { type DepositSupport, resolveDepositSupport } from "./depositSupport";
 
 const DEPOSIT_STATE_KEY = ["deposit", "state"] as const;
 const DEFAULT_CURRENCY = "IDR";
@@ -80,39 +86,46 @@ export function useDepositState() {
   const isEvm = rawActiveChain.namespace === "eip155";
   const isStellar = rawActiveChain.namespace === "stellar";
   const activeChainId = isEvm ? rawActiveChain.chain.id : 0;
+  // Family-level "is there a deposit path at all" gate. Owned by the wallet
+  // kit (§4.5 space docking) instead of an `isEvm || isStellar` expression
+  // that a new chain has to remember to extend in two files.
+  const chainSupportsDeposit = supportsPointDeposit(rawActiveChain);
 
   const { isAuthenticated } = useIsAuthenticated();
-  const { data: blockchains } = useBlockchains();
+  const {
+    data: blockchains,
+    isPending: isChainListPending,
+    isFetching: isChainListFetching,
+    isError: isChainListError,
+  } = useBlockchains();
 
+  // Backend `/blockchains` row for the active network, matched through the
+  // kit — the Stellar chainSlug/testnet rules used to be duplicated here
+  // alongside `StellarWalletKit.matchesBlockchainRow`. Stays `null` for
+  // families with no deposit path, which is what empties the token list.
   const activeBackendChain = useMemo(() => {
-    if (!blockchains) return null;
-    if (isEvm) {
-      return blockchains.find((b) => b.chainId === activeChainId) || null;
-    }
-    if (isStellar) {
-      // Non-EVM rows have no numeric chainId; match the active Stellar network
-      // to its backend row by chainSlug (`stellar-testnet` / `stellar-mainnet`)
-      // + testnet flag.
-      const wantTestnet = rawActiveChain.network !== "mainnet";
-      return (
-        blockchains.find(
-          (b) =>
-            !b.isEVM &&
-            (b.chainSlug?.toLowerCase().startsWith("stellar") ?? false) &&
-            b.isTestnet === wantTestnet,
-        ) || null
-      );
-    }
-    return null;
-  }, [blockchains, activeChainId, isEvm, isStellar, rawActiveChain]);
+    if (!blockchains || !chainSupportsDeposit) return null;
+    return (
+      blockchains.find((b) => matchesBlockchainRow(rawActiveChain, b)) ?? null
+    );
+  }, [blockchains, chainSupportsDeposit, rawActiveChain]);
 
-  const { data: rawStablecoinTokens } = useTokens({
+  // `isPaymentEnabled` is the ops switch for "this token is cleared for
+  // user-facing payment flows", and it is load-bearing here: an empty result
+  // MEANS the chain isn't enabled yet, which `depositSupport` turns into the
+  // unsupported-network sheet. Do not relax it to match what the API would
+  // technically accept — the API's point-deposit path only checks
+  // `isActive && isStablecoin` plus a resolvable price, so dropping this flag
+  // silently offers chains ops hasn't switched on (Lisk / Base Sepolia carry
+  // IDRX with the flag off today).
+  const {
+    data: rawStablecoinTokens,
+    isPending: isTokenListPending,
+    isFetching: isTokenListFetching,
+    isError: isTokenListError,
+  } = useTokens({
     isStablecoin: true,
     isActive: true,
-    // Point deposits settle onchain the same way merchant payments do
-    // (Phase 1 onchain-settlement rail) — only offer tokens ops has
-    // explicitly enabled for that rail, mirroring `usePaymentTokens`
-    // (the same gate `pay-merchant.tsx` uses).
     isPaymentEnabled: true,
     blockchainId: activeBackendChain?.id,
   });
@@ -124,11 +137,17 @@ export function useDepositState() {
   //      catalog, which is misleading.
   //   2. have a `peggedCurrency` configured on the server — tokens
   //      without it will return a 400 if used for deposits.
+  //   3. carry a contract address — both deposit paths spend a token
+  //      contract (ERC-20 `approve` / Soroban SAC transfer), so an
+  //      address-less catalogue row can only fail at signing time.
   const stablecoinTokens = useMemo(() => {
     if (!activeBackendChain) return [];
     return (
       rawStablecoinTokens?.filter(
-        (t) => t.blockchainId === activeBackendChain.id && !!t.peggedCurrency,
+        (t) =>
+          t.blockchainId === activeBackendChain.id &&
+          !!t.peggedCurrency &&
+          !!t.contractAddress,
       ) ?? []
     );
   }, [rawStablecoinTokens, activeBackendChain]);
@@ -143,17 +162,25 @@ export function useDepositState() {
     currency: DEFAULT_CURRENCY,
   });
 
-  const { data: smartContract, isFetching: isEvmContractFetching } =
-    useSmartContractByChain(activeChainId);
+  const {
+    data: smartContract,
+    isFetching: isEvmContractFetching,
+    isPending: isEvmContractPending,
+    isError: isEvmContractError,
+  } = useSmartContractByChain(activeChainId);
   const contractAddress = smartContract?.address as `0x${string}` | undefined;
 
   // Stellar resolves its `takumi_pay` contract by backend blockchainId (no
   // numeric chainId). `usePaymentContract` is the same resolver the merchant
   // -payment screen uses.
-  const { data: stellarContract, isFetching: isStellarContractFetching } =
-    usePaymentContract({
-      blockchainId: isStellar ? activeBackendChain?.id : undefined,
-    });
+  const {
+    data: stellarContract,
+    isFetching: isStellarContractFetching,
+    isPending: isStellarContractPending,
+    isError: isStellarContractError,
+  } = usePaymentContract({
+    blockchainId: isStellar ? activeBackendChain?.id : undefined,
+  });
   const stellarContractAddress = isStellar
     ? (stellarContract?.address as string | undefined)
     : undefined;
@@ -164,9 +191,34 @@ export function useDepositState() {
   const depositContractAddress: string | undefined = isStellar
     ? stellarContractAddress
     : contractAddress;
-  const isContractFetching = isStellar
-    ? isStellarContractFetching
-    : isEvmContractFetching;
+  // "The contract lookup hasn't settled yet" — pending (including a query
+  // still disabled while `activeBackendChain` resolves), refetching a stale
+  // cache, or errored. Every one of those windows used to be indistinguishable
+  // from "no contract on this chain", which is what made the unsupported-
+  // network sheet fire on chains that were only mid-resolution.
+  const isContractUnresolved = isStellar
+    ? isStellarContractPending ||
+      isStellarContractFetching ||
+      isStellarContractError
+    : isEvmContractPending || isEvmContractFetching || isEvmContractError;
+
+  // Single verdict every deposit surface reads, so the screen never has to
+  // re-derive "unsupported" from a pile of loading booleans.
+  const depositSupport: DepositSupport = resolveDepositSupport({
+    chainSupportsDeposit,
+    isChainListUnresolved:
+      isChainListPending || isChainListFetching || isChainListError,
+    hasBackendChain: !!activeBackendChain,
+    isContractUnresolved,
+    hasContract: !!depositContractAddress,
+    isTokenListUnresolved:
+      isTokenListPending || isTokenListFetching || isTokenListError,
+    hasEligibleToken: stablecoinTokens.length > 0,
+    isSignedIn: isAuthenticated === true,
+  });
+  // Identity of the network the verdict belongs to — lets the screen key its
+  // "dismissed" state per chain instead of globally.
+  const chainKey = getChainKey(rawActiveChain);
 
   const { depositPoints, waitForTransaction } = useTakumiWalletContract({
     contractAddress: contractAddress ?? "0x0",
@@ -723,8 +775,11 @@ export function useDepositState() {
     pointPrice,
     tokenAmountNeeded,
     isAuthenticated,
-    hasContract: !!depositContractAddress,
-    isContractFetching,
+    // `depositSupport` is the only availability signal callers should read —
+    // deliberately not re-exporting `hasContract` / `isContractFetching`, the
+    // pair whose ad-hoc combination was the original bug.
+    depositSupport,
+    chainKey,
     contractAddress: depositContractAddress,
     smartContract,
     // Balances

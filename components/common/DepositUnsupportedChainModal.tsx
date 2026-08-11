@@ -1,5 +1,5 @@
 import { WifiOff } from "lucide-react-native";
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
   Modal,
@@ -32,7 +32,20 @@ export default function DepositUnsupportedChainModal({
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(MODAL_HEIGHT)).current;
 
+  // `mounted` trails `visible` by the length of the exit animation. The
+  // sheet used to unmount on the same frame `visible` went false, which
+  // both skipped the slide-out and tore down the native dialog window
+  // while it was still showing — the state Android is happy to leave
+  // stranded over whatever screen comes next.
+  const [mounted, setMounted] = useState(visible);
+
   useEffect(() => {
+    if (visible) setMounted(true);
+  }, [visible]);
+
+  useEffect(() => {
+    if (!mounted) return;
+
     if (visible) {
       Animated.parallel([
         Animated.timing(fadeAnim, {
@@ -47,33 +60,40 @@ export default function DepositUnsupportedChainModal({
           useNativeDriver: true,
         }),
       ]).start();
-    } else {
-      Animated.parallel([
-        Animated.timing(fadeAnim, {
-          toValue: 0,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(translateY, {
-          toValue: MODAL_HEIGHT,
-          duration: 200,
-          useNativeDriver: true,
-        }),
-      ]).start();
+      return;
     }
-  }, [visible, fadeAnim, translateY]);
+
+    const exit = Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(translateY, {
+        toValue: MODAL_HEIGHT,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]);
+    // Only drop the dialog once the slide-out actually finished; an
+    // interrupted exit (the sheet became relevant again) keeps it mounted.
+    exit.start(({ finished }) => {
+      if (finished) setMounted(false);
+    });
+    return () => exit.stop();
+  }, [visible, mounted, fadeAnim, translateY]);
 
   const handleSwitchNetwork = () => {
     onClose();
     setTimeout(() => onSwitchNetwork(), 250);
   };
 
-  if (!visible) return null;
+  if (!mounted) return null;
 
   return (
     <Modal
       transparent
-      visible={visible}
+      visible={mounted}
       animationType="none"
       onRequestClose={onClose}
     >

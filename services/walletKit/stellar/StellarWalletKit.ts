@@ -140,6 +140,8 @@ export function createStellarWalletKit(): WalletKitAdapter {
     namespace: STELLAR_NAMESPACE,
     supportsTokenTransfer: true,
     supportsPrivateKeyImport: true,
+    // Soroban `deposit_points` — `services/nanopay/pathPointDepositStellar.ts`.
+    supportsPointDeposit: true,
     displayName: "Stellar",
     requireBiometricForConnect: true,
 
