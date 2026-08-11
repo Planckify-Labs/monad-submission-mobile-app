@@ -29,10 +29,7 @@ import type {
   TBridgeQuoteResult,
 } from "@/api/types/bridge";
 import type { TWallet } from "@/constants/types/walletTypes";
-import {
-  buildChainConfigFromBlockchain,
-  groupWalletsIntoAccounts,
-} from "@/hooks/useWallet.helpers";
+import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
 import { parseCaip2, parseCaip19 } from "@/services/bridgeRoutes/caip";
 import { bridgeDestinationChoice } from "@/services/bridgeRoutes/destinationChoice";
 import {
@@ -46,6 +43,7 @@ import type { Namespace } from "@/services/chains/types";
 import { confirmedCounterpartyStore } from "@/services/confirmedCounterpartyStore";
 import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { walletKitRegistry } from "@/services/walletKit/registry";
+import { getWalletForNamespace } from "@/services/walletPresence";
 import {
   type ExecutorContext,
   ExecutorError,
@@ -98,21 +96,19 @@ function requireAmountRaw(input: ToolInput, key: string): string {
  * pairing the "Arrives at" card copy already promises: "Your Solana
  * address, which is different from the one you are sending from"), and
  * falling back to any other wallet on that namespace the device knows
- * about. Never invents an address and never returns a wrong-namespace
- * one — `groupWalletsIntoAccounts` can put a private-key-only account's
- * single row first, so this checks `namespace` explicitly rather than
- * trusting `walletForNamespace`'s any-row fallback.
+ * about.
+ *
+ * This is the `counterparty` role of the wallet-presence layer: a
+ * destination never signs, so any OWNED wallet qualifies and the active
+ * wallet is irrelevant. Kept as a named local so the call sites below
+ * still read in bridge terms; the rule itself lives in one place now.
  */
 function findDefaultDestinationWallet(
   wallets: TWallet[],
   sourceAddress: string,
   namespace: Namespace,
 ): TWallet | undefined {
-  const account = groupWalletsIntoAccounts(wallets).find((a) =>
-    a.wallets.some((w) => w.address === sourceAddress),
-  );
-  const sameAccount = account?.wallets.find((w) => w.namespace === namespace);
-  return sameAccount ?? wallets.find((w) => w.namespace === namespace);
+  return getWalletForNamespace(wallets, namespace, sourceAddress);
 }
 
 /**

@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   ApprovalIntent,
 } from "@/services/bridge/approval";
+import { guardWalletPresence } from "@/services/bridge/walletPresenceGuard";
 import type {
   AdapterContext,
   ChainAdapter,
@@ -296,6 +297,19 @@ class SolanaAdapter implements ChainAdapter {
         value: { accounts: [{ address: solWallet.address }] },
       };
     }
+
+    // Zero Solana wallets on the device: show the user a Takumi sheet
+    // that says so and offers to add one, rather than a bare 4100 the
+    // dApp renders however it likes (see `walletPresenceGuard`).
+    const missing = guardWalletPresence(ctx, "solana", silent, () =>
+      makeIntent<SolanaConnectPayload>(
+        req,
+        "connect",
+        { cluster, onlyIfTrusted: silent },
+        null,
+      ),
+    );
+    if (missing) return missing;
 
     if (!solWallet) return rpcError(4100, "no Solana wallet available");
 

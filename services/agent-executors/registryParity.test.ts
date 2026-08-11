@@ -7,6 +7,7 @@ import {
   EXPECTED_MOBILE_TOOLS,
   MOBILE_WRITE_TOOLS,
 } from "./expectedMobileTools";
+import { TOOL_NAMESPACE_ROLES } from "./toolNamespaceRoles";
 
 describe("Registry Parity", () => {
   it("should match EXPECTED_MOBILE_TOOLS with server registry mobile executors", () => {
@@ -35,5 +36,34 @@ describe("Registry Parity", () => {
     const mobileWriteTools = [...MOBILE_WRITE_TOOLS].sort();
 
     expect(mobileWriteTools).toEqual(serverWriteTools);
+  });
+
+  // The app supports four namespaces but a private-key import covers only
+  // ONE, so every tool has to answer "what if the user holds no key on the
+  // chain this touches?". Leaving that to each tool produced 85 independent
+  // answers and a family of failures that blamed the network for a missing
+  // wallet. Requiring a declaration makes the question unskippable: a new
+  // tool without one fails here rather than shipping with whatever its
+  // author happened to assume.
+  it("every mobile tool declares a namespace role", () => {
+    const declared = Object.keys(TOOL_NAMESPACE_ROLES).sort();
+    const expected = [...EXPECTED_MOBILE_TOOLS].sort();
+
+    expect(declared).toEqual(expected);
+  });
+
+  // A `counterparty` tool is one that can name a chain other than the
+  // active wallet's, so it must say WHERE that chain comes from — either
+  // an input key or a namespace fixed by the tool. A spec carrying
+  // neither would silently resolve to "no chain" and skip the check it
+  // was declared to get.
+  it("counterparty roles resolve a chain", () => {
+    for (const [name, spec] of Object.entries(TOOL_NAMESPACE_ROLES)) {
+      if (spec.role !== "counterparty") continue;
+      const resolvable =
+        ("chainArg" in spec && spec.chainArg.length > 0) ||
+        ("namespace" in spec && !!spec.namespace);
+      expect(resolvable, `${name} declares no chain source`).toBe(true);
+    }
   });
 });

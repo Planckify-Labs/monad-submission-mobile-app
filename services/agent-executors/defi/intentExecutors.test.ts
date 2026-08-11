@@ -108,16 +108,36 @@ beforeEach(() => {
 });
 
 describe("defiIntentPreview", () => {
-  it("rejects a non-Sui wallet", async () => {
+  it("rejects when the user owns no Sui wallet at all", async () => {
     const r = await defiIntentPreview(swapInput, {
       ...suiCtx,
       wallet: { namespace: "eip155", address: "0x1" },
+      wallets: [{ namespace: "eip155", address: "0x1" }],
     } as unknown as ExecutorContext);
     expect(r).toEqual({
       status: "failed",
       error: "unsupported_chain",
       reason: "wallet_not_sui",
     });
+  });
+
+  it("previews against an owned Sui wallet even when EVM is active", async () => {
+    // A preview never signs, so it has no business requiring the Sui
+    // wallet to be the active one. Gating on the active wallet made a
+    // Sui-owning user switch wallets just to read a plan.
+    const suiWallet = { namespace: "sui", address: "0xSUI_OWNED" };
+    const r = await defiIntentPreview(swapInput, {
+      ...suiCtx,
+      wallet: { namespace: "eip155", address: "0x1" },
+      wallets: [{ namespace: "eip155", address: "0x1" }, suiWallet],
+    } as unknown as ExecutorContext);
+    expect(r.status).toBe("success");
+    // The dry-run must be attributed to the wallet the PTB was compiled
+    // for, not the active EVM one.
+    expect(h.simulateSuiTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sender: "0xSUI_OWNED" }),
+    );
   });
 
   it("rejects an intent that fails zod validation", async () => {

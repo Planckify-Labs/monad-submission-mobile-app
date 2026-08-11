@@ -36,7 +36,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { MissingWalletNotice } from "@/components/wallet/MissingWalletNotice";
 import type { TWallet } from "@/constants/types/walletTypes";
+import { useAddWalletPrompt } from "@/hooks/useAddWalletPrompt";
 import { useWallet } from "@/hooks/useWallet";
 import type {
   ApprovalDecision,
@@ -75,6 +77,7 @@ export function ConnectSheet({
   // committed that pre-highlight as the dApp-bound wallet, even
   // though the user expected to explicitly pick.
   const { wallets } = useWallet();
+  const { promptFor, sheet: addWalletSheet } = useAddWalletPrompt();
 
   const namespace = intent.namespace as TWallet["namespace"];
 
@@ -120,6 +123,16 @@ export function ConnectSheet({
   const [selected, setSelected] = useState<number>(defaultIndex);
   const [searchQuery, setSearchQuery] = useState("");
 
+  // `selected` is seeded once, but `chainWallets` is not fixed: the
+  // empty state now lets the user import a wallet without leaving this
+  // sheet, which grows the list from zero while `selected` still holds
+  // the -1 it was initialised with. Re-derive rather than syncing in an
+  // effect, so the pick can never point at a wallet this chain doesn't
+  // have.
+  const effectiveSelected = chainWallets.some((w) => w.index === selected)
+    ? selected
+    : defaultIndex;
+
   const filteredWallets = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     if (!q) return chainWallets;
@@ -157,10 +170,10 @@ export function ConnectSheet({
       // sending the index the user actually tapped. Reported wallet
       // mismatch ("always uses first sui wallet") had no reproducer
       // until we could see this side-by-side with the adapter log.
-      const picked = wallets[selected];
+      const picked = wallets[effectiveSelected];
       console.log("[ConnectSheet] approve", {
         namespace,
-        selected,
+        selected: effectiveSelected,
         pickedAddress: picked?.address ?? null,
         pickedName: picked?.name ?? null,
         chainWallets: chainWallets.map(({ wallet, index }) => ({
@@ -173,9 +186,16 @@ export function ConnectSheet({
     onDecision({
       id: intent.id,
       outcome: "approve",
-      data: { walletIndex: selected },
+      data: { walletIndex: effectiveSelected },
     });
-  }, [intent.id, onDecision, selected, wallets, chainWallets, namespace]);
+  }, [
+    intent.id,
+    onDecision,
+    effectiveSelected,
+    wallets,
+    chainWallets,
+    namespace,
+  ]);
 
   // Biometric gating is kit-controlled; EVM kits ship without it, Solana
   // with it. The hook's return values are inert when the kit opts out, so
@@ -287,11 +307,16 @@ export function ConnectSheet({
         keyboardShouldPersistTaps="handled"
       >
         {chainWallets.length === 0 ? (
-          <View className="p-4 rounded-2xl bg-light">
-            <Text className="text-sm text-light-matte-black/70">
-              No {chipDisplayName} wallet found. Add one to continue.
-            </Text>
-          </View>
+          // Reachable now that the chain adapters route a zero-wallet
+          // connect here instead of failing at the JSON-RPC layer, where
+          // the user never saw a Takumi surface at all. Importing from
+          // this CTA re-renders the list below without a round trip —
+          // `chainWallets` derives from the live `wallets` array.
+          <MissingWalletNotice
+            namespace={namespace}
+            variant="block"
+            onPress={() => promptFor(namespace)}
+          />
         ) : filteredWallets.length === 0 ? (
           <View className="items-center py-6">
             <Text className="text-light-matte-black/60 text-center">
@@ -300,7 +325,7 @@ export function ConnectSheet({
           </View>
         ) : (
           filteredWallets.map(({ wallet, index }) => {
-            const isSelected = selected === index;
+            const isSelected = effectiveSelected === index;
             return (
               <Pressable
                 key={wallet.address}
@@ -385,6 +410,8 @@ export function ConnectSheet({
         loading={pending}
         disabled={chainWallets.length === 0}
       />
+
+      {addWalletSheet}
     </SheetModal>
   );
 }

@@ -105,6 +105,13 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   bridge_quote: BridgeQuoteCard,
   bridge_execute: BridgeProgressCard,
   bridge_status: BridgeProgressCard,
+  // Bridges first, then deposits on arrival — so its success payload is
+  // the same `phase`/`outcome`/`source_tx_hash` shape the progress card
+  // already renders. Registered because an unmapped tool renders NOTHING
+  // (`MessageContent` returns null for a name it doesn't know), which
+  // meant every failure here died silently and the user saw only the
+  // model's prose about a call that had actually errored.
+  defi_cross_chain_deposit: BridgeProgressCard,
   x402_fetch: X402FetchCard,
 };
 

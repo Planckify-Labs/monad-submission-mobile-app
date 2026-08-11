@@ -48,6 +48,7 @@ import {
 } from "react-native";
 import { BaseModal } from "@/components/common/BaseModal";
 import LoadinngSpinnerPopup from "@/components/common/LoadinngSpinnerPopup";
+import { missingWalletCopy } from "@/components/wallet/missingWalletCopy";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { useWallet } from "@/hooks/useWallet";
 import type { Namespace } from "@/services/chains/types";
@@ -88,6 +89,19 @@ type Props = {
    * link hides entirely — we never render a dead link.
    */
   onImportSeedPhraseInstead?: () => void;
+  /**
+   * Pre-aims step 1 at a chain when the user arrived from a surface that
+   * already knows which one is missing (a "no Sui wallet" CTA in the
+   * chain switcher, an agent tool card, a dApp connect sheet). Without
+   * it those CTAs could only drop the user on the generic picker to
+   * re-choose the chain they had just been told about.
+   *
+   * This PRE-HIGHLIGHTS only — the user still taps Continue, exactly
+   * like the paste-inference hint below. The §14.6 "user-confirmed pick"
+   * rule is about not letting a guess silently become the choice, and a
+   * caller's hint is still a guess.
+   */
+  initialNamespace?: Namespace;
 };
 
 type Step = 1 | 2 | 3;
@@ -116,10 +130,13 @@ function ImportPrivateKeySheet({
   onClose,
   onWalletAdded,
   onImportSeedPhraseInstead,
+  initialNamespace,
 }: Props): React.ReactElement | null {
   // ── Step machine ──────────────────────────────────────────────────
   const [step, setStep] = useState<Step>(1);
-  const [namespace, setNamespace] = useState<Namespace | null>(null);
+  const [namespace, setNamespace] = useState<Namespace | null>(
+    initialNamespace ?? null,
+  );
   const [privateKey, setPrivateKey] = useState<string>("");
   const [name, setName] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
@@ -150,7 +167,9 @@ function ImportPrivateKeySheet({
     if (!visible) {
       pendingImportRef.current = null;
       setStep(1);
-      setNamespace(null);
+      // Back to the caller's pre-aim, not to nothing — a "no Sui wallet"
+      // CTA that the user dismisses and reopens should still land on Sui.
+      setNamespace(initialNamespace ?? null);
       setPrivateKey("");
       setName("");
       setSubmitting(false);
@@ -158,7 +177,7 @@ function ImportPrivateKeySheet({
       setLoadingMessage("");
       setSubmitError(null);
     }
-  }, [visible]);
+  }, [visible, initialNamespace]);
 
   useEffect(() => {
     if (visible && step === 2) {
@@ -364,6 +383,11 @@ function ImportPrivateKeySheet({
               selected={selectedForPicker}
               onChange={handleNamespaceChange}
               inferredHint={!namespace && inferred !== null}
+              preAimedNamespace={
+                initialNamespace && namespace === initialNamespace
+                  ? initialNamespace
+                  : null
+              }
             />
           ) : null}
 
@@ -451,15 +475,29 @@ type Step1Props = {
   selected: Namespace[];
   onChange: (v: Namespace[]) => void;
   inferredHint: boolean;
+  /** Set when a caller opened this sheet aimed at a specific chain. */
+  preAimedNamespace: Namespace | null;
 };
 
-function Step1Body({ selected, onChange, inferredHint }: Step1Props) {
+function Step1Body({
+  selected,
+  onChange,
+  inferredHint,
+  preAimedNamespace,
+}: Step1Props) {
   return (
     <View>
       <Text className="text-light-matte-black/70 text-sm mb-4">
         Which chain does this private key belong to? One key, one chain — pick
         deliberately.
       </Text>
+      {preAimedNamespace ? (
+        <View className="bg-light-primary-red/10 rounded-xl p-3 mb-3">
+          <Text className="text-light-matte-black text-xs">
+            {`We selected ${missingWalletCopy(preAimedNamespace).chainName} for you. Change it below if that isn't the chain you meant.`}
+          </Text>
+        </View>
+      ) : null}
       {inferredHint ? (
         <View className="bg-light-primary-red/10 rounded-xl p-3 mb-3">
           <Text className="text-light-matte-black text-xs">

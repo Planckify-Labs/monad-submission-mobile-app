@@ -57,6 +57,23 @@ export interface WalletContext {
    * signed in. Added in protocol v1.1 §13.
    */
   points_authenticated?: boolean;
+  /**
+   * Every namespace the device actually holds a wallet on.
+   *
+   * `namespace` above describes only the ACTIVE wallet, which told the
+   * server nothing about what else the user can reach. A seed phrase
+   * derives all four, but a private-key import covers exactly one — so
+   * the model was proposing Sui deposits and Solana bridges to users who
+   * had no key on those chains, and only found out when the executor
+   * refused. The server's DeFi prompt even asserted the opposite ("the
+   * device already holds every wallet they own"), which is true for seed
+   * users and false for imports.
+   *
+   * Sending the inventory lets the model avoid the dead end instead of
+   * walking into it. Omitted by older clients; the server treats absence
+   * as "unknown" and says nothing about ownership rather than guessing.
+   */
+  owned_namespaces?: Array<"eip155" | "solana" | "sui" | "stellar">;
 }
 
 // --- Tool classification ----------------------------------------------------

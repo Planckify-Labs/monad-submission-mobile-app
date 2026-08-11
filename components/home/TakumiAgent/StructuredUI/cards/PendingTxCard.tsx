@@ -34,6 +34,7 @@ import { agentErrorCopy } from "../agentErrorCopy";
 import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
+import { AddWalletErrorAction } from "./AddWalletErrorAction";
 
 type WriteToolOutput = {
   status?: "success" | "failed" | string;
@@ -167,6 +168,7 @@ function HistoricalReceipt({
         >
           {agentErrorCopy(output.error, output.reason)}
         </Text>
+        <AddWalletErrorAction error={output.error} reason={output.reason} />
         {txHash ? (
           <View className="flex-row items-center gap-2 mt-2">
             <Text

@@ -21,6 +21,7 @@ import type {
 } from "@/services/bridge/approval";
 import { BundleStatusStore } from "@/services/bridge/bundleStatus";
 import { NonceTracker } from "@/services/bridge/nonceTracker";
+import { guardWalletPresence } from "@/services/bridge/walletPresenceGuard";
 import type {
   AdapterContext,
   ChainAdapter,
@@ -527,6 +528,23 @@ export class EvmAdapter implements ChainAdapter {
             req.origin.url,
             cfg.chain.id,
           );
+
+          // Zero EVM wallets on the device. `silent: false` because the
+          // eager/reconnect probe is `eth_accounts` (handled above, and
+          // it answers with an empty list) — reaching this arm means the
+          // user actually asked to connect, so a sheet explaining the
+          // gap is warranted rather than a bare `disconnected` the dApp
+          // renders on its own terms.
+          const missing = guardWalletPresence(ctx, "eip155", false, () =>
+            makeIntent(
+              req,
+              "connect",
+              { requestedAccounts: 1, chainId: cfg.chain.id },
+              null,
+            ),
+          );
+          if (missing) return missing;
+
           if (!evmWallet) return err(PROVIDER_ERRORS.disconnected());
 
           // Silent re-connect: if this origin already has a grant for

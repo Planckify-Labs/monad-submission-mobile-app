@@ -39,6 +39,7 @@ import { DefiError } from "@/services/defi/errors/defiErrors";
 import { getDefiAdapter, listDefiAdapters } from "@/services/defi/registry";
 import { getDefaultTokens } from "@/services/tokens/tokenList";
 import { walletKitRegistry } from "@/services/walletKit/registry";
+import { getWalletForNamespace } from "@/services/walletPresence";
 import {
   type ExecutorContext,
   ExecutorError,
@@ -205,18 +206,35 @@ export const crossChainDeposit: MobileToolExecutor = (input, context) =>
       );
 
       // Cross-namespace destinations land at a DIFFERENT address derived
-      // from the same mnemonic (§7.4), and this executor's context holds
-      // only the paying wallet. Require it explicitly rather than
-      // guessing, which is the failure mode that loses funds.
+      // from the same mnemonic (§7.4). Never invent one — but do look at
+      // the wallets the device actually holds before giving up.
+      //
+      // This used to compare only `context.wallet` (the PAYING wallet)
+      // against the destination namespace, which conflated two different
+      // roles: a destination never signs, so it has no business requiring
+      // the active wallet. The effect was that a seed-phrase user active
+      // on Base could not deposit into a Solana venue despite owning the
+      // Solana wallet the funds would land in. `getWalletForNamespace`
+      // prefers the wallet from the SAME account as the payer, which is
+      // the pairing the user expects, and falls back to any owned wallet
+      // on that chain.
+      const derivedDestination = getWalletForNamespace(
+        context.wallets,
+        toChainConfig.namespace,
+        context.wallet.address,
+      );
       const toAddress =
         optionalString(input, "to_address") ??
-        (context.wallet.namespace === toChainConfig.namespace
-          ? context.wallet.address
-          : null);
+        derivedDestination?.address ??
+        null;
       if (!toAddress) {
+        // Genuinely nothing on that chain. Distinct reason from
+        // `unsupported_chain` so the card can say "you need a wallet
+        // there" instead of "that network isn't available", and offer
+        // to add one.
         throw new DefiError(
-          "unsupported_chain",
-          "cross-namespace destination requires an explicit to_address",
+          "no_wallet_on_destination_chain",
+          "no wallet on destination chain",
         );
       }
 

@@ -2,7 +2,6 @@ import { FlashList } from "@shopify/flash-list";
 import { format } from "date-fns";
 import { router } from "expo-router";
 import {
-  Check,
   ChevronRight,
   CopyIcon,
   LogIn,
@@ -13,33 +12,21 @@ import {
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
-  Pressable,
-  ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
-import { BaseModal, ModalHeader } from "@/components/common/BaseModal";
+import { ChainSelectorSheet } from "@/components/common/ChainSelectorSheet";
 import OptimizedImage from "@/components/common/OptimizedImage";
 import WalletSelectorModal from "@/components/wallet/WalletSelectorModal";
-import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { useIsAuthenticated } from "@/hooks/queries/useAuth";
 import {
   useConversationList,
   useDeleteConversation,
 } from "@/hooks/queries/useConversations";
-import { useTokens } from "@/hooks/queries/useTokens";
-import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
 import { useWallet } from "@/hooks/useWallet";
-import {
-  buildChainConfigFromBlockchain,
-  chainCacheKey,
-} from "@/hooks/useWallet.helpers";
-import {
-  formatChainLabel,
-  getNativeSymbol,
-} from "@/services/walletKit/chainInfo";
+import { formatChainLabel } from "@/services/walletKit/chainInfo";
 import { copyToClipboard } from "@/utils/helperUtils";
 
 interface ConversationHistory {
@@ -55,13 +42,10 @@ export default function ConversationHistory({
   const [showWalletSelector, setShowWalletSelector] = useState(false);
   const [showChainSelector, setShowChainSelector] = useState(false);
 
-  const {
-    wallets,
-    activeWalletIndex,
-    activeChain,
-    setActiveWallet,
-    changeActiveChainToConfig,
-  } = useWallet();
+  // No `changeActiveChainToConfig` here any more — switching is the
+  // shared `ChainSelectorSheet`'s job, not this screen's.
+  const { wallets, activeWalletIndex, activeChain, setActiveWallet } =
+    useWallet();
 
   const activeWallet = useMemo(
     () => wallets[activeWalletIndex],
@@ -74,39 +58,6 @@ export default function ConversationHistory({
     isAuthenticated === true ? activeWallet?.address : undefined,
   );
   const { mutate: deleteConv } = useDeleteConversation();
-
-  const { data: blockchains, isLoading: isLoadingBlockchains } =
-    useBlockchainsWithStorage();
-
-  const { data: nativeTokens, isLoading: isLoadingTokens } = useTokens({
-    isNativeCurrency: true,
-    isActive: true,
-  });
-
-  // Chain list for the selector. Every backend `TBlockchain` row is
-  // mapped to a proper `ChainConfig` via `buildChainConfigFromBlockchain`
-  // (same helper `useWallet` uses), so EVM + Solana share a single shape
-  // and the render path stays chain-agnostic — display labels and the
-  // native symbol come from the kit via `formatChainLabel` /
-  // `getNativeSymbol`, not from an `if (ns === "X")` branch here.
-  const allChains = useMemo(() => {
-    if (!blockchains || !nativeTokens) return [];
-    return blockchains.map((blockchain) => {
-      const config = buildChainConfigFromBlockchain(blockchain);
-      const nativeToken =
-        blockchain.tokens?.find((t) => t.isNativeCurrency) ??
-        blockchain.tokens?.[0];
-      return {
-        key: chainCacheKey(config),
-        config,
-        label: formatChainLabel(config),
-        symbol: getNativeSymbol(config) ?? nativeToken?.symbol ?? "",
-        iconUrl: config.iconUrl ?? nativeToken?.logoUrl,
-        isTestnet: config.isTestnet === true,
-        blockchainId: blockchain.id,
-      };
-    });
-  }, [blockchains, nativeTokens]);
 
   const formattedAddress = useMemo(() => {
     if (!activeWallet?.address) return "...";
@@ -125,14 +76,6 @@ export default function ConversationHistory({
   }, [convListData?.items, searchQuery]);
 
   const closeChainModal = useCallback(() => setShowChainSelector(false), []);
-
-  const handleChainSelect = useCallback(
-    async (config: ChainConfig) => {
-      await changeActiveChainToConfig(config);
-      closeChainModal();
-    },
-    [changeActiveChainToConfig, closeChainModal],
-  );
 
   const openChainModal = useCallback(() => setShowChainSelector(true), []);
 
@@ -306,72 +249,14 @@ export default function ConversationHistory({
         title="Switch Wallet"
       />
 
-      <BaseModal
+      {/* The SAME picker the home-screen pill opens. This screen used to
+          render its own copy, which is how it kept offering chains the
+          user holds no wallet for after that was fixed on the other one.
+          Only the trigger above is local now. */}
+      <ChainSelectorSheet
         visible={showChainSelector}
         onClose={closeChainModal}
-        height="67%"
-        contentClassName="px-6"
-      >
-        <ModalHeader title="Select Network" />
-
-        <ScrollView className="flex-1">
-          {isLoadingBlockchains || isLoadingTokens ? (
-            <View className="items-center justify-center py-8">
-              <Text className="text-light-matte-black">
-                Loading networks...
-              </Text>
-            </View>
-          ) : (
-            allChains.map((chain) => {
-              // Chain-agnostic active check — `chainCacheKey` folds each
-              // `ChainConfig` into a stable string that encodes the namespace
-              // and the chain's own id / cluster, so no `if (ns === "X")`
-              // branch is needed here.
-              const isActive = chainCacheKey(activeChain) === chain.key;
-
-              return (
-                <Pressable
-                  key={chain.key}
-                  className={`flex-row items-center p-4 mb-2 rounded-xl ${
-                    isActive ? "bg-light-primary-red/10" : "bg-light"
-                  }`}
-                  onPress={() => handleChainSelect(chain.config)}
-                >
-                  <View className="mr-3 rounded-full overflow-hidden">
-                    <OptimizedImage
-                      source={{ uri: chain.iconUrl }}
-                      style={{ width: 24, height: 24 }}
-                    />
-                  </View>
-
-                  <View className="flex-1">
-                    <Text className="text-light-matte-black font-bold">
-                      {chain.label}
-                    </Text>
-                    <Text className="text-light-matte-black/70 text-sm">
-                      {chain.symbol || "N/A"}
-                    </Text>
-                  </View>
-
-                  {chain.isTestnet && (
-                    <View className="bg-yellow-500/20 px-2 py-1 rounded-full mr-2">
-                      <Text className="text-yellow-700 text-xs font-medium">
-                        Testnet
-                      </Text>
-                    </View>
-                  )}
-
-                  {isActive && (
-                    <View className="w-6 h-6 rounded-full bg-light-primary-red/10 items-center justify-center">
-                      <Check size={14} color="#c71c4b" strokeWidth={3} />
-                    </View>
-                  )}
-                </Pressable>
-              );
-            })
-          )}
-        </ScrollView>
-      </BaseModal>
+      />
     </View>
   );
 }

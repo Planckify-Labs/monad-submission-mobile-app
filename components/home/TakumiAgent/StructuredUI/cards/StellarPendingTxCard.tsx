@@ -39,6 +39,7 @@ import { agentErrorCopy } from "../agentErrorCopy";
 import { factsFirstSummary } from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
+import { AddWalletErrorAction } from "./AddWalletErrorAction";
 
 type StellarWriteData = {
   hash?: string;
@@ -199,6 +200,7 @@ function ResultCard({
         >
           {agentErrorCopy(output.error, output.reason)}
         </Text>
+        <AddWalletErrorAction error={output.error} reason={output.reason} />
         {hash ? (
           <View className="flex-row items-center gap-2 mt-2">
             <Text

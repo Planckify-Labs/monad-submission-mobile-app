@@ -44,13 +44,16 @@ import type {
   TBridgeToken,
 } from "@/api/types/bridge";
 import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
+import { parseCaip2 } from "@/services/bridgeRoutes/caip";
 import { bridgeDestinationChoice } from "@/services/bridgeRoutes/destinationChoice";
+import type { Namespace } from "@/services/chains/types";
 import { tapFeedback } from "@/utils/hapticsUtils";
 import { agentErrorCopy } from "../agentErrorCopy";
 import { approvalSummaryFromToolInput } from "../approvalSummary";
 import { resolveAssetMeta } from "../resolveAssetMeta";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
+import { AddWalletErrorAction } from "./AddWalletErrorAction";
 import {
   chainLabel,
   formatTokenValue,
@@ -344,6 +347,18 @@ const BridgeProgressCard: React.FC<
         <Text className="text-sm text-light-matte-black/80 mt-1.5">
           {agentErrorCopy(output.error, output.reason)}
         </Text>
+        {/* Also serves `defi_cross_chain_deposit`, whose missing-wallet
+            failure is the most likely one to land here. The reason names
+            no chain, so pass the one the transfer was headed for. */}
+        <AddWalletErrorAction
+          error={output.error}
+          reason={output.reason}
+          destinationNamespace={
+            input?.to_chain
+              ? (parseCaip2(input.to_chain)?.namespace as Namespace | undefined)
+              : undefined
+          }
+        />
       </View>
     );
   }

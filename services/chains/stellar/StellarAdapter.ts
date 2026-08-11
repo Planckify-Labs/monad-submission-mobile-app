@@ -37,6 +37,7 @@ import type {
   ApprovalDecision,
   ApprovalIntent,
 } from "@/services/bridge/approval";
+import { guardWalletPresence } from "@/services/bridge/walletPresenceGuard";
 import type {
   AdapterContext,
   ChainAdapter,
@@ -321,6 +322,23 @@ class StellarAdapter implements ChainAdapter {
   ): ChainResult {
     const network: StellarNetwork = resolveGrantedNetwork(req.origin.url);
     const wallet = pickStellarWalletForOrigin(ctx, req.origin.url, network);
+
+    // Zero Stellar wallets on the device: show the user a Takumi sheet
+    // that says so and offers to add one, rather than a bare
+    // UNAUTHORIZED the dApp renders however it likes (see
+    // `walletPresenceGuard`). `silent: false` because the passive
+    // probes dApps fire on load (`getAddress`, `isAllowed`) are separate
+    // arms that already answer without exposing anything.
+    const missing = guardWalletPresence(ctx, "stellar", false, () =>
+      makeIntent<StellarConnectPayload>(
+        req,
+        "connect",
+        { network, viaSetAllowedStatus },
+        null,
+      ),
+    );
+    if (missing) return missing;
+
     if (!wallet) {
       return rpcError(
         STELLAR_ERROR_CODES.UNAUTHORIZED,

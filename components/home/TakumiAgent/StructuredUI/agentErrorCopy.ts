@@ -21,6 +21,8 @@
  * All copy is hand-written — no raw runtime / response text reaches the user.
  */
 
+import type { Namespace } from "@/services/chains/types";
+
 const COPY: Record<string, string> = {
   // --- coarse ExecutorErrorCode taxonomy --------------------------------
   stale_precondition:
@@ -32,6 +34,24 @@ const COPY: Record<string, string> = {
   wallet_type_cannot_execute: "This wallet can't sign transactions.",
   not_implemented: "That isn't supported here yet.",
   invalid_input: "I couldn't read that request. Try rephrasing what you want.",
+
+  // --- missing-wallet family --------------------------------------------
+  // These reasons were all being thrown with no entry here, so they fell
+  // through to their coarse code and told the user "That isn't available
+  // on this network yet." The network was always fine; the user simply
+  // held no key on it, which is both a different problem and a fixable
+  // one. `wallet_cannot_execute` was worse still: its coarse code is
+  // `invalid_input`, so a missing signer rendered as "I couldn't read
+  // that request."
+  wallet_not_evm:
+    "This action needs an Ethereum wallet. Add one, then try again.",
+  wallet_not_solana:
+    "This action needs a Solana wallet. Add one, then try again.",
+  wallet_not_sui: "This action needs a Sui wallet. Add one, then try again.",
+  wallet_not_stellar:
+    "This action needs a Stellar wallet. Add one, then try again.",
+  wallet_cannot_execute:
+    "This wallet can't sign that transaction. Switch to one that can, or add a wallet for this chain.",
 
   // --- granular reasons (more specific than their coarse code) ----------
   // stale_precondition family
@@ -54,6 +74,10 @@ const COPY: Record<string, string> = {
     "Let me price this again so you can see exactly which wallet it lands in before you approve.",
   invalid_to_address_format:
     "That doesn't look like a valid address for the destination chain.",
+  destination_not_ready:
+    "The destination wallet isn't ready to receive this yet.",
+  destination_missing_trustline:
+    "The destination wallet needs to accept this asset first. Add a trustline for it, then try again.",
   // swap-specific reasons surfaced by the Sui Intent preview path
   amount_below_minimum:
     "That amount is below the minimum for this swap. Try a larger amount.",
@@ -65,6 +89,34 @@ const FALLBACK =
   "I couldn't complete that right now. Try again in a moment, or adjust the amount.";
 
 /**
+ * The capability facades build their reason by interpolating the active
+ * namespace (`no native send route for namespace solana`), so these can't
+ * be keyed in `COPY` directly. They all mean the same thing to a user.
+ */
+const ROUTE_REASON_PREFIXES = [
+  "no native send route for namespace",
+  "no token send route for namespace",
+  "no route for namespace",
+];
+
+const ROUTE_REASON_COPY =
+  "This wallet's chain can't do that. Switch chains, or add a wallet that can.";
+
+/**
+ * Reasons that name their own namespace, so a card can offer to add the
+ * right wallet without knowing anything about the tool that failed.
+ */
+const NAMESPACE_BY_REASON: Record<string, Namespace> = {
+  wallet_not_evm: "eip155",
+  wallet_not_solana: "solana",
+  wallet_not_sui: "sui",
+  wallet_not_stellar: "stellar",
+};
+
+/** An offer the failure card can render as a button. */
+export type AgentErrorAction = { kind: "add_wallet"; namespace: Namespace };
+
+/**
  * Resolve `(error, reason)` to friendly copy. Prefers the granular `reason`,
  * then the coarse `error`, then a generic fallback.
  */
@@ -72,5 +124,43 @@ export function agentErrorCopy(
   error: string | undefined,
   reason?: string | undefined,
 ): string {
-  return (reason && COPY[reason]) || (error && COPY[error]) || FALLBACK;
+  if (reason) {
+    const exact = COPY[reason];
+    if (exact) return exact;
+    if (ROUTE_REASON_PREFIXES.some((p) => reason.startsWith(p))) {
+      return ROUTE_REASON_COPY;
+    }
+  }
+  return (error && COPY[error]) || FALLBACK;
+}
+
+/**
+ * The action, if any, that would clear this failure — currently only
+ * "add a wallet on chain X".
+ *
+ * Kept separate from `agentErrorCopy` rather than folded into a single
+ * return object so the many cards that just render a line of text stay
+ * unchanged. Cards that can host a button call this too.
+ *
+ * `destinationNamespace` is for failures whose chain lives in the tool's
+ * payload rather than in the reason string (a bridge knows its
+ * `to_chain`; the reason `no_wallet_on_destination_chain` does not).
+ */
+export function agentErrorAction(
+  error: string | undefined,
+  reason?: string | undefined,
+  destinationNamespace?: Namespace,
+): AgentErrorAction | null {
+  if (reason) {
+    const named = NAMESPACE_BY_REASON[reason];
+    if (named) return { kind: "add_wallet", namespace: named };
+    if (reason === "no_wallet_on_destination_chain" && destinationNamespace) {
+      return { kind: "add_wallet", namespace: destinationNamespace };
+    }
+  }
+  // `wallet_cannot_execute` deliberately offers nothing: it can mean a
+  // watch-only wallet just as easily as a missing one, and we'd be
+  // guessing which chain to point at.
+  void error;
+  return null;
 }

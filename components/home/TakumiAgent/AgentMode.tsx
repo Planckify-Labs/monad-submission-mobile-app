@@ -81,6 +81,7 @@ import {
   getEvmChainId,
   getNativeSymbol,
 } from "@/services/walletKit/chainInfo";
+import { ownedNamespaces } from "@/services/walletPresence";
 import * as walletService from "@/services/walletService";
 import AgentOnboarding from "./AgentModeOnboarding/AgentOnboarding";
 import ChatInput from "./ChatInput";
@@ -450,13 +451,18 @@ export default function AgentMode() {
       chain_symbol: symbol,
       label: activeWallet?.name,
       points_authenticated: pointsAuthenticated,
+      // What the user can actually reach, not just where they are
+      // standing. Without this the model only ever saw the ACTIVE
+      // namespace and happily proposed actions on chains a private-key
+      // user holds no key for.
+      owned_namespaces: ownedNamespaces(wallets),
       // Cast to permissive shape — `capabilities` isn't in the
       // `WalletContext` wire type (`protocol.ts` is a verbatim mirror
       // of the server file). Adding it here avoids editing the mirrored
       // wire type while still sending the hint.
       ...({ capabilities } as { capabilities: readonly string[] }),
     };
-  }, [activeWallet, activeChain, pointsAuthenticated]);
+  }, [activeWallet, activeChain, pointsAuthenticated, wallets]);
 
   const chatListRef = useRef<any>(null);
 

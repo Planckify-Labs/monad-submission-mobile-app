@@ -43,8 +43,12 @@ ALLOWLIST=(
   "components/wallet/create/ImportPrivateKeySheet.helpers.ts"
   "components/wallet/create/ImportPrivateKeySheet.tsx"
 
-  # Chain picker UI — surfacing namespaces is the picker's job.
+  # Chain picker UI — surfacing namespaces is the picker's job. The list
+  # itself now lives in `ChainSelectorSheet` (shared by the home-screen
+  # pill and the agent's conversation list, which used to each have their
+  # own copy); `ChainSelector` is just the pill trigger.
   "components/common/ChainSelector.tsx"
+  "components/common/ChainSelectorSheet.tsx"
 
   # Wallet selector + details show namespace-specific chips/accents.
   # Should eventually read `kit.brandColor`; leave allowlisted until

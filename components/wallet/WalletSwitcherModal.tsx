@@ -7,6 +7,7 @@ import type { TWallet } from "@/constants/types/walletTypes";
 import { usePinnedWallets } from "@/hooks/usePinnedWallets";
 import { useWalletAccountGroups } from "@/hooks/useWalletAccountGroups";
 import type { Namespace } from "@/services/chains/types";
+import { ownedNamespaces } from "@/services/walletPresence";
 import {
   flattenWalletGroups,
   type WalletGroupListItem,
@@ -47,13 +48,10 @@ const WalletSwitcherModal = memo(function WalletSwitcherModal({
 
   // Only surface namespace pills the user actually has wallets in —
   // a solo-EVM user shouldn't see a dead "Solana" pill.
-  const availableNamespaces = useMemo(() => {
-    const set = new Set<Namespace>();
-    for (const w of wallets) {
-      if (w.namespace) set.add(w.namespace);
-    }
-    return Array.from(set);
-  }, [wallets]);
+  const availableNamespaces = useMemo(
+    () => ownedNamespaces(wallets),
+    [wallets],
+  );
 
   const activeAddress = wallets[activeWalletIndex]?.address;
   const { groups, isExpanded, toggleExpanded } = useWalletAccountGroups(

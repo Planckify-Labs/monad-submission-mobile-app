@@ -28,6 +28,7 @@ import type { CompileContext } from "@/services/chains/sui/intent/intentTypes";
 import { simulateSuiTransaction } from "@/services/chains/sui/simulation";
 import { DefiError } from "@/services/defi/errors/defiErrors";
 import { SuiSwapError } from "@/services/swap/sui/types";
+import { getWalletForNamespace } from "@/services/walletPresence";
 import { parseToolInput } from "../parseInput";
 import {
   getActiveSuiChain,
@@ -164,7 +165,25 @@ function mapCompileError(err: unknown): ExecutorError {
  */
 export const defiIntentPreview: MobileToolExecutor = (input, context) =>
   safeExecute(async () => {
-    if (context.wallet?.namespace !== SUI_NS) {
+    // A preview compiles and dry-runs; it never signs. So it does not
+    // need the Sui wallet to be the ACTIVE one, only for the user to own
+    // one — the same distinction `bridge_quote` already makes when it
+    // prices against a destination wallet that isn't on screen. Gating on
+    // `context.wallet.namespace` made a Sui-owning user switch wallets
+    // just to see a plan they were entitled to see.
+    const previewWallet =
+      context.wallet?.namespace === SUI_NS
+        ? context.wallet
+        : getWalletForNamespace(
+            // `?? []` because an absent inventory means "we know of no
+            // wallets", which must fall through to the curated
+            // `wallet_not_sui` below rather than throw and surface as an
+            // opaque `unknown_error`.
+            context.wallets ?? [],
+            SUI_NS,
+            context.wallet?.address,
+          );
+    if (!previewWallet) {
       throw new ExecutorError(
         ExecutorErrorCode.UnsupportedChain,
         "wallet_not_sui",
@@ -177,7 +196,7 @@ export const defiIntentPreview: MobileToolExecutor = (input, context) =>
 
     const chain = getActiveSuiChain();
     const tokens = await loadSuiTokens(context, chain);
-    const ctx: CompileContext = { wallet: context.wallet, chain, tokens };
+    const ctx: CompileContext = { wallet: previewWallet, chain, tokens };
 
     // Pool-level deposits (§6/§8): when the agent pinned an exact pool via an
     // opaque `poolId`, re-fetch the AUTHORITATIVE depositTarget server-side and
@@ -226,7 +245,10 @@ export const defiIntentPreview: MobileToolExecutor = (input, context) =>
     if (compiled.inputCoinType) {
       inputBalanceRaw = await readInputBalance(
         client,
-        context.wallet.address,
+        // `previewWallet`, not `context.wallet` — the PTB above was
+        // compiled for it, so reading the balance of a different wallet
+        // (the active EVM one) would gate the preview on the wrong funds.
+        previewWallet.address,
         compiled.inputCoinType,
       );
       // Fail fast if the wallet can't fund the input (the quote doesn't check).
@@ -241,7 +263,7 @@ export const defiIntentPreview: MobileToolExecutor = (input, context) =>
 
     const dryRun = await simulateSuiTransaction(client, {
       txBase64: compiled.ptbBase64,
-      sender: context.wallet.address,
+      sender: previewWallet.address,
     });
     // Share the client + pre-read balance so the checks don't re-open
     // connections or re-read the same balance.

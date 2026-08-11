@@ -39,6 +39,10 @@ export type DefiErrorCode =
   | "no_onchain_balance"
   | "submission_unconfirmed"
   | "wallet_cannot_execute"
+  // Distinct from `unsupported_chain`: the chain is fine, the user just
+  // holds no key on it. Merging the two told users a network was
+  // unavailable when the real fix was one import away.
+  | "no_wallet_on_destination_chain"
   | "network_error"
   | "user_cancelled"
   | "unknown";
@@ -69,6 +73,7 @@ const PASSTHROUGH_CODES = new Set<DefiErrorCode>([
   "no_onchain_balance",
   "submission_unconfirmed",
   "wallet_cannot_execute",
+  "no_wallet_on_destination_chain",
   "network_error",
   "user_cancelled",
   "unknown",
@@ -353,6 +358,11 @@ export const defiErrorCopy: Record<DefiErrorCode, DefiErrorCopy> = {
   wallet_cannot_execute: {
     title: "Wallet can't sign",
     body: "This wallet can't sign transactions. Switch to a wallet with signing enabled.",
+    cta: "review",
+  },
+  no_wallet_on_destination_chain: {
+    title: "No wallet on that chain",
+    body: "You don't have a wallet on the destination chain yet. Add one, then try again.",
     cta: "review",
   },
   network_error: {

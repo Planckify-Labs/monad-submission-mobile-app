@@ -69,6 +69,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { formatUnits } from "viem";
+import type { TBlockchain } from "@/api/types/blockchain";
 import { BaseModal, ModalHeader } from "@/components/common/BaseModal";
 import PinConfirmationModal from "@/components/common/PinConfirmationModal";
 import { PaymentError } from "@/components/PaymentError";
@@ -88,7 +89,6 @@ import {
   type PaymentToken,
   usePaymentTokens,
 } from "@/hooks/queries/usePaymentTokens";
-import type { TBlockchain } from "@/api/types/blockchain";
 import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
 import { useWallet } from "@/hooks/useWallet";
 import {
@@ -134,6 +134,7 @@ import {
   matchesBlockchainRow,
   preferredChainRail,
 } from "@/services/walletKit/chainInfo";
+import { ownedNamespaces } from "@/services/walletPresence";
 
 /** Arc Testnet viem chainId — source chain for the Nanopay EIP-3009 sig. */
 const ARC_TESTNET_CHAIN_ID = 5042002;
@@ -1433,10 +1434,24 @@ function MintFallback({
     return new Set(allPaymentTokens.map((t) => t.blockchain.id));
   }, [allPaymentTokens]);
 
+  // Payment-enabled AND signable by this device. The merchant's accepted
+  // list says nothing about what the user holds a key for, so a
+  // private-key EVM user could pick a Solana source chain, get through
+  // the picker, and only hit a generic `chain_mismatch` at sign time
+  // when `changeActiveChainToConfig` couldn't move the wallet. Filtering
+  // here keeps a dead option out of the list instead of failing later.
+  //
+  // `wallets.length === 0` (still hydrating) is treated as "unknown" and
+  // filters nothing, so the picker never blanks on first paint.
   const availableChains = useMemo(() => {
     if (!blockchains?.length) return [];
-    return blockchains.filter((b) => paymentChainIds.has(b.id));
-  }, [blockchains, paymentChainIds]);
+    const payable = blockchains.filter((b) => paymentChainIds.has(b.id));
+    if (wallets.length === 0) return payable;
+    const owned = new Set(ownedNamespaces(wallets));
+    return payable.filter((b) =>
+      owned.has(buildChainConfigFromBlockchain(b).namespace),
+    );
+  }, [blockchains, paymentChainIds, wallets]);
 
   const selectedChain = useMemo(
     () => availableChains.find((b) => b.id === selectedChainId) ?? null,

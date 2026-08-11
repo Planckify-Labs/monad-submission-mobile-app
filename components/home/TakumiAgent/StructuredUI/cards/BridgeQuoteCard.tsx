@@ -60,10 +60,12 @@ import { parseCaip2 } from "@/services/bridgeRoutes/caip";
 import { bridgeDestinationChoice } from "@/services/bridgeRoutes/destinationChoice";
 import { checkBridgeDestinationReadiness } from "@/services/bridgeRoutes/execute";
 import { buildBridgeQuotePayload } from "@/services/bridgeRoutes/quotePayload";
+import type { Namespace } from "@/services/chains/types";
 import { addressesEqual } from "@/services/walletKit/chainInfo";
 import { tapFeedback } from "@/utils/hapticsUtils";
 import { agentErrorCopy } from "../agentErrorCopy";
 import type { ToolComponentProps } from "../types";
+import { AddWalletErrorAction } from "./AddWalletErrorAction";
 import {
   chainLabel,
   effectiveRatePercent,
@@ -778,6 +780,17 @@ const BridgeQuoteCard: React.FC<
         <Text className="text-sm text-light-matte-black/80 mt-1.5">
           {agentErrorCopy(output.error, output.reason)}
         </Text>
+        {/* `no_wallet_on_destination_chain` names no chain, so hand the
+            action the one the user asked to bridge to. */}
+        <AddWalletErrorAction
+          error={output.error}
+          reason={output.reason}
+          destinationNamespace={
+            input?.to_chain
+              ? (parseCaip2(input.to_chain)?.namespace as Namespace | undefined)
+              : undefined
+          }
+        />
       </Shell>
     );
   }

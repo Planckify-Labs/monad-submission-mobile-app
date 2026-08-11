@@ -42,6 +42,7 @@ import {
 import { BaseModal, ModalHeader } from "@/components/common/BaseModal";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { useWallet } from "@/hooks/useWallet";
+import type { Namespace } from "@/services/chains/types";
 import { bootstrapFirstLoginWallets } from "@/services/walletKit/bootstrap";
 import {
   type AddWalletStep,
@@ -61,6 +62,18 @@ type Props = {
   visible: boolean;
   onClose: () => void;
   onWalletAdded: (walletOrWallets: TWallet | TWallet[]) => void;
+  /**
+   * Opens straight into the private-key sub-sheet, pre-aimed at this
+   * chain. Set by surfaces that already know which wallet is missing
+   * (chain switcher, agent tool cards, dApp connect sheet) so the user
+   * isn't sent to the generic picker to re-pick the chain they were
+   * just told they lack.
+   *
+   * The seed-phrase route stays one tap away via the sub-sheet's footer
+   * link — importing a mnemonic covers this chain too, and for most
+   * users is the better answer.
+   */
+  initialNamespace?: Namespace;
 };
 
 type PickerCardProps = {
@@ -113,31 +126,37 @@ const AddWalletSheet: React.FC<Props> = memo(function AddWalletSheet({
   visible,
   onClose,
   onWalletAdded,
+  initialNamespace,
 }: Props) {
-  const [step, setStep] = useState<AddWalletStep>("picker");
+  // A caller that named a chain has already made the "which route"
+  // decision for the user, so the picker would be a dead step. Everything
+  // else still starts on the picker per spec §14.5.
+  const entryStep: AddWalletStep = initialNamespace ? "pk" : "picker";
+
+  const [step, setStep] = useState<AddWalletStep>(entryStep);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const { addWallets } = useWallet();
 
   const prevVisibleRef = useRef<boolean>(false);
 
-  // Close handler: always wipe the step so next open starts on the
-  // picker (spec §14.5). Parent controls the `visible` flag; we just
-  // report the close event.
+  // Close handler: always wipe the step so next open starts where this
+  // invocation should start (spec §14.5). Parent controls the `visible`
+  // flag; we just report the close event.
   const handleClose = useCallback(() => {
-    setStep("picker");
+    setStep(entryStep);
     onClose();
-  }, [onClose]);
+  }, [onClose, entryStep]);
 
   // Edge-detect hidden→visible transitions. If the parent re-opens the
   // sheet without an intermediate close (e.g. deep-link that flips
-  // visible true→false→true quickly), still land on the picker.
+  // visible true→false→true quickly), still land on the entry step.
   useEffect(() => {
     if (shouldResetOnVisibleChange(prevVisibleRef.current, visible)) {
-      setStep("picker");
+      setStep(entryStep);
     }
     prevVisibleRef.current = visible;
-  }, [visible]);
+  }, [visible, entryStep]);
 
   // ── Sub-sheet wiring ───────────────────────────────────────────────
   // Each sub-sheet gets `visible={visible && step === "..."}` so only
@@ -145,9 +164,16 @@ const AddWalletSheet: React.FC<Props> = memo(function AddWalletSheet({
   // their wallet payload through `onWalletAdded` and we close the
   // whole sheet (resetting the step). On their own `onClose`, we rewind
   // to the picker so the user can try another option.
+  // Sub-sheet back chevron. When the user was dropped straight into the
+  // private-key flow there is no picker behind it to rewind to, so back
+  // means dismiss the whole sheet.
   const handleSubSheetClose = useCallback(() => {
+    if (initialNamespace) {
+      handleClose();
+      return;
+    }
     setStep("picker");
-  }, []);
+  }, [initialNamespace, handleClose]);
 
   // "Create new wallet" → silently auto-mint one wallet per registered
   // kit from a single CSPRNG mnemonic (spec §14.3). No seed reveal, no
@@ -215,6 +241,7 @@ const AddWalletSheet: React.FC<Props> = memo(function AddWalletSheet({
         onClose={handleSubSheetClose}
         onWalletAdded={handlePrivateKeyWalletAdded}
         onImportSeedPhraseInstead={handleImportSeedPhraseInstead}
+        initialNamespace={initialNamespace}
       />
     );
   }

@@ -38,13 +38,14 @@ import {
   Coins,
   ExternalLink,
   LogIn,
+  Plus,
   Search,
   ShieldCheck,
   Sparkles,
   TrendingUp,
 } from "lucide-react-native";
 import type React from "react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Pressable,
   Text,
@@ -55,6 +56,9 @@ import {
 import { strategiesApi } from "@/api/endpoints/strategies";
 import SingleLoadingSekeleton from "@/components/common/SingleLoadingSekeleton";
 import { useUserStrategy } from "@/hooks/queries/useStrategy";
+import { useAddWalletPrompt } from "@/hooks/useAddWalletPrompt";
+import { useWallet } from "@/hooks/useWallet";
+import type { Namespace } from "@/services/chains/types";
 import {
   type DisplayPool,
   groupOpportunities,
@@ -63,6 +67,7 @@ import {
 } from "@/services/defi/opportunityDisplay";
 import { protocolAppUrl } from "@/services/defi/protocolLinks";
 import { getChainFamilyLabel } from "@/services/walletKit/chainInfo";
+import { ownedNamespaces } from "@/services/walletPresence";
 import { tapFeedback } from "@/utils/hapticsUtils";
 import type { ToolComponentProps } from "../types";
 import PagerButton from "./PagerButton";
@@ -360,7 +365,22 @@ function Checkbox({ checked }: { checked: boolean }) {
 // Per-row executability chip (spec §2.1 / §9.2). "Manual" reads as a subdued
 // grey chip; in-app rows carry the checkbox as their affordance, so they only
 // show an "In-app" chip when a group mixes both to make the split explicit.
-function ExecBadge({ inApp }: { inApp: boolean }) {
+// "Add wallet" is amber because it is neither a capability limit nor a dead
+// end — it is the one state the user can clear themselves.
+function ExecBadge({
+  inApp,
+  hasWallet,
+}: {
+  inApp: boolean;
+  hasWallet: boolean;
+}) {
+  if (inApp && !hasWallet) {
+    return (
+      <View className="rounded-full bg-amber-50 px-1.5 py-0.5">
+        <Text className="text-[9px] font-bold text-amber-700">Add wallet</Text>
+      </View>
+    );
+  }
   return inApp ? (
     <View className="rounded-full bg-emerald-50 px-1.5 py-0.5">
       <Text className="text-[9px] font-bold text-emerald-700">In-app</Text>
@@ -382,6 +402,17 @@ function ManualGlyph() {
   );
 }
 
+// Leading glyph for an in-app pool the user has no wallet for. Same shell
+// as `ManualGlyph` so the row still scans as "not checkable", but amber
+// rather than grey: this one is fixable, and tapping it starts the fix.
+function NoWalletGlyph() {
+  return (
+    <View className="w-5 h-5 rounded-md border-2 border-amber-300 items-center justify-center bg-white">
+      <Plus size={11} color="#b45309" strokeWidth={3} />
+    </View>
+  );
+}
+
 /**
  * One concrete pool. In-app pools are checkable (the multi-select builder
  * acts only on these); manual pools render no checkbox and deep-link out
@@ -395,8 +426,10 @@ function PoolRow({
   showProtocol,
   showBadge,
   selected,
+  hasWallet,
   onToggle,
   onManual,
+  onNoWallet,
   onInspect,
 }: {
   pool: DisplayPool;
@@ -405,11 +438,18 @@ function PoolRow({
   showProtocol: boolean;
   showBadge: boolean;
   selected: boolean;
+  /** False only when we positively know the user holds no key here. */
+  hasWallet: boolean;
   onToggle: () => void;
   onManual: () => void;
+  onNoWallet: () => void;
   onInspect: () => void;
 }) {
   const inApp = pool.inApp;
+  // Checkable requires BOTH an in-app route and a wallet to sign with.
+  // Without the second condition the row let the user build a deposit
+  // that could only fail once it reached the executor.
+  const checkable = inApp && hasWallet;
   const primary = showProtocol
     ? prettyProtocol(pool.protocol_slug)
     : pool.pool_meta || "Pool";
@@ -430,7 +470,8 @@ function PoolRow({
     <Pressable
       onPress={() => {
         onInspect();
-        (inApp ? onToggle : onManual)();
+        if (!inApp) return onManual();
+        return checkable ? onToggle() : onNoWallet();
       }}
       android_ripple={{ color: "rgba(0,0,0,0.04)" }}
       className={`flex-row items-center gap-3 active:opacity-70 px-3.5 py-3 mb-1.5 rounded-2xl border ${
@@ -439,7 +480,13 @@ function PoolRow({
           : "border-light-matte-black/10 bg-white"
       }`}
     >
-      {inApp ? <Checkbox checked={selected} /> : <ManualGlyph />}
+      {!inApp ? (
+        <ManualGlyph />
+      ) : checkable ? (
+        <Checkbox checked={selected} />
+      ) : (
+        <NoWalletGlyph />
+      )}
       <View className="flex-1 min-w-0">
         <View className="flex-row items-center gap-1.5">
           <Text
@@ -451,7 +498,11 @@ function PoolRow({
             {primary}
           </Text>
           {isTop ? <SafestPill /> : null}
-          {showBadge ? <ExecBadge inApp={inApp} /> : null}
+          {/* The missing-wallet state is always worth badging: unlike
+              "Manual" it isn't implied by anything else in the row. */}
+          {showBadge || (inApp && !hasWallet) ? (
+            <ExecBadge inApp={inApp} hasWallet={hasWallet} />
+          ) : null}
         </View>
         {subLabel ? (
           <Text className="text-[11px] text-gray-500 mt-0.5" numberOfLines={1}>
@@ -479,6 +530,12 @@ function PoolRow({
           {!inApp ? (
             <Text className="text-[11px] text-light-primary-red font-medium">
               {tvl || safety ? "· " : ""}Deposit on site ↗
+            </Text>
+          ) : null}
+          {inApp && !hasWallet ? (
+            <Text className="text-[11px] text-amber-700 font-medium">
+              {tvl || safety ? "· " : ""}
+              {`Add a ${chain || "wallet"} wallet to deposit`}
             </Text>
           ) : null}
         </View>
@@ -522,8 +579,10 @@ function GroupCard({
   expanded,
   onToggleExpand,
   isSelected,
+  hasWalletFor,
   onTogglePool,
   onManualPool,
+  onNoWalletPool,
   onInspect,
 }: {
   group: OpportunityGroup;
@@ -532,8 +591,10 @@ function GroupCard({
   expanded: boolean;
   onToggleExpand: () => void;
   isSelected: (rowKey: string) => boolean;
+  hasWalletFor: (pool: DisplayPool) => boolean;
   onTogglePool: (rowKey: string) => void;
   onManualPool: (slug: string, appUrl?: string | null) => void;
+  onNoWalletPool: (pool: DisplayPool) => void;
   onInspect: (pool: DisplayPool) => void;
 }) {
   const mixed = group.inAppCount > 0 && group.inAppCount < group.poolCount;
@@ -548,8 +609,10 @@ function GroupCard({
         showProtocol
         showBadge={!pool.inApp}
         selected={isSelected(pool.rowKey)}
+        hasWallet={hasWalletFor(pool)}
         onToggle={() => onTogglePool(pool.rowKey)}
         onManual={() => onManualPool(pool.protocol_slug, pool.app_url)}
+        onNoWallet={() => onNoWalletPool(pool)}
         onInspect={() => onInspect(pool)}
       />
     );
@@ -633,8 +696,10 @@ function GroupCard({
               showProtocol={false}
               showBadge={mixed}
               selected={isSelected(pool.rowKey)}
+              hasWallet={hasWalletFor(pool)}
               onToggle={() => onTogglePool(pool.rowKey)}
               onManual={() => onManualPool(pool.protocol_slug, pool.app_url)}
+              onNoWallet={() => onNoWalletPool(pool)}
               onInspect={() => onInspect(pool)}
             />
           ))}
@@ -648,7 +713,43 @@ const OpportunityListCard: React.FC<
   ToolComponentProps<OpportunityInput, OpportunityOutput>
 > = ({ state, input, output, onUserPrompt, showSetupCTA = true }) => {
   const { data: strategy } = useUserStrategy();
+  const { wallets } = useWallet();
+  const { promptFor, sheet: addWalletSheet } = useAddWalletPrompt();
   const [page, setPage] = useState(0);
+
+  const owned = useMemo(
+    () => new Set<Namespace>(ownedNamespaces(wallets)),
+    [wallets],
+  );
+
+  /**
+   * Whether the user could actually sign a deposit into this pool.
+   *
+   * Fails OPEN twice over. `namespace` is optional on the server payload,
+   * and an empty `owned` set is indistinguishable from wallets not having
+   * hydrated out of SecureStore yet — neither is evidence the user lacks
+   * a wallet, and treating them as such would flash "Add wallet" across
+   * every row on mount. A wrongly-enabled row still fails safely at the
+   * executor; a wrongly-disabled one is invisible and unexplainable.
+   */
+  const hasWalletFor = useCallback(
+    (pool: DisplayPool) => {
+      const ns = pool.namespace as Namespace | undefined;
+      if (!ns || owned.size === 0) return true;
+      return owned.has(ns);
+    },
+    [owned],
+  );
+
+  const promptAddWalletForPool = useCallback(
+    (pool: DisplayPool) => {
+      const ns = pool.namespace as Namespace | undefined;
+      if (!ns) return;
+      tapFeedback();
+      promptFor(ns);
+    },
+    [promptFor],
+  );
   // Multi-select deposit builder: checked pools + their per-row amount, keyed
   // by the stable rowKey so a selection survives paging (spec §9.2). Only
   // in-app pools are ever added.
@@ -984,8 +1085,10 @@ const OpportunityListCard: React.FC<
             expanded={expanded.has(group.key)}
             onToggleExpand={() => toggleExpand(group.key)}
             isSelected={(key) => selected.has(key)}
+            hasWalletFor={hasWalletFor}
             onTogglePool={toggleRow}
             onManualPool={openManual}
+            onNoWalletPool={promptAddWalletForPool}
             onInspect={devLogResolvedTarget}
           />
         ))}
@@ -1093,6 +1196,8 @@ const OpportunityListCard: React.FC<
           {showSetupCTA ? <SetupStrategyCTA /> : null}
         </>
       )}
+
+      {addWalletSheet}
     </View>
   );
 };

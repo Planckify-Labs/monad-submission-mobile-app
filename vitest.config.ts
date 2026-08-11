@@ -65,6 +65,9 @@ export default defineConfig({
       "services/agent-executors/defi/opportunityScope.test.ts",
       "services/agent-executors/defi/intentSchemaParity.test.ts",
       "services/agent-executors/parseInput.test.ts",
+      // Wallet-namespace access layer: the signer / counterparty /
+      // discovery role split every chain-touching surface dispatches on.
+      "services/walletPresence/walletPresence.test.ts",
       // Cross-repo registry parity (server TOOL_REGISTRY ⇄ EXPECTED_MOBILE_TOOLS).
       // Runnable now that the expected list lives in an import-free module.
       "services/agent-executors/registryParity.test.ts",
@@ -87,6 +90,8 @@ export default defineConfig({
       "components/home/TakumiAgent/StructuredUI/approvalSummary.test.ts",
       // Once-per-turn consolidation of repeated list-tool cards.
       "components/home/TakumiAgent/StructuredUI/mergeToolParts.test.ts",
+      // Failure-card copy + the add-wallet action offered alongside it.
+      "components/home/TakumiAgent/StructuredUI/agentErrorCopy.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",

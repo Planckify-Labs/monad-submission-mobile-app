@@ -31,6 +31,7 @@ import type React from "react";
 import { Pressable, Text, View } from "react-native";
 import { agentErrorCopy } from "../agentErrorCopy";
 import type { ToolComponentProps } from "../types";
+import { AddWalletErrorAction } from "./AddWalletErrorAction";
 
 type Severity = "info" | "warn" | "block";
 
@@ -183,6 +184,7 @@ const IntentPreviewCard: React.FC<
           <AlertTriangle size={16} color={WARN_AMBER} />
           <Text className="flex-1 text-sm text-amber-800">{msg}</Text>
         </View>
+        <AddWalletErrorAction error={output.error} reason={output.reason} />
       </View>
     );
   }

@@ -25,6 +25,7 @@ import type {
   ApprovalDecision,
   ApprovalIntent,
 } from "@/services/bridge/approval";
+import { guardWalletPresence } from "@/services/bridge/walletPresenceGuard";
 import type {
   AdapterContext,
   ChainAdapter,
@@ -358,6 +359,19 @@ class SuiAdapter implements ChainAdapter {
         },
       };
     }
+
+    // Zero Sui wallets on the device: show the user a Takumi sheet that
+    // says so and offers to add one, rather than a bare 4100 the dApp
+    // renders however it likes (see `walletPresenceGuard`).
+    const missing = guardWalletPresence(ctx, "sui", silent, () =>
+      makeIntent<SuiConnectPayload>(
+        req,
+        "connect",
+        { network, onlyIfTrusted: silent },
+        null,
+      ),
+    );
+    if (missing) return missing;
 
     if (!suiWallet) return rpcError(4100, "no Sui wallet available");
 
