@@ -190,6 +190,43 @@ export const PermissionStore = {
     return cache.grants.filter((g) => g.origin === key);
   },
 
+  /**
+   * Grants this origin holds inside one chain family, regardless of which
+   * chain within that family they were granted on.
+   *
+   * Account access is an ORIGIN capability, not a per-chain one — EIP-2255
+   * scopes `eth_accounts` to the site, and the chain a site is looking at
+   * is separately approved (`wallet_switchEthereumChain`). Callers that
+   * asked `isGranted(origin, addr, chainId)` were re-deriving "is this site
+   * connected" from a tuple that a later chain switch invalidates, so an
+   * approved switch silently read back as a disconnect.
+   */
+  listByOriginForNamespace(
+    origin: string,
+    namespace: Namespace,
+  ): PermissionGrant[] {
+    const key = originKey(origin);
+    return cache.grants.filter(
+      (g) => g.origin === key && namespaceForChainKey(g.chainId) === namespace,
+    );
+  },
+
+  /**
+   * Chain-independent account-access check: has `origin` been granted
+   * `walletAddress` anywhere in this chain family? Use this for "is the
+   * site connected"; keep `isGranted` for the genuinely chain-scoped
+   * questions (a Solana cluster grant, a Stellar network grant).
+   */
+  isGrantedForNamespace(
+    origin: string,
+    walletAddress: string,
+    namespace: Namespace,
+  ): boolean {
+    return this.listByOriginForNamespace(origin, namespace).some((g) =>
+      addressesEqual(namespace, g.walletAddress, walletAddress),
+    );
+  },
+
   listAll(): PermissionGrant[] {
     return [...cache.grants];
   },

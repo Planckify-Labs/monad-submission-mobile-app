@@ -20,7 +20,9 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Chain } from "viem";
+import type { TWallet } from "../../../constants/types/walletTypes.ts";
 import type { ApprovalIntent } from "../../bridge/approval.ts";
+import { PermissionStore } from "../../permissions/store.ts";
 import type { AdapterContext, ChainRequest } from "../types.ts";
 import { UserChainStore } from "./chainStore.ts";
 import { createEvmAdapter } from "./EvmAdapter.ts";
@@ -237,6 +239,82 @@ describe("execSwitchChain (Phase 2: per-origin, no home mutation)", () => {
     assert.equal(out, null);
     assert.equal(OriginChainStore.getSelected(ORIGIN), 1);
     OriginChainStore.clearSelected(ORIGIN);
+  });
+
+  it("keeps the origin connected across an approved chain switch", async () => {
+    // Regression: account access is an EIP-2255 ORIGIN capability, but the
+    // grant records the chain the connect happened on and the origin's chain
+    // moves independently (`OriginChainStore`, persisted). Matching the two
+    // made an approved switch read back as a disconnect on the dApp's next
+    // `eth_accounts` — and because the selection outlives the page, the
+    // connection never came back on refresh.
+    const a = makeAdapter();
+    const wallet = {
+      name: "Main",
+      address: "0x1111111111111111111111111111111111111111",
+      namespace: "eip155",
+    } as unknown as TWallet;
+    const ctx: AdapterContext = { ...CTX, wallets: [wallet] };
+
+    // Connect on the origin's default chain (137).
+    await a.executeApproval(
+      {
+        id: "c1",
+        namespace: "eip155",
+        kind: "connect",
+        origin: { url: ORIGIN },
+        wallet,
+        payload: { requestedAccounts: 1, chainId: 137 },
+        annotations: [],
+        createdAt: Date.now(),
+      },
+      { id: "c1", outcome: "approve", data: { walletIndex: 0 } },
+      ctx,
+    );
+    const before = await a.handleRequest(
+      { ...req("eth_accounts", []), origin: { url: ORIGIN } },
+      ctx,
+    );
+    assert.deepEqual((before as { value: unknown }).value, [wallet.address]);
+
+    // The dApp switches to Ethereum; the origin is now served chain 1.
+    await a.executeApproval(
+      switchIntent(1),
+      { id: "s1", outcome: "approve" },
+      ctx,
+    );
+    assert.equal(OriginChainStore.getSelected(ORIGIN), 1);
+
+    const after = await a.handleRequest(
+      { ...req("eth_accounts", []), origin: { url: ORIGIN } },
+      ctx,
+    );
+    assert.deepEqual((after as { value: unknown }).value, [wallet.address]);
+
+    // …and the silent-reconnect path agrees, so no second sheet on reload.
+    const reconnect = await a.handleRequest(
+      { ...req("eth_requestAccounts", []), origin: { url: ORIGIN } },
+      ctx,
+    );
+    assert.equal(reconnect.status, "resolved");
+    assert.deepEqual((reconnect as { value: unknown }).value, [wallet.address]);
+
+    OriginChainStore.clearSelected(ORIGIN);
+    await PermissionStore.revoke({ origin: ORIGIN });
+  });
+
+  it("still discloses nothing to an origin that never connected", async () => {
+    const a = makeAdapter();
+    const wallet = {
+      name: "Main",
+      address: "0x1111111111111111111111111111111111111111",
+      namespace: "eip155",
+    } as unknown as TWallet;
+    const r = await a.handleRequest(
+      { ...req("eth_accounts", []), origin: { url: "https://evil.example" } },
+      { ...CTX, wallets: [wallet] },
+    );
+    assert.deepEqual((r as { value: unknown }).value, []);
   });
 
   it("throws 4902 for a custom chain whose RPC is unreachable (reachability gate)", async () => {

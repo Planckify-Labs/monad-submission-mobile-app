@@ -366,12 +366,16 @@ export class EvmAdapter implements ChainAdapter {
     req: ChainRequest,
     ctx: AdapterContext,
   ): AdapterContext {
+    // `chainId` is only a tie-breaker between grants now, so an
+    // unresolvable chain config (backend feed still in flight on a cold
+    // start) no longer forfeits origin scoping entirely — it just picks
+    // the origin's wallet without a chain preference. Bailing here used to
+    // hand `eth_accounts` the home-screen wallet during that window.
     const config = this.resolveConfig(ctx);
-    if (!config) return ctx;
     const effective = pickEvmWalletForOrigin(
       ctx,
       req.origin.url,
-      config.chain.id,
+      config?.chain.id,
     );
     if (!effective) return ctx;
     if (ctx.activeWallet?.address === effective.address) return ctx;
@@ -478,17 +482,23 @@ export class EvmAdapter implements ChainAdapter {
         }
         case "eth_accounts": {
           // Privacy fix — only disclose when origin has an EIP-2255 grant.
+          //
+          // Matched per-origin, NOT per-chain: this is the probe every dApp
+          // runs on page load to restore its session, and the chain we serve
+          // an origin moves on its own (a fresh origin starts on the default
+          // chain, an approved `wallet_switchEthereumChain` persists another
+          // in `OriginChainStore`). Keying the check on the current chain id
+          // meant a connect granted on chain A read back as "not connected"
+          // the moment the origin sat on chain B — the dApp lost its
+          // connection on the next refresh and never got it back, because
+          // the origin's chain selection outlives the page.
           if (!ctx.activeWallet) return resolved([]);
-          const chainConfig = this.resolveConfig(ctx);
-          if (!chainConfig) return resolved([]);
-          const allowed = PermissionStore.isGranted(
+          const allowed = PermissionStore.isGrantedForNamespace(
             req.origin.url,
             ctx.activeWallet.address,
-            chainConfig.chain.id,
+            "eip155",
           );
-          return resolved(
-            allowed && ctx.activeWallet ? [ctx.activeWallet.address] : [],
-          );
+          return resolved(allowed ? [ctx.activeWallet.address] : []);
         }
         case "eth_blockNumber":
         case "eth_gasPrice":
@@ -548,16 +558,20 @@ export class EvmAdapter implements ChainAdapter {
           if (!evmWallet) return err(PROVIDER_ERRORS.disconnected());
 
           // Silent re-connect: if this origin already has a grant for
-          // the resolved EVM wallet on this chain, return silently.
-          // dApps (wagmi eager-connect, yearn, etc.) call
-          // eth_requestAccounts / wallet_requestPermissions repeatedly
-          // on mount + reconnect; prompting every time would hammer
-          // the user with sheets.
+          // the resolved EVM wallet, return silently. dApps (wagmi
+          // eager-connect, yearn, etc.) call eth_requestAccounts /
+          // wallet_requestPermissions repeatedly on mount + reconnect;
+          // prompting every time would hammer the user with sheets.
+          //
+          // Chain-independent for the same reason `eth_accounts` is —
+          // see the note there. Re-prompting after an approved chain
+          // switch is not a stronger check, just a worse one: the user
+          // learns to tap through connect sheets they already answered.
           if (
-            PermissionStore.isGranted(
+            PermissionStore.isGrantedForNamespace(
               req.origin.url,
               evmWallet.address,
-              cfg.chain.id,
+              "eip155",
             )
           ) {
             if (req.method === "eth_requestAccounts") {
@@ -1678,14 +1692,25 @@ function err(e: ProviderRpcError): ChainResult {
 function pickEvmWalletForOrigin(
   ctx: AdapterContext,
   origin: string,
-  chainId: number,
+  chainId?: number,
 ): TWallet | null {
   const evmWallets = ctx.wallets.filter((w) => w.namespace === "eip155");
   if (evmWallets.length === 0) return null;
-  const grants = PermissionStore.listByOrigin(origin).filter(
-    (g) => g.chainId === chainId,
-  );
-  for (const g of grants) {
+  // Every EVM grant this origin holds, current chain first. Filtering to
+  // `g.chainId === chainId` (as this did) dropped the origin's real wallet
+  // the moment it moved to another chain, so the caller silently fell
+  // through to "first EVM wallet" and the dApp saw a wallet swap it never
+  // asked for. Account access spans the family; the chain only decides
+  // which grant is the most specific match.
+  const grants = PermissionStore.listByOriginForNamespace(origin, "eip155");
+  const ordered =
+    chainId === undefined
+      ? grants
+      : [
+          ...grants.filter((g) => g.chainId === chainId),
+          ...grants.filter((g) => g.chainId !== chainId),
+        ];
+  for (const g of ordered) {
     const match = evmWallets.find(
       (w) => w.address.toLowerCase() === g.walletAddress.toLowerCase(),
     );
