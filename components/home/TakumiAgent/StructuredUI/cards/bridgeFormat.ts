@@ -272,6 +272,101 @@ export function truncateAddress(address: string | undefined): string {
 }
 
 /**
+ * Copy for a bridge card that has NO result yet.
+ *
+ * A card in this state has submitted NOTHING, and saying otherwise is the
+ * worst lie this card can tell. `bridge_execute` reaches a result only by
+ * running the executor, and the executor always posts one, so a call
+ * sitting with no output has not run. "No output AND no live approval
+ * surface" narrows it further: the approval prompt died with its turn
+ * (the user walked away, the stream errored, or the conversation was
+ * restored from history with the call orphaned) and the funds never
+ * moved.
+ *
+ * This used to render "Submitting transfer" over "Sending from <chain>"
+ * for every one of those states, which told a user whose turn had just
+ * failed at the approval prompt that their money was already in flight.
+ *
+ * `bridge_status` is a READ. It polls a transfer that is already on its
+ * way and submits nothing, so it never borrows submission language.
+ */
+export function pendingBridgeCopy(args: {
+  /** True for the fund-moving calls (`amount_raw` is schema-required). */
+  isExecute: boolean;
+  /** True while a live approval surface is still attached to the call. */
+  isLive: boolean;
+}): { title: string; body: string; tone: "idle" | "interrupted" } {
+  const { isExecute, isLive } = args;
+
+  if (isExecute) {
+    return isLive
+      ? {
+          // Defensive: the card renders the approval gate on this path, so
+          // this is only reached if that gate is ever bypassed. Still says
+          // the true thing.
+          title: "Waiting for your approval",
+          body: "Nothing has been sent yet.",
+          tone: "idle",
+        }
+      : {
+          title: "Not sent",
+          body: "This transfer was interrupted before you approved it, so nothing was sent.",
+          tone: "interrupted",
+        };
+  }
+
+  return isLive
+    ? {
+        title: "Checking transfer status",
+        body: "Looking up where your funds are.",
+        tone: "idle",
+      }
+    : {
+        title: "Status check interrupted",
+        body: "We did not finish checking on this transfer.",
+        tone: "interrupted",
+      };
+}
+
+/**
+ * A rejected or blocked call is an OUTCOME, not a failure. It is §7.7.1's
+ * rule applied to the FRONT of the lifecycle: "the tool did not run" has
+ * several meanings and only some of them are errors.
+ *
+ * These two codes need their own copy for a structural reason. The
+ * dispatcher records a decline by upserting `state: "output-error"` with a
+ * bare `error` code and NO output payload (`rejectDeclined`, and the deny
+ * path's `permission_denied`), so:
+ *
+ *   - a card that gates its failure branch on `output` never sees them,
+ *     and
+ *   - `agentErrorCopy` has no entry for either, so they would render the
+ *     generic "I couldn't complete that right now" and read as a system
+ *     malfunction rather than as the user's own decision being honoured.
+ *
+ * Returns `null` for anything else, meaning "not a decline, take the
+ * normal failure path".
+ */
+export function declinedBridgeCopy(
+  error: string | undefined,
+): { title: string; body: string } | null {
+  switch (error) {
+    case "user_declined":
+      return {
+        title: "Not sent",
+        body: "You rejected this transfer, so nothing was sent.",
+      };
+    case "permission_denied":
+      return {
+        title: "Not sent",
+        body: "This transfer was not allowed, so nothing was sent.",
+      };
+    default:
+      return null;
+  }
+}
+
+/**
  * Explanatory copy for a capability boundary (§7.6).
  *
  * This is NOT an error state, so it never routes through

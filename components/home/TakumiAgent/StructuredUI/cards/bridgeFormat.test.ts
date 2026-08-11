@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import type { TBridgeFee, TBridgeToken } from "@/api/types/bridge";
 import {
   chainLabel,
+  declinedBridgeCopy,
   effectiveRatePercent,
   formatDuration,
   formatSlippage,
@@ -22,6 +23,7 @@ import {
   noRouteCopy,
   outcomeCopy,
   partitionFees,
+  pendingBridgeCopy,
   phaseCopy,
   truncateAddress,
 } from "./bridgeFormat";
@@ -273,5 +275,87 @@ describe("formatUsd", () => {
     expect(formatUsd("1234.5")).toBe("$1,234.50");
     expect(formatUsd(undefined)).toBeNull();
     expect(formatUsd("nope")).toBeNull();
+  });
+});
+
+/**
+ * The reported bug, both halves of it: a bridge card with no result told
+ * the user "Submitting transfer / Sending from Arbitrum" when they had
+ * walked away from the approval prompt, AND when they had pressed Reject.
+ * Submission language on a card that submitted nothing IS the bug.
+ */
+const submissionLanguage = /submitting|sending|in flight|on its way/i;
+
+describe("pendingBridgeCopy (a card with no result submitted nothing)", () => {
+  it("never claims a submission for an execute call that was never approved", () => {
+    const copy = pendingBridgeCopy({ isExecute: true, isLive: false });
+    expect(copy.title).toBe("Not sent");
+    expect(copy.body).toMatch(/nothing was sent/i);
+    expect(copy.title).not.toMatch(submissionLanguage);
+    expect(copy.body).not.toMatch(submissionLanguage);
+    expect(copy.tone).toBe("interrupted");
+  });
+
+  it("says nothing has been sent while an approval is still live", () => {
+    const copy = pendingBridgeCopy({ isExecute: true, isLive: true });
+    expect(copy.body).toMatch(/nothing has been sent/i);
+    expect(copy.body).not.toMatch(submissionLanguage);
+    expect(copy.tone).toBe("idle");
+  });
+
+  it("keeps the read-only status poll out of submission language", () => {
+    const live = pendingBridgeCopy({ isExecute: false, isLive: true });
+    expect(live.title).toMatch(/checking/i);
+    expect(live.title).not.toMatch(submissionLanguage);
+    expect(live.body).not.toMatch(submissionLanguage);
+
+    const stale = pendingBridgeCopy({ isExecute: false, isLive: false });
+    expect(stale.tone).toBe("interrupted");
+    expect(stale.title).not.toMatch(submissionLanguage);
+    expect(stale.body).not.toMatch(submissionLanguage);
+  });
+
+  it("writes every string without an em-dash (UI copy rule)", () => {
+    for (const isExecute of [true, false]) {
+      for (const isLive of [true, false]) {
+        const copy = pendingBridgeCopy({ isExecute, isLive });
+        expect(copy.title).not.toContain("—");
+        expect(copy.body).not.toContain("—");
+      }
+    }
+  });
+});
+
+describe("declinedBridgeCopy (a decline is an outcome, not a failure)", () => {
+  it("tells a user who pressed Reject that nothing was sent", () => {
+    // `rejectDeclined` upserts `output-error` + `error: "user_declined"`
+    // with NO output payload, which is why this is keyed off the bare
+    // code rather than anything inside `output`.
+    const copy = declinedBridgeCopy("user_declined");
+    expect(copy?.title).toBe("Not sent");
+    expect(copy?.body).toMatch(/you rejected/i);
+    expect(copy?.body).toMatch(/nothing was sent/i);
+    expect(copy?.title).not.toMatch(submissionLanguage);
+    expect(copy?.body).not.toMatch(submissionLanguage);
+  });
+
+  it("covers the deny path the same way", () => {
+    const copy = declinedBridgeCopy("permission_denied");
+    expect(copy?.body).toMatch(/nothing was sent/i);
+    expect(copy?.body).not.toMatch(submissionLanguage);
+  });
+
+  it("does not claim a decline for a real failure or a missing code", () => {
+    // These must fall through to the normal failure card.
+    expect(declinedBridgeCopy("network_error")).toBeNull();
+    expect(declinedBridgeCopy(undefined)).toBeNull();
+  });
+
+  it("writes both strings without an em-dash (UI copy rule)", () => {
+    for (const code of ["user_declined", "permission_denied"]) {
+      const copy = declinedBridgeCopy(code);
+      expect(copy?.title).not.toContain("—");
+      expect(copy?.body).not.toContain("—");
+    }
   });
 });

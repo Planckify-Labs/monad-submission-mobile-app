@@ -24,6 +24,14 @@
  * terminal state is a FOUR-value enum, and `partial` / `refunded` are
  * OUTCOMES rather than errors, so they get their own plain copy and never
  * route through `agentErrorCopy`.
+ *
+ * Its mirror at the other end of the lifecycle: NOT DONE does not mean
+ * "in flight". A `bridge_execute` reaches a result only by running the
+ * executor, so a call with no result never ran, and the branch order
+ * below reflects that. Declines are read from the PART-level `error`
+ * (a rejection carries no output at all) and must be matched BEFORE the
+ * no-result branch, or a transfer the user rejected renders as one being
+ * submitted. See `declinedBridgeCopy` / `pendingBridgeCopy`.
  */
 
 import {
@@ -56,8 +64,10 @@ import WriteApprovalGate from "../WriteApprovalGate";
 import { AddWalletErrorAction } from "./AddWalletErrorAction";
 import {
   chainLabel,
+  declinedBridgeCopy,
   formatTokenValue,
   outcomeCopy,
+  pendingBridgeCopy,
   phaseCopy,
   truncateAddress,
 } from "./bridgeFormat";
@@ -264,6 +274,7 @@ const BridgeProgressCard: React.FC<
   state,
   input,
   output,
+  error,
   onUserPrompt,
   mode,
   addToolResult,
@@ -290,27 +301,98 @@ const BridgeProgressCard: React.FC<
     ? { ...input, to_address: chosenDestination }
     : input;
 
+  // The tool's own error code. A DECLINE carries it at the PART level with
+  // no output payload at all, so reading `output.error` alone misses every
+  // rejection.
+  const toolError = output?.error ?? error;
+
+  /*
+    Declines are checked FIRST, ahead of the no-result branch below.
+
+    `rejectDeclined` (services/agentSession/dispatcher.ts) records a
+    rejection by upserting `state: "output-error"` with `error:
+    "user_declined"` and NO output object. The no-result branch below
+    opens with `!output`, so it used to swallow that state and paint
+    "Submitting transfer / Sending from <chain>" over a transfer the user
+    had just rejected by hand. Same for the deny path's
+    `permission_denied`. Order is load-bearing here, not stylistic.
+  */
+  const declined = declinedBridgeCopy(toolError);
+  if (declined) {
+    return (
+      <View className="my-1.5 rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3.5">
+        <View className="flex-row items-center gap-2">
+          <AlertTriangle size={14} color={MUTED} />
+          <Text className="text-[10px] font-bold uppercase tracking-wide text-gray-400">
+            {declined.title}
+          </Text>
+        </View>
+        <Text className="text-sm text-gray-500 mt-1">{declined.body}</Text>
+      </View>
+    );
+  }
+
+  // A genuine tool failure (network, wallet). Curated copy only. Also
+  // ahead of the no-result branch: an executor failure posts `error` on
+  // the part, and may post no output either.
+  if (state === "output-error" || output?.status === "failed") {
+    return (
+      <View className="my-1.5 rounded-2xl border border-light-primary-red/30 bg-light-primary-red/5 px-4 py-3.5">
+        <View className="flex-row items-center gap-2">
+          <AlertTriangle size={15} color={BRAND_RED} />
+          <Text className="text-xs font-bold uppercase tracking-wide text-light-primary-red">
+            Transfer not sent
+          </Text>
+        </View>
+        <Text className="text-sm text-light-matte-black/80 mt-1.5">
+          {agentErrorCopy(toolError, output?.reason)}
+        </Text>
+        {/* Also serves `defi_cross_chain_deposit`, whose missing-wallet
+            failure is the most likely one to land here. The reason names
+            no chain, so pass the one the transfer was headed for. */}
+        <AddWalletErrorAction
+          error={toolError}
+          reason={output?.reason}
+          destinationNamespace={
+            input?.to_chain
+              ? (parseCaip2(input.to_chain)?.namespace as Namespace | undefined)
+              : undefined
+          }
+        />
+      </View>
+    );
+  }
+
+  // No result yet. Nothing has been submitted on ANY path that reaches
+  // here: an approved `bridge_execute` only ever leaves this state by
+  // posting a result.
   if (!output || state === "input-available" || state === "input-streaming") {
     // Only `bridge_execute` (schema-required `amount_raw`) moves funds and
     // needs a gate; `bridge_status` shares this card for its post-submit
     // polling and must stay non-interactive — it never sets `amount_raw`.
     const isExecuteCall = typeof input.amount_raw === "string";
+    // The approval surface is live only while this message is the
+    // streaming one. Once the turn ends — cleanly, on an SSE error, or by
+    // being restored from history — the callback is gone and the call can
+    // never be approved, so it can never have been submitted.
+    const isLive = mode === "live" && Boolean(addToolResult);
+    const summary = approvalSummaryFromToolInput(
+      approvalInput as Record<string, unknown>,
+      undefined,
+      undefined,
+      assetMeta,
+    );
 
     if (
       isExecuteCall &&
-      mode === "live" &&
+      isLive &&
       (state === "input-available" || state === "input-streaming") &&
       addToolResult
     ) {
       return (
         <WriteApprovalGate
           decision={decision}
-          summary={approvalSummaryFromToolInput(
-            approvalInput as Record<string, unknown>,
-            undefined,
-            undefined,
-            assetMeta,
-          )}
+          summary={summary}
           onApprove={() =>
             addToolResult({ status: "success", user_decision: "approved" })
           }
@@ -322,43 +404,33 @@ const BridgeProgressCard: React.FC<
       );
     }
 
-    return (
-      <View className="my-1.5 rounded-2xl border border-light-matte-black/10 bg-white px-4 py-3.5">
-        <Text className="text-[10px] font-bold uppercase tracking-wide text-gray-400">
-          Submitting transfer
-        </Text>
-        <Text className="text-sm text-gray-500 mt-1">
-          Sending from {chainLabel(input.from_chain)}.
-        </Text>
-      </View>
-    );
-  }
+    const pending = pendingBridgeCopy({ isExecute: isExecuteCall, isLive });
+    const interrupted = pending.tone === "interrupted";
 
-  // A genuine tool failure (network, wallet). Curated copy only.
-  if (state === "output-error" || output.status === "failed") {
     return (
-      <View className="my-1.5 rounded-2xl border border-light-primary-red/30 bg-light-primary-red/5 px-4 py-3.5">
+      <View
+        className={`my-1.5 rounded-2xl border px-4 py-3.5 ${
+          interrupted
+            ? "border-gray-200 bg-gray-50"
+            : "border-light-matte-black/10 bg-white"
+        }`}
+      >
         <View className="flex-row items-center gap-2">
-          <AlertTriangle size={15} color={BRAND_RED} />
-          <Text className="text-xs font-bold uppercase tracking-wide text-light-primary-red">
-            Transfer not sent
+          {interrupted ? <AlertTriangle size={14} color={MUTED} /> : null}
+          <Text className="text-[10px] font-bold uppercase tracking-wide text-gray-400">
+            {pending.title}
           </Text>
         </View>
-        <Text className="text-sm text-light-matte-black/80 mt-1.5">
-          {agentErrorCopy(output.error, output.reason)}
-        </Text>
-        {/* Also serves `defi_cross_chain_deposit`, whose missing-wallet
-            failure is the most likely one to land here. The reason names
-            no chain, so pass the one the transfer was headed for. */}
-        <AddWalletErrorAction
-          error={output.error}
-          reason={output.reason}
-          destinationNamespace={
-            input?.to_chain
-              ? (parseCaip2(input.to_chain)?.namespace as Namespace | undefined)
-              : undefined
-          }
-        />
+        <Text className="text-sm text-gray-500 mt-1">{pending.body}</Text>
+        {/*
+          Name the transfer that did not happen, so an interrupted card in
+          scrollback is still a legible receipt. No retry affordance: the
+          card cannot prove a duplicate would be a duplicate, and the turn
+          error above already carries its own "Try again".
+        */}
+        {interrupted && isExecuteCall ? (
+          <Text className="text-xs text-gray-400 mt-1.5">{summary}</Text>
+        ) : null}
       </View>
     );
   }
