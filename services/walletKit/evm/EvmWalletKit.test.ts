@@ -369,6 +369,14 @@ describe("EvmWalletKit — chain-agnostic capabilities", () => {
     assert.equal(kit.preferredPaymentRail, "evm");
   });
 
+  it("gates dApp connect behind the device-owner check, like every other kit", () => {
+    // Regression: this kit shipped without the flag, so `ConnectSheet`'s
+    // `kit?.requireBiometricForConnect === true` was false and an EVM-only
+    // dApp connected on a bare tap — while the same tap on a Solana, Sui or
+    // Stellar dApp prompted for biometric/PIN.
+    assert.equal(kit.requireBiometricForConnect, true);
+  });
+
   it("matchesBlockchainRow matches an EVM row by chainId", () => {
     assert.equal(
       kit.matchesBlockchainRow?.(

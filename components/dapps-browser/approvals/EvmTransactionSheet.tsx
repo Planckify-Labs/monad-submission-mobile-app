@@ -12,6 +12,7 @@ import type {
   GasEstimate,
 } from "@/services/chains/evm/payloads";
 import { decodeCalldata } from "@/services/decoders";
+import { originHost } from "@/services/permissions/caip";
 import { detectClaimMismatch } from "@/services/security/claimLabelDelta";
 import {
   type AssetDelta,
@@ -27,6 +28,7 @@ import { truncateAddress } from "@/utils/walletUtils";
 import { ApprovalShell } from "./ApprovalShell";
 import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
+import { useBiometricApproval } from "./useBiometricApproval";
 
 // TWV-2026-009 — user-visible copy for the high-risk calldata variants.
 // Keep the sentences identical to the spec so reviewers can grep for
@@ -64,6 +66,23 @@ export function EvmTransactionSheet({
   const digestArgs = useMemo<ComputeSigningDigestArgs>(
     () => ({ kind: "calldata", calldata: tx.data ?? "0x" }),
     [tx.data],
+  );
+
+  // Device-owner check before the wallet signs, matching the Solana / Sui /
+  // Stellar transaction sheets. EVM was the one family that confirmed a
+  // fund-moving dApp transaction on a single tap.
+  const approve = useCallback(() => {
+    // Stash the user-picked source on the payload so adapter uses it.
+    if (tx.gasEstimate) tx.gasEstimate.recommended = source;
+    onDecision({ id: intent.id, outcome: "approve" });
+  }, [tx.gasEstimate, source, intent.id, onDecision]);
+  const {
+    gatedApprove,
+    pending,
+    error: biometricError,
+  } = useBiometricApproval(
+    `Confirm transaction on ${originHost(intent.origin.url)}`,
+    approve,
   );
 
   // Task 65 Phase F — claim-vs-delta cross-check (TWV-2026-038, task
@@ -468,20 +487,30 @@ export function EvmTransactionSheet({
           )}
         </ScrollView>
       </ApprovalShell>
+      {biometricError && (
+        <Text
+          className="text-xs text-red-600 px-4 mt-2"
+          accessibilityLabel="biometric-error"
+        >
+          {biometricError}
+        </Text>
+      )}
       <PrimaryActions
         approveLabel={
-          decoded?.risk?.kind === "setApprovalForAll" && decoded.risk.approved
-            ? "Grant full collection access"
-            : decoded?.risk?.kind === "approve" && decoded.risk.isUnlimited
-              ? "Approve unlimited"
-              : "Confirm"
+          pending
+            ? "Authenticating…"
+            : decoded?.risk?.kind === "setApprovalForAll" &&
+                decoded.risk.approved
+              ? "Grant full collection access"
+              : decoded?.risk?.kind === "approve" && decoded.risk.isUnlimited
+                ? "Approve unlimited"
+                : "Confirm"
         }
         onApprove={() => {
-          // Stash the user-picked source on the payload so adapter uses it.
-          if (tx.gasEstimate) tx.gasEstimate.recommended = source;
-          onDecision({ id: intent.id, outcome: "approve" });
+          void gatedApprove();
         }}
         onReject={() => onDecision({ id: intent.id, outcome: "reject" })}
+        loading={pending}
       />
     </SheetModal>
   );

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useCallback, useMemo, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { hexToString, isHex } from "viem";
 import type {
@@ -15,11 +15,13 @@ import {
   tryDecodePermit2,
   tryParseSiwe,
 } from "@/services/decoders";
+import { originHost } from "@/services/permissions/caip";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
 import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
 import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
+import { useBiometricApproval } from "./useBiometricApproval";
 
 type MessageIntent = ApprovalIntent<
   EvmSignMessagePayload | EvmSignTypedDataPayload
@@ -43,6 +45,23 @@ export function EvmSignMessageSheet({
       a.code === "sign.eth_sign_legacy",
   );
   const [holdProgress, setHoldProgress] = useState(0);
+
+  // Device-owner check before the wallet signs, matching the Solana / Sui /
+  // Stellar message sheets. A signature here can be an ERC-2612 / Permit2
+  // token approval, so "it's only a message" is not a reason to skip it.
+  // The hold-to-sign delay for high-risk messages stays in front of this.
+  const approve = useCallback(
+    () => onDecision({ id: intent.id, outcome: "approve" }),
+    [intent.id, onDecision],
+  );
+  const {
+    gatedApprove,
+    pending,
+    error: biometricError,
+  } = useBiometricApproval(
+    `Sign message for ${originHost(intent.origin.url)}`,
+    approve,
+  );
 
   const decoded = useMemo(() => {
     if (isTyped) {
@@ -116,8 +135,18 @@ export function EvmSignMessageSheet({
           )}
         </ScrollView>
       </ApprovalShell>
+      {biometricError && (
+        <Text
+          className="text-xs text-red-600 px-4 mt-2"
+          accessibilityLabel="biometric-error"
+        >
+          {biometricError}
+        </Text>
+      )}
       <PrimaryActions
-        approveLabel={holdRequired ? "Hold to sign" : "Sign"}
+        approveLabel={
+          pending ? "Authenticating…" : holdRequired ? "Hold to sign" : "Sign"
+        }
         onApprove={() => {
           if (holdRequired && holdProgress < 1) {
             // Simulate a 1.5s hold with a timer; simple UX placeholder.
@@ -127,14 +156,15 @@ export function EvmSignMessageSheet({
               setHoldProgress(p);
               if (p >= 1) {
                 clearInterval(int);
-                onDecision({ id: intent.id, outcome: "approve" });
+                void gatedApprove();
               }
             }, 50);
             return;
           }
-          onDecision({ id: intent.id, outcome: "approve" });
+          void gatedApprove();
         }}
         onReject={() => onDecision({ id: intent.id, outcome: "reject" })}
+        loading={pending}
       />
     </SheetModal>
   );

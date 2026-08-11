@@ -1,4 +1,4 @@
-import React, { useMemo } from "react";
+import React, { useCallback, useMemo } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { formatEther } from "viem";
 import type {
@@ -7,10 +7,12 @@ import type {
 } from "@/services/bridge/approval";
 import type { EvmBatchCallsPayload } from "@/services/chains/evm/payloads";
 import { decodeCalldata } from "@/services/decoders";
+import { originHost } from "@/services/permissions/caip";
 import type { ComputeSigningDigestArgs } from "@/services/walletKit/types";
 import { ApprovalShell } from "./ApprovalShell";
 import { ClearSigningSection } from "./ClearSigningSection";
 import { PrimaryActions, SheetModal } from "./SheetModal";
+import { useBiometricApproval } from "./useBiometricApproval";
 
 /**
  * Task 65 — per-call clear-signing block. Each batch entry gets its
@@ -57,6 +59,23 @@ export function EvmBatchCallsSheet({
   const p = intent.payload;
   const atomic =
     intent.wallet?.type === "Smart4337" || intent.wallet?.type === "Smart7702";
+
+  // Device-owner check before the wallet signs. A batch is N fund-moving
+  // calls behind one tap, so it needs the gate at least as much as the
+  // single-transaction sheet does.
+  const approve = useCallback(
+    () => onDecision({ id: intent.id, outcome: "approve" }),
+    [intent.id, onDecision],
+  );
+  const {
+    gatedApprove,
+    pending,
+    error: biometricError,
+  } = useBiometricApproval(
+    `Confirm ${p.calls.length} calls for ${originHost(intent.origin.url)}`,
+    approve,
+  );
+
   return (
     <SheetModal
       onDismiss={() => onDecision({ id: intent.id, outcome: "reject" })}
@@ -112,10 +131,21 @@ export function EvmBatchCallsSheet({
           })}
         </ScrollView>
       </ApprovalShell>
+      {biometricError && (
+        <Text
+          className="text-xs text-red-600 px-4 mt-2"
+          accessibilityLabel="biometric-error"
+        >
+          {biometricError}
+        </Text>
+      )}
       <PrimaryActions
-        approveLabel="Confirm batch"
-        onApprove={() => onDecision({ id: intent.id, outcome: "approve" })}
+        approveLabel={pending ? "Authenticating…" : "Confirm batch"}
+        onApprove={() => {
+          void gatedApprove();
+        }}
         onReject={() => onDecision({ id: intent.id, outcome: "reject" })}
+        loading={pending}
       />
     </SheetModal>
   );

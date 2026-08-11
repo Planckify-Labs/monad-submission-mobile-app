@@ -1409,8 +1409,12 @@ export interface WalletKitAdapter {
   formatConnectChipLabel?(payload: unknown): string;
   /**
    * When `true`, the connect sheet gates approval behind the platform
-   * biometric prompt. Kits opt in per chain (Solana ships with this on;
-   * EVM connect is a free grant for parity with MetaMask). Default `false`.
+   * biometric prompt (device-credential fallback included). Every
+   * first-party kit sets this: a connect grant is what every later
+   * signing request for that origin is authorised against, so it must
+   * prove device ownership on every chain family. Default `false` only so
+   * a third-party kit added later fails visibly rather than silently
+   * inheriting a gate it never declared.
    */
   requireBiometricForConnect?: boolean;
 

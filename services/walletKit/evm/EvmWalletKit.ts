@@ -147,6 +147,14 @@ export function createEvmWalletKit(): WalletKitAdapter {
     supportsPointDeposit: true,
     displayName: "Ethereum",
     brandColor: "#627EEA",
+    // Connect binds a wallet to an origin and is the gate every later
+    // signing request rides on, so it needs the same device-owner check
+    // Solana / Sui / Stellar already require. This kit previously omitted
+    // the flag "for parity with MetaMask", which made the wallet's
+    // strongest chain family its least protected one: an EVM-only dApp
+    // could be connected by anyone holding an unlocked phone, while the
+    // exact same tap on a Solana or Sui dApp prompted for biometric/PIN.
+    requireBiometricForConnect: true,
     preferredPaymentRail: "evm",
     getChainId(chain) {
       return chain.namespace === EVM_NAMESPACE ? chain.chain.id : null;
