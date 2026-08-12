@@ -7,6 +7,70 @@
 import "react-native-get-random-values";
 import "fastestsmallesttextencoderdecoder";
 
+// Prototype-freeze pre-loads. `ox` exports four functions named
+// `toString`, which compile to `exports.toString = …` and throw against
+// the frozen `Object.prototype` set up in this file's body. They must be
+// loaded while assignment is still legal.
+//
+// Import hoisting is load-bearing: these evaluate before the
+// `Object.freeze` below, which is the whole point. They stay AFTER the
+// CSPRNG polyfill above (import order is evaluation order) so entropy
+// setup still wins its own race.
+//
+// **Exact file paths, one per offending module per installed copy.**
+// This looks unpleasant and every prettier-looking alternative was tried
+// and failed on device:
+//
+//  1. `require("ox/Hex")` resolved ox's `require`/`default` condition to
+//     `_cjs/core/Hex.js` — a different module instance from the `_esm`
+//     build reached via `import`. Warmed the wrong twin.
+//  2. Package-subpath imports only warm what sits on that one path.
+//     `viem/utils` pulled `Hex`, `WebAuthnP256` pulled `Base64`,
+//     `viem/ens` pulled another; every new consumer found a fresh gap.
+//  3. There are TWO copies of ox. `@metamask/smart-accounts-kit` pins
+//     `ox@0.8.1`, viem pins `ox@0.9.6` — both exact, so pnpm cannot
+//     dedupe. A bare `"ox"` reaches only the hoisted 0.8.1 while viem
+//     loads its own nested copy, which stayed cold and kept throwing.
+//  4. Barrel imports (`import "ox"`) would cover every module at once,
+//     but they drag ~2.6 MB of ox through app startup, and a barrel's
+//     `export * as X from` re-exports can compile to lazy getters under
+//     `inlineRequires` — which would leave the submodules cold anyway.
+//
+// A literal file path has none of those failure modes: no exports map,
+// no condition negotiation, no barrel indirection, and a side-effect
+// import has no binding for `inlineRequires` to defer, so it is eager.
+// Metro keys modules by resolved absolute path, so these are the exact
+// instances viem and smart-accounts-kit receive. 92 KB total.
+//
+//  5. Pre-loading only `_esm` missed, because Metro resolves ox through
+//     `main` -> `_cjs`, not the `import` condition. The canary happily
+//     reported "10/10 warmed" while warming the wrong build, and the
+//     `_cjs` twin the app actually loads stayed cold. Metro's
+//     `/symbolicate` endpoint is what finally named it:
+//     `viem/node_modules/ox/_cjs/core/Hex.js:23`.
+//
+// So: BOTH builds, BOTH copies. Which one Metro picks depends on its
+// package-exports settings, and that is not worth predicting — a wrong
+// guess here is silent, and the guard cannot catch it because the line
+// is present either way. Loading the unused twin costs one cache entry.
+// ~184 KB total across 16 small modules.
+import "./node_modules/ox/_cjs/core/Hex.js";
+import "./node_modules/ox/_cjs/core/Bytes.js";
+import "./node_modules/ox/_cjs/core/Base58.js";
+import "./node_modules/ox/_cjs/core/Base64.js";
+import "./node_modules/ox/_esm/core/Hex.js";
+import "./node_modules/ox/_esm/core/Bytes.js";
+import "./node_modules/ox/_esm/core/Base58.js";
+import "./node_modules/ox/_esm/core/Base64.js";
+import "./node_modules/viem/node_modules/ox/_cjs/core/Hex.js";
+import "./node_modules/viem/node_modules/ox/_cjs/core/Bytes.js";
+import "./node_modules/viem/node_modules/ox/_cjs/core/Base58.js";
+import "./node_modules/viem/node_modules/ox/_cjs/core/Base64.js";
+import "./node_modules/viem/node_modules/ox/_esm/core/Hex.js";
+import "./node_modules/viem/node_modules/ox/_esm/core/Bytes.js";
+import "./node_modules/viem/node_modules/ox/_esm/core/Base58.js";
+import "./node_modules/viem/node_modules/ox/_esm/core/Base64.js";
+
 // Native-JSI crypto — replaces the pure-JS fallbacks viem / @scure / @noble
 // use (secp256k1, sha256, keccak256, pbkdf2, HMAC, etc.) with C++ via JSI.
 // Order matters: install AFTER the CSPRNG polyfill so the native module's
@@ -122,6 +186,20 @@ if (typeof globalThis.crypto?.getRandomValues !== "function") {
   );
 }
 
+// ---------------------------------------------------------------------
+// Pre-freeze module loads. Everything between here and the
+// `Object.freeze` call below exists for one reason: these modules assign
+// to a property name that `Object.prototype` also defines, and that
+// assignment must land while the prototype is still writable.
+//
+// These `require` calls look like dead code. They are load-bearing.
+// Deleting one does not fail a test or a type-check — it force-closes
+// the app on whichever screen first touches that module. Background,
+// failure signatures, and the diagnostic procedure:
+// `docs/prototype-freeze-crash-retrospective.md`. `pnpm check:protofreeze`
+// enforces the list.
+// ---------------------------------------------------------------------
+
 // Pre-load bn.js (used by @solana/web3.js v1) BEFORE the prototype
 // freeze below. bn.js assigns `BN.prototype.toString = …` which
 // fails after `Object.freeze(Object.prototype)` because `toString`
@@ -145,6 +223,53 @@ try {
   require("posthog-react-native");
 } catch {}
 
+// `ox` — the third instance of this class, and the one that shipped a
+// crash — is handled by the exact-path imports at the TOP of this file.
+// They have to be `import` statements to be hoisted above the freeze, so
+// they cannot live down here with their siblings. Read the note up there
+// before touching them; four different spellings were tried on device
+// and three of them silently warmed the wrong module.
+
+// TWV-2026-021 diagnostic — name the module that lost a frozen-prototype
+// assignment.
+//
+// Metro's `guardedLoadModule` catches a module-factory throw, hands it to
+// `ErrorUtils.reportFatalError`, and returns `undefined` (see
+// metro-runtime/src/polyfills/require.js). LogBox then renders it with
+// `node_modules` frames COLLAPSED, so the report names the app function
+// that happened to trigger the load and hides the package that actually
+// failed. That is why this bug was chased through four wrong packages:
+// the stack on screen pointed at `simulateAssetChanges` every time, and
+// the real offender was never visible.
+//
+// This prints the raw, unfiltered stack for exactly this error class, so
+// the failing module names itself. __DEV__ only.
+if (__DEV__) {
+  const EU = (
+    globalThis as unknown as {
+      ErrorUtils?: { reportFatalError?: (e: unknown) => void };
+    }
+  ).ErrorUtils;
+  const original = EU?.reportFatalError;
+  if (EU && typeof original === "function") {
+    EU.reportFatalError = (e: unknown) => {
+      try {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("read-only property")) {
+          console.error(
+            "[TWV-2026-021] frozen-prototype assignment failed. " +
+              "The LAST node_modules frame below is the module to pre-load:\n" +
+              String((e as Error)?.stack ?? e),
+          );
+        }
+      } catch {
+        // Diagnostics must never mask the original report.
+      }
+      return original.call(EU, e);
+    };
+  }
+}
+
 // TWV-2026-021 — freeze the global prototypes before any third-party
 // code runs. CVE-2019-10744 (lodash) and friends mutate
 // `Object.prototype` to swap addresses / chainIds mid-request; freezing
@@ -162,6 +287,101 @@ try {
   }
 } catch (e) {
   console.error("[TWV-2026-021] prototype freeze failed:", e);
+}
+
+// TWV-2026-021 canary — prove the pre-loads above actually warmed the
+// modules they were meant to.
+//
+// This exists because `pnpm check:protofreeze` cannot: CI can only prove
+// a pre-load LINE exists, not that it resolved to the module the app
+// really loads. Four fixes for the ox crash passed CI and failed on
+// device — wrong export condition, wrong package copy, wrong subpath —
+// and each was invisible until a user hit the one screen that touched
+// the cold module.
+//
+// The check is a cache probe. A warmed module re-requires as a cache hit
+// and cannot throw; a missed one runs its factory now, under the frozen
+// prototype, and throws exactly as it would have on that screen. So a
+// miss is loud, at boot, naming the specifier, instead of silent until a
+// swap sheet blanks out.
+//
+// __DEV__ only: it is a development trip-wire, and in production every
+// listed module has already been loaded by the imports above, so the
+// probe would be pure startup cost.
+if (__DEV__) {
+  // Both builds are probed, not just the one we think Metro picks.
+  // Probing only `_esm` is precisely how this canary certified a broken
+  // fix: it reported 10/10 while the `_cjs` twin the app actually loads
+  // was still cold.
+  const canaries: [string, () => unknown][] = [
+    ["ox/_cjs/Hex", () => require("./node_modules/ox/_cjs/core/Hex.js")],
+    ["ox/_cjs/Bytes", () => require("./node_modules/ox/_cjs/core/Bytes.js")],
+    ["ox/_cjs/Base58", () => require("./node_modules/ox/_cjs/core/Base58.js")],
+    ["ox/_cjs/Base64", () => require("./node_modules/ox/_cjs/core/Base64.js")],
+    ["ox/_esm/Hex", () => require("./node_modules/ox/_esm/core/Hex.js")],
+    ["ox/_esm/Bytes", () => require("./node_modules/ox/_esm/core/Bytes.js")],
+    ["ox/_esm/Base58", () => require("./node_modules/ox/_esm/core/Base58.js")],
+    ["ox/_esm/Base64", () => require("./node_modules/ox/_esm/core/Base64.js")],
+    [
+      "viem>ox/_cjs/Hex",
+      () => require("./node_modules/viem/node_modules/ox/_cjs/core/Hex.js"),
+    ],
+    [
+      "viem>ox/_cjs/Bytes",
+      () => require("./node_modules/viem/node_modules/ox/_cjs/core/Bytes.js"),
+    ],
+    [
+      "viem>ox/_cjs/Base58",
+      () => require("./node_modules/viem/node_modules/ox/_cjs/core/Base58.js"),
+    ],
+    [
+      "viem>ox/_cjs/Base64",
+      () => require("./node_modules/viem/node_modules/ox/_cjs/core/Base64.js"),
+    ],
+    [
+      "viem>ox/_esm/Hex",
+      () => require("./node_modules/viem/node_modules/ox/_esm/core/Hex.js"),
+    ],
+    [
+      "viem>ox/_esm/Bytes",
+      () => require("./node_modules/viem/node_modules/ox/_esm/core/Bytes.js"),
+    ],
+    [
+      "viem>ox/_esm/Base58",
+      () => require("./node_modules/viem/node_modules/ox/_esm/core/Base58.js"),
+    ],
+    [
+      "viem>ox/_esm/Base64",
+      () => require("./node_modules/viem/node_modules/ox/_esm/core/Base64.js"),
+    ],
+    ["bn.js", () => require("bn.js")],
+    ["posthog-react-native", () => require("posthog-react-native")],
+  ];
+  const missed: string[] = [];
+  for (const [label, load] of canaries) {
+    try {
+      load();
+    } catch {
+      missed.push(label);
+    }
+  }
+  // Always print, pass or fail. A canary that is silent on success makes
+  // "no output" ambiguous between "everything warmed" and "this file
+  // never re-executed" — and the second is the common case, because
+  // Fast Refresh does NOT re-run module-scope side effects in the entry
+  // graph. Chasing that ambiguity cost a full retest cycle.
+  if (missed.length === 0) {
+    console.info(
+      `[TWV-2026-021] pre-load canary: ${canaries.length}/${canaries.length} warmed, prototypes frozen.`,
+    );
+  } else {
+    console.error(
+      `[TWV-2026-021] pre-load MISSED (${missed.length}/${canaries.length}): ${missed.join(", ")}. ` +
+        "These were not warmed before the prototype freeze, so each will " +
+        "throw the first time any screen touches it. See " +
+        "docs/prototype-freeze-crash-retrospective.md.",
+    );
+  }
 }
 
 // TWV-2026-070 self-check — Ed25519 must be usable at boot. A missing

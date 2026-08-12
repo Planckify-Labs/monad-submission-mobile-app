@@ -25,6 +25,7 @@ import {
   predictAssetDeltasFromCalldata,
   type SimulatedAssetChange,
   simulateAssetChanges,
+  type TraceSimulationResult,
 } from "@/services/security/txSimulator";
 import type {
   ClearSigningDescriptor,
@@ -207,20 +208,53 @@ export function EvmTransactionSheet({
     }
     let cancelled = false;
     setSim({ phase: "loading" });
-    void simulateAssetChanges(pinnedClient, {
-      from: tx.from,
-      to: target,
-      value: tx.value,
-      data: tx.data,
-      chainId: tx.chainId,
-    }).then((res) => {
+    // Simulation is an enrichment, never a gate. This sheet is the last
+    // thing standing between a dApp and the user's funds, so it MUST
+    // render even when the tracer cannot run — the static predictor and
+    // the decoded calldata below already carry the safety-critical
+    // content, and `coverageUnknown` tells the user what is missing.
+    //
+    // Both guards are load-bearing and neither subsumes the other:
+    //   - try/catch covers a *synchronous* throw. `simulateAssetChanges`
+    //     itself is documented never-throws, but Metro's inlineRequires
+    //     resolves `require('@/services/security/txSimulator')` (and its
+    //     viem/ox graph) at this call site, so a module-init failure
+    //     surfaces here, outside that function's own try.
+    //   - .catch covers a rejected promise.
+    //
+    // This is not hypothetical: `ox` throwing on first load
+    // (`Cannot assign to read-only property 'toString'`, see
+    // docs/prototype-freeze-crash-retrospective.md) escaped through this
+    // exact line, blew past the error boundary, and left the user with
+    // NO approval sheet for an ERC-20 `approve` — a silent rejection that
+    // is indistinguishable, from the outside, from a silent approval.
+    const settle = (res: TraceSimulationResult | null) => {
       if (cancelled) return;
       setSim(
-        res.status === "ok"
+        res && res.status === "ok"
           ? { phase: "ok", changes: res.changes, reverted: res.reverted }
           : { phase: "unavailable" },
       );
-    });
+    };
+    try {
+      void simulateAssetChanges(pinnedClient, {
+        from: tx.from,
+        to: target,
+        value: tx.value,
+        data: tx.data,
+        chainId: tx.chainId,
+      })
+        .then(settle)
+        .catch((e: unknown) => {
+          if (__DEV__) console.warn("[EvmTransactionSheet] simulate failed", e);
+          settle(null);
+        });
+    } catch (e) {
+      if (__DEV__) {
+        console.warn("[EvmTransactionSheet] simulate threw synchronously", e);
+      }
+      settle(null);
+    }
     return () => {
       cancelled = true;
     };
@@ -414,7 +448,23 @@ export function EvmTransactionSheet({
                 <CounterpartyLabel address={target} />
               </>
             )}
-            {tx.value && tx.value > 0n && (
+            {/*
+              `tx.value !== undefined`, not `tx.value`. A token swap sends
+              `value: "0x0"`, which normalizes to the bigint `0n`, and
+              `{0n && …}` evaluates to `0n` rather than `false`. React 19
+              treats a bigint child as text (`createChild`: `"bigint" ===
+              typeof newChild`), so that emits a stray "0" as a raw text
+              node inside this View — invalid in RN, where text must live
+              in a <Text>. Comparing explicitly keeps the guard boolean.
+
+              Scope note: this is a latent rendering bug found while
+              reading the sheet, NOT the tower.exchange force-close. That
+              one was `TypeError: Cannot assign to read-only property
+              'toString'` from `ox` colliding with the prototype freeze in
+              pollyfills.ts, and it fired in a passive effect after this
+              render had already committed.
+            */}
+            {tx.value !== undefined && tx.value > 0n && (
               <>
                 <Text className="text-xs text-gray-500 mt-2">Value</Text>
                 <Text className="text-sm text-gray-900">

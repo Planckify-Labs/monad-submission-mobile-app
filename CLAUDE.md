@@ -206,6 +206,36 @@ etc.) plus operational runbooks (`docs/runbooks/`, `jwk_rotation_runbook.md`,
 or changing one of these subsystems, the spec file is the source of truth
 for intent — read it before refactoring.
 
+## Frozen prototypes (TWV-2026-021) — read before adding a dependency
+
+`pollyfills.ts` calls `Object.freeze(Object.prototype)`. Any module that
+exports a binding named after an `Object.prototype` member (`toString`,
+`hasOwnProperty`, `valueOf`, …) compiles to `exports.toString = …`, which
+assigns through the frozen prototype:
+
+- **CJS** (sloppy mode) → silently no-ops; the export is just missing.
+- **ESM** (Metro adds `"use strict"`) → **throws**, hard crash.
+
+Metro's `inlineRequires` defers the module to its *first use*, so the
+crash appears on whatever screen touches it first, arbitrarily far from
+boot. This has bitten three times (`bn.js`, `posthog-react-native`, and
+`ox`, which shipped a force-close in the dApp approval sheet). Offenders
+are pre-loaded in `pollyfills.ts` above the freeze, **by exact file path,
+one line per build (`_cjs` and `_esm`) per installed copy** — those
+imports look like dead code and are load-bearing.
+
+Two traps that cost four failed fixes: `_cjs`/`_esm` are different Metro
+modules (warming one does nothing for the other), and a package can be
+installed twice (`node_modules/viem/node_modules/ox`) where a bare
+specifier reaches only the hoisted copy.
+
+`pnpm check:protofreeze` fails the build on a new offender, and a
+`__DEV__` boot canary prints `pre-load canary: N/N warmed`. **Retest only
+after `adb shell am force-stop`** — Fast Refresh does not re-run
+`pollyfills.ts`, so a reload silently tests the old code. Full write-up,
+including how to name the failing module via Metro's `/symbolicate`:
+`docs/prototype-freeze-crash-retrospective.md`.
+
 ## Known Technical Debt
 
 From `docs/todolist/technical-deb.md`:

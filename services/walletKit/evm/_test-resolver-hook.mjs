@@ -25,6 +25,11 @@ const STUB_SOURCES = {
     export async function getItemAsync() { return null; }
     export async function setItemAsync() {}
     export async function deleteItemAsync() {}
+    // API-surface twin of lib/storage/expoSecureStore.mock.ts. This side
+    // stays a no-op store, so there is nothing to dump; these exist only
+    // so the two stubs remain importable in step.
+    export function __resetSecureStore() {}
+    export function __dumpSecureStore() { return ""; }
     export default {};
   `,
   "rn-cookies": `

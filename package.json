@@ -11,6 +11,7 @@
     "lint": "expo lint",
     "check:syntax": "tsc --noEmit --skipLibCheck",
     "check:chains": "bash scripts/check-chain-agnostic.sh",
+    "check:protofreeze": "bash scripts/check-proto-freeze-safety.sh",
     "check:defi": "bash scripts/check-defi-agnostic.sh",
     "check:agents": "bash scripts/check-agents.sh",
     "build:cleanup": "bash scripts/eas-build-cleanup.sh",

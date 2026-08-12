@@ -33,6 +33,16 @@ export function __resetSecureStore(): void {
   store.clear();
 }
 
+/**
+ * Every value currently held, concatenated. Lets a test assert that a
+ * secret did not reach *any* key, not just the one it expected — the
+ * pending-approval queue leaked `privateKey` through a key nobody was
+ * checking (TWV-2026-004).
+ */
+export function __dumpSecureStore(): string {
+  return [...store.entries()].map(([k, v]) => `${k}=${v}`).join("\n");
+}
+
 export default {
   getItemAsync,
   setItemAsync,

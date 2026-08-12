@@ -164,17 +164,33 @@ export function EvmBatchCallsSheet({
     }
     let cancelled = false;
     setSim({ phase: "loading" });
-    void simulateBatchAssetChanges(pinnedClient, {
-      from: p.from,
-      calls: p.calls,
-    }).then((res) => {
+    // Enrichment, never a gate — see the long note on the same effect in
+    // EvmTransactionSheet. A batch sheet that fails to render is worse
+    // than a single one: it hides N fund-moving calls, not one.
+    const settle = (res: BatchTraceSimulationResult | null) => {
       if (cancelled) return;
       setSim(
-        res.status === "ok"
+        res && res.status === "ok"
           ? { phase: "ok", result: res }
           : { phase: "unavailable" },
       );
-    });
+    };
+    try {
+      void simulateBatchAssetChanges(pinnedClient, {
+        from: p.from,
+        calls: p.calls,
+      })
+        .then(settle)
+        .catch((e: unknown) => {
+          if (__DEV__) console.warn("[EvmBatchCallsSheet] simulate failed", e);
+          settle(null);
+        });
+    } catch (e) {
+      if (__DEV__) {
+        console.warn("[EvmBatchCallsSheet] simulate threw synchronously", e);
+      }
+      settle(null);
+    }
     return () => {
       cancelled = true;
     };
@@ -349,7 +365,12 @@ export function EvmBatchCallsSheet({
                   address={c.to}
                   fallbackLabel="New contract (deployment)"
                 />
-                {c.value && c.value > 0n && (
+                {/* Boolean guard, not a truthiness check — a zero-value
+                    call (every `approve` in an approve+swap batch) would
+                    otherwise emit the bigint `0n` as a stray raw text
+                    child. Same latent bug as EvmTransactionSheet; see the
+                    longer note there. */}
+                {c.value !== undefined && c.value > 0n && (
                   <Text className="text-xs text-gray-500 mt-1">
                     Value: {formatEther(c.value)}
                   </Text>

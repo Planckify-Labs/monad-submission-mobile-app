@@ -144,6 +144,10 @@ export default defineConfig({
       "services/chains/stellar/xdrDecode.test.ts",
       "services/chains/stellar/agentContext.test.ts",
       "services/bridge/inspectors/StellarPreflightInspector.test.ts",
+      // Cold-start handling of the persisted approval queue — the
+      // escalation path that turned one crashing sheet into a dApps
+      // screen that could not be opened for five minutes.
+      "services/bridge/pendingIntents.test.ts",
       // PPOB catalog categorization (space-docked per fulfillment partner)
       "services/ppob/vcgamer.test.ts",
       // Receipt amounts: exact rendering on detail screens, and the
