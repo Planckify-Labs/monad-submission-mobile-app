@@ -154,6 +154,7 @@ export function SuiTransactionSheet({
   useScreenshotGuard();
   const p = intent.payload;
   const decoded = p.decoded ?? [];
+  const semantics = p.semantics ?? [];
 
   // Task 65 — Stage-2 descriptor input (first MoveCall command; the
   // other PTB command kinds are already fully legible at Stage 1) and
@@ -203,6 +204,41 @@ export function SuiTransactionSheet({
               {truncateAddress({ address: p.address })}
             </Text>
           </View>
+
+          {/*
+            Standard-level readings from the PTB semantic passes (kiosk,
+            package upgrade, and anything docked later). Rendered above
+            the structural command list so the user reads "what this
+            does" before "how it is built". Entirely generic: the sheet
+            never learns a standard's name, so docking a new pass needs
+            no change here.
+          */}
+          {semantics.map((s) => (
+            <View
+              key={s.code}
+              className={`rounded-xl p-3 mb-3 border ${
+                s.severity === "warn"
+                  ? "bg-amber-50 border-amber-300"
+                  : "bg-white border-gray-200"
+              }`}
+            >
+              <Text
+                className={`text-sm font-semibold ${
+                  s.severity === "warn" ? "text-amber-900" : "text-gray-900"
+                }`}
+              >
+                {s.title}
+              </Text>
+              {s.fields.map((f) => (
+                <View key={f.label} className="flex-row mt-1">
+                  <Text className="text-xs text-gray-500 w-28">{f.label}</Text>
+                  <Text className="text-xs text-gray-900 flex-1" selectable>
+                    {f.value}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          ))}
 
           {decoded.length > 0 ? (
             <View className="bg-gray-50 rounded-xl p-3 mb-3">

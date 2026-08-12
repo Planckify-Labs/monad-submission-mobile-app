@@ -22,10 +22,19 @@
 
 import { Transaction } from "@mysten/sui/transactions";
 
+import { readMoveModuleNames } from "@/services/chains/sui/moveBytecode";
 import type {
+  SuiArgRef,
   SuiDecodedCommand,
+  SuiDecodedInput,
+  SuiPtbSemantic,
   SuiSignTxPayload,
 } from "@/services/chains/sui/payloads";
+import { runPtbSemantics } from "@/services/chains/sui/ptbSemantics";
+// Side-effect import: docks the built-in semantic passes (kiosk,
+// package). A new Sui standard becomes visible on the sheet by adding a
+// pass there, with no change to this inspector.
+import "@/services/chains/sui/semantics";
 import type { ApprovalIntent } from "../approval";
 import type { IntentAnnotation, IntentInspector } from "../inspector";
 
@@ -51,6 +60,113 @@ interface DecodedTx {
   gasPrice?: bigint;
   inputArgumentCount?: number;
   commands: SuiDecodedCommand[];
+  inputs: SuiDecodedInput[];
+  semantics: SuiPtbSemantic[];
+}
+
+/**
+ * Normalise a PTB argument reference across both SDK shapes:
+ * `{ $kind: "Input", Input: 0 }` / `{ $kind: "NestedResult", NestedResult: [2, 1] }`
+ * and the legacy `{ kind: "Input", index: 0 }` form.
+ */
+function decodeArg(a: unknown): SuiArgRef {
+  if (!a || typeof a !== "object") return { kind: "unknown" };
+  const o = a as Record<string, unknown>;
+  const tag = (o.$kind ?? o.kind) as string | undefined;
+  switch (tag) {
+    case "Input": {
+      const v = typeof o.Input === "number" ? o.Input : o.index;
+      return typeof v === "number"
+        ? { kind: "input", index: v }
+        : { kind: "unknown" };
+    }
+    case "Result": {
+      const v = typeof o.Result === "number" ? o.Result : o.index;
+      return typeof v === "number"
+        ? { kind: "result", command: v }
+        : { kind: "unknown" };
+    }
+    case "NestedResult": {
+      const pair = o.NestedResult;
+      if (Array.isArray(pair) && typeof pair[0] === "number") {
+        return {
+          kind: "result",
+          command: pair[0] as number,
+          nested: typeof pair[1] === "number" ? (pair[1] as number) : undefined,
+        };
+      }
+      if (typeof o.index === "number") {
+        return {
+          kind: "result",
+          command: o.index,
+          nested: typeof o.resultIndex === "number" ? o.resultIndex : undefined,
+        };
+      }
+      return { kind: "unknown" };
+    }
+    case "GasCoin":
+      return { kind: "gas" };
+    default:
+      return { kind: "unknown" };
+  }
+}
+
+function decodeArgs(v: unknown): SuiArgRef[] | undefined {
+  return Array.isArray(v) ? v.map(decodeArg) : undefined;
+}
+
+/** Decode a PTB input far enough for a semantic pass to read literals. */
+function decodeInput(v: unknown): SuiDecodedInput {
+  if (!v || typeof v !== "object") return { kind: "unknown" };
+  const o = v as Record<string, unknown>;
+  const tag = (o.$kind ?? o.kind ?? o.type) as string | undefined;
+
+  if (tag === "Pure" || tag === "pure") {
+    const pure = (o.Pure ?? o) as Record<string, unknown>;
+    const bytes = pure.bytes ?? o.bytes ?? o.value;
+    if (typeof bytes === "string") return { kind: "pure", bytes };
+    return { kind: "unknown" };
+  }
+  if (tag === "Object" || tag === "object" || tag === "UnresolvedObject") {
+    const inner = (o.Object ?? o.UnresolvedObject ?? o) as Record<
+      string,
+      unknown
+    >;
+    const innerTag = (inner.$kind ?? inner.kind) as string | undefined;
+    const ref = innerTag
+      ? ((inner[innerTag] as Record<string, unknown> | undefined) ?? inner)
+      : inner;
+    const objectId = ref.objectId ?? inner.objectId ?? o.objectId;
+    return {
+      kind: "object",
+      objectId: typeof objectId === "string" ? objectId : undefined,
+      shared: innerTag === "SharedObject" || undefined,
+    };
+  }
+  return { kind: "unknown" };
+}
+
+/** Byte arrays for publish/upgrade modules, in either SDK encoding. */
+function toModuleBytes(v: unknown): Uint8Array[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: Uint8Array[] = [];
+  for (const m of v) {
+    if (m instanceof Uint8Array) out.push(m);
+    else if (Array.isArray(m)) out.push(Uint8Array.from(m as number[]));
+    else if (typeof m === "string") {
+      try {
+        out.push(base64ToBytes(m));
+      } catch {
+        return null;
+      }
+    } else return null;
+  }
+  return out;
+}
+
+function stringList(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  return v.every((x) => typeof x === "string") ? (v as string[]) : undefined;
 }
 
 function asBigInt(v: unknown): bigint | undefined {
@@ -108,6 +224,8 @@ function decodeCommand(c: unknown): SuiDecodedCommand | null {
         function: fn,
         argumentCount: Array.isArray(args) ? args.length : 0,
         typeArgumentCount: Array.isArray(typeArgs) ? typeArgs.length : 0,
+        typeArguments: stringList(typeArgs),
+        arguments: decodeArgs(args),
       };
     }
     case "TransferObjects": {
@@ -140,6 +258,7 @@ function decodeCommand(c: unknown): SuiDecodedCommand | null {
               ? coin.index
               : -1,
         amountCount: Array.isArray(amounts) ? amounts.length : 0,
+        amountArgs: decodeArgs(amounts),
       };
     }
     case "MergeCoins": {
@@ -163,10 +282,14 @@ function decodeCommand(c: unknown): SuiDecodedCommand | null {
       const deps = (inner.dependencies ?? obj.dependencies) as
         | unknown[]
         | undefined;
+      const bytes = toModuleBytes(modules);
       return {
         kind: "Publish",
         modules: Array.isArray(modules) ? modules.length : 0,
         dependencies: Array.isArray(deps) ? deps.length : 0,
+        dependencyIds: stringList(deps),
+        moduleBytes: bytes?.reduce((n, m) => n + m.length, 0),
+        moduleNames: bytes ? readMoveModuleNames(bytes) : undefined,
       };
     }
     case "Upgrade": {
@@ -174,10 +297,18 @@ function decodeCommand(c: unknown): SuiDecodedCommand | null {
       const deps = (inner.dependencies ?? obj.dependencies) as
         | unknown[]
         | undefined;
+      const bytes = toModuleBytes(modules);
+      const pkg = (inner.package ?? obj.package) as string | undefined;
+      const ticket = inner.ticket ?? obj.ticket;
       return {
         kind: "Upgrade",
         modules: Array.isArray(modules) ? modules.length : 0,
         dependencies: Array.isArray(deps) ? deps.length : 0,
+        dependencyIds: stringList(deps),
+        moduleBytes: bytes?.reduce((n, m) => n + m.length, 0),
+        moduleNames: bytes ? readMoveModuleNames(bytes) : undefined,
+        packageId: typeof pkg === "string" ? pkg : undefined,
+        ticketArg: ticket === undefined ? undefined : decodeArg(ticket),
       };
     }
     case "MakeMoveVec": {
@@ -241,7 +372,8 @@ function decodeFromBcs(bytes: Uint8Array): DecodedTx | null {
     }
   }
 
-  const inputs = (data.inputs ?? []) as unknown[];
+  const rawInputs = (data.inputs ?? []) as unknown[];
+  const inputs = Array.isArray(rawInputs) ? rawInputs.map(decodeInput) : [];
   const gasData = (data.gasData ?? {}) as Record<string, unknown>;
 
   return {
@@ -251,8 +383,12 @@ function decodeFromBcs(bytes: Uint8Array): DecodedTx | null {
       typeof gasData.owner === "string" ? (gasData.owner as string) : undefined,
     gasBudget: asBigInt(gasData.budget),
     gasPrice: asBigInt(gasData.price),
-    inputArgumentCount: Array.isArray(inputs) ? inputs.length : undefined,
+    inputArgumentCount: Array.isArray(rawInputs) ? rawInputs.length : undefined,
     commands,
+    inputs,
+    // Standard-level readings on top of the structural decode. Runs last
+    // so a pass sees the fully-decoded command list.
+    semantics: runPtbSemantics({ commands, inputs }),
   };
 }
 
@@ -322,6 +458,19 @@ export const SuiPtbDecoderInspector: IntentInspector = {
       });
     }
 
+    // A semantic pass that flagged its reading as a warning gets a banner
+    // as well as a card, so it survives a user who does not scroll.
+    for (const s of decoded.semantics) {
+      if (s.severity !== "warn") continue;
+      annotations.push({
+        code: `decoder.semantic.${s.code}`,
+        severity: "warn",
+        title: s.title,
+        detail: s.fields.map((f) => `${f.label}: ${f.value}`).join("\n"),
+        source: "sui-ptb-decoder",
+      });
+    }
+
     for (const c of decoded.commands) {
       if (c.kind === "MoveCall" && c.package !== SUI_FRAMEWORK_PACKAGE) {
         annotations.push({
@@ -344,6 +493,8 @@ export const SuiPtbDecoderInspector: IntentInspector = {
       patch: {
         ...(payload as object),
         decoded: decoded.commands,
+        inputs: decoded.inputs,
+        semantics: decoded.semantics,
         sender: decoded.sender,
         gasOwner: decoded.gasOwner,
         gasBudget: decoded.gasBudget,

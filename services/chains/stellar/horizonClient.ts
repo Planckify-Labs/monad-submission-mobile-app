@@ -8,7 +8,11 @@
  * Spec reference: `docs/stellar-chain-support-spec.md` §3.6.
  */
 
-import { Networks, type Transaction } from "@stellar/stellar-base";
+import {
+  type FeeBumpTransaction,
+  Networks,
+  type Transaction,
+} from "@stellar/stellar-base";
 import type {
   ChainConfig,
   StellarChainConfig,
@@ -17,6 +21,7 @@ import {
   assertStellarChain,
   getStellarMainnetChain,
 } from "@/constants/configs/chainConfig";
+import { proxyAuthHeaders } from "@/services/rpc/proxyAuth";
 import { bytesToBase64 } from "./base64";
 
 /**
@@ -29,7 +34,9 @@ import { bytesToBase64 } from "./base64";
  * the `"raw"` format, with no `.toString()` call at all) — we then
  * base64-encode those bytes ourselves via `bytesToBase64`.
  */
-export function transactionToBase64Xdr(tx: Transaction): string {
+export function transactionToBase64Xdr(
+  tx: Transaction | FeeBumpTransaction,
+): string {
   const envelope = tx.toEnvelope() as unknown as {
     toXDR(format: "raw"): Uint8Array;
   };
@@ -128,7 +135,9 @@ export interface StellarHorizonClient {
   horizonUrl: string;
   networkPassphrase: string;
   loadAccount(address: string): Promise<HorizonAccount>;
-  submitTransaction(tx: Transaction): Promise<{ hash: string }>;
+  submitTransaction(
+    tx: Transaction | FeeBumpTransaction,
+  ): Promise<{ hash: string }>;
 }
 
 /**
@@ -150,7 +159,9 @@ export function getHorizonClient(
       return chain.network === "mainnet" ? Networks.PUBLIC : Networks.TESTNET;
     },
     async loadAccount(address: string): Promise<HorizonAccount> {
-      const res = await fetch(`${horizonUrl}/accounts/${address}`);
+      const res = await fetch(`${horizonUrl}/accounts/${address}`, {
+        headers: proxyAuthHeaders(horizonUrl),
+      });
       if (!res.ok) {
         let body: unknown;
         try {
@@ -162,7 +173,9 @@ export function getHorizonClient(
       }
       return (await res.json()) as HorizonAccount;
     },
-    async submitTransaction(tx: Transaction): Promise<{ hash: string }> {
+    async submitTransaction(
+      tx: Transaction | FeeBumpTransaction,
+    ): Promise<{ hash: string }> {
       const xdr = transactionToBase64Xdr(tx);
       // `URLSearchParams` (not manual `tx=${encodeURIComponent(xdr)}`
       // templating) — the standard, battle-tested way to build a
@@ -170,7 +183,10 @@ export function getHorizonClient(
       // `Content-Length` semantics implicitly.
       const res = await fetch(`${horizonUrl}/transactions`, {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          ...proxyAuthHeaders(horizonUrl),
+        },
         body: new URLSearchParams({ tx: xdr }).toString(),
       });
       const json = (await res.json()) as {

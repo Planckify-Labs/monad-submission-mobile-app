@@ -134,7 +134,10 @@ describe("decodeCalldata — TWV-2026-009 risk classification", () => {
       SPENDER,
       UINT256_MAX,
     ]);
-    const d = decodeCalldata(data);
+    // Phase D — the ERC-20 reading now requires a confirmed ERC-20
+    // target, because `approve(address,uint256)` is byte-identical to
+    // ERC-721's `approve(address,uint256)`.
+    const d = decodeCalldata(data, { approveTargetKind: "erc20" });
     assert.ok(d);
     assert.equal(d.risk?.kind, "approve");
     if (d.risk?.kind === "approve") {
@@ -149,7 +152,7 @@ describe("decodeCalldata — TWV-2026-009 risk classification", () => {
       SPENDER,
       half,
     ]);
-    const d = decodeCalldata(data);
+    const d = decodeCalldata(data, { approveTargetKind: "erc20" });
     assert.ok(d);
     if (d.risk?.kind === "approve") {
       assert.equal(d.risk.isUnlimited, true);
@@ -158,12 +161,61 @@ describe("decodeCalldata — TWV-2026-009 risk classification", () => {
     }
   });
 
+  // Phase D — the indeterminate path. An unresolved target must not be
+  // read as either standard, but the unlimited *signal* has to survive:
+  // before phase D a failed ERC-165 probe still produced the warning,
+  // and losing it on the flaky-RPC path would remove the wallet's
+  // highest-frequency drain warning exactly when it matters most.
+  it("reports an unresolved approve target as indeterminate", () => {
+    const data = encode("function approve(address spender, uint256 amount)", [
+      SPENDER,
+      UINT256_MAX,
+    ]);
+    const d = decodeCalldata(data);
+    assert.ok(d);
+    assert.equal(d.risk?.kind, "approveUnknownAsset");
+    if (d.risk?.kind === "approveUnknownAsset") {
+      assert.equal(d.risk.looksUnlimited, true);
+      assert.equal(d.risk.value, UINT256_MAX);
+    }
+  });
+
+  it("does not cry unlimited on a small indeterminate approve", () => {
+    const data = encode("function approve(address spender, uint256 amount)", [
+      SPENDER,
+      1_000n,
+    ]);
+    const d = decodeCalldata(data);
+    if (d?.risk?.kind !== "approveUnknownAsset") {
+      assert.fail("expected indeterminate approve risk");
+    }
+    assert.equal(d.risk.looksUnlimited, false);
+  });
+
+  // An ERC-721 token id above the ERC-20 unlimited threshold must never
+  // be scored on the allowance scale.
+  it("reads a high token id on an ERC-721 as one item, not unlimited", () => {
+    const data = encode("function approve(address spender, uint256 amount)", [
+      SPENDER,
+      1n << 255n,
+    ]);
+    const d = decodeCalldata(data, { approveTargetKind: "erc721" });
+    assert.ok(d);
+    assert.equal(d.risk?.kind, "approveNft");
+    if (d.risk?.kind === "approveNft") {
+      assert.equal(d.risk.tokenId, 1n << 255n);
+    }
+  });
+
   it("does NOT flag approve(spender, small) as unlimited", () => {
     const data = encode("function approve(address spender, uint256 amount)", [
       SPENDER,
       1_000_000n,
     ]);
-    const d = decodeCalldata(data);
+    // Phase D — the ERC-20 reading now requires a confirmed ERC-20
+    // target, because `approve(address,uint256)` is byte-identical to
+    // ERC-721's `approve(address,uint256)`.
+    const d = decodeCalldata(data, { approveTargetKind: "erc20" });
     assert.ok(d);
     assert.equal(d.risk?.kind, "approve");
     if (d.risk?.kind === "approve") {

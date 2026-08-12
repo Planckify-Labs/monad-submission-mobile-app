@@ -131,8 +131,16 @@ export const STELLAR_ERROR_CODES = {
   UNAUTHORIZED: 4100,
   /** Active wallet deleted mid-flight. */
   DISCONNECTED: 4900,
-  /** Unsupported feature (SUBMIT_AUTH_ENTRY / SUBMIT_TOKEN §0 non-goals). */
+  /** Unsupported feature (SUBMIT_TOKEN §0 non-goal). */
   UNSUPPORTED: 4200,
+  /**
+   * Soroban contract storage has expired (spec phase E). The invocation
+   * cannot run until a `RestoreFootprint` transaction renews it, either
+   * because the user declined the restore or because one restore was not
+   * enough. Distinct from a generic failure so callers can offer the
+   * right next step instead of "try again".
+   */
+  ARCHIVED_STATE: -32003,
   /** Another approval from this origin already pending. */
   RESOURCE_UNAVAILABLE: -32002,
   /** Invalid params — malformed XDR, address mismatch, bad accountToSign. */

@@ -143,11 +143,32 @@ function DecodedList({
   return (
     <View className="border border-gray-200 rounded-xl p-3 mt-2">
       <Text className="text-xs text-gray-500 mb-1">Decoded instructions</Text>
-      {decoded.map((ix, i) => (
-        <Text key={`${i}-${ix.program}`} className="text-xs text-gray-700">
-          {i + 1}. {ix.program} · {"kind" in ix ? ix.kind : "memo"}
-        </Text>
-      ))}
+      {decoded.map((ix, i) => {
+        // `fields` and `risk` are declared by the program decoder, not
+        // known here. That is what lets a newly docked decoder surface
+        // detail and raise a warning without touching this sheet.
+        const fields = "fields" in ix ? ix.fields : undefined;
+        const risk = "risk" in ix ? ix.risk : undefined;
+        return (
+          <View key={`${i}-${ix.program}`} className="mt-1">
+            <Text
+              className={`text-xs ${
+                risk ? "font-semibold text-amber-900" : "text-gray-700"
+              }`}
+            >
+              {i + 1}. {ix.program} · {"kind" in ix ? ix.kind : "memo"}
+            </Text>
+            {risk && (
+              <Text className="text-xs text-amber-800 ml-3">{risk.detail}</Text>
+            )}
+            {fields?.map((f) => (
+              <Text key={f.label} className="text-xs text-gray-500 ml-3">
+                {f.label}: {f.value}
+              </Text>
+            ))}
+          </View>
+        );
+      })}
     </View>
   );
 }

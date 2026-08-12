@@ -53,6 +53,14 @@ function operationLabel(op: StellarDecodedOperation): string {
     case "accountMerge":
       return "Merge account";
     case "invokeHostFunction":
+      // Phase B — the deployment host functions used to share the
+      // invocation label, so publishing code read as calling it.
+      if (op.hostFunction === "uploadContractWasm")
+        return "Upload contract code";
+      if (op.hostFunction === "createContract")
+        return op.fromAsset
+          ? "Create a contract for an existing asset"
+          : "Deploy a new contract";
       return "Soroban contract invocation";
     case "other":
       return op.type;
@@ -78,11 +86,31 @@ function operationDetail(op: StellarDecodedOperation): string {
     case "accountMerge":
       return `→ ${shortAddr(op.destination)}`;
     case "invokeHostFunction":
+      if (op.hostFunction === "uploadContractWasm") {
+        // The hash is the code's on-chain identity, so it is shown in
+        // full: a truncated hash cannot be compared against anything.
+        return `${(op.wasmByteLength ?? 0).toLocaleString()} bytes${
+          op.wasmHash ? `, code hash ${op.wasmHash}` : ""
+        }`;
+      }
+      if (op.hostFunction === "createContract") {
+        if (op.fromAsset) return `Asset ${assetLabel(op.fromAsset)}`;
+        return op.wasmHash
+          ? `From code hash ${op.wasmHash}`
+          : "The code being deployed could not be read.";
+      }
+      if (op.hostFunction === "invokeContract" && op.contractId) {
+        return `${shortAddr(op.contractId)}${op.function ? ` · ${op.function}` : ""}`;
+      }
       return "Cannot be decoded. Review carefully before signing.";
     case "other":
       return "Unrecognized operation type.";
   }
 }
+
+// Phase K — hand-written per the user-facing-errors rule.
+const FEE_BUMP_COPY =
+  "This request wraps a transaction that another account created. Their operations are what run; your part is covering the network fee.";
 
 function formatFee(
   fee: string | undefined,
@@ -162,10 +190,43 @@ export function StellarTransactionSheet({
             </Text>
           </View>
 
+          {/*
+            Phase K — a fee-bump envelope has TWO source accounts. The
+            operations below belong to the inner author; the fee belongs
+            to whoever signs here. Rendering only one is exactly how a
+            user misreads what they are agreeing to pay for.
+          */}
+          {p.feeBump && (
+            <View className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3">
+              <Text className="text-xs font-bold text-amber-900 uppercase">
+                You are paying for someone else&apos;s transaction
+              </Text>
+              <Text className="text-sm text-amber-900 mt-1">
+                {FEE_BUMP_COPY}
+              </Text>
+              <View className="flex-row mt-2">
+                <Text className="text-xs text-amber-800 w-24">You pay</Text>
+                <Text className="text-xs text-amber-900 flex-1">
+                  {formatFee(p.feeBump.fee, p.networkPassphrase) ??
+                    p.feeBump.fee}
+                </Text>
+              </View>
+              <View className="flex-row mt-1">
+                <Text className="text-xs text-amber-800 w-24">
+                  Their account
+                </Text>
+                <Text className="text-xs text-amber-900 flex-1" selectable>
+                  {p.sourceAccount ?? "Could not be read"}
+                </Text>
+              </View>
+            </View>
+          )}
+
           {decoded.length > 0 ? (
             <View className="bg-gray-50 rounded-xl p-3 mb-3">
               <Text className="text-xs text-gray-500 mb-1">
                 {decoded.length} operation{decoded.length === 1 ? "" : "s"}
+                {p.feeBump ? " (theirs, not yours)" : ""}
               </Text>
               {decoded.map((op, i) => (
                 <View key={i} className="py-1 border-t border-gray-100">

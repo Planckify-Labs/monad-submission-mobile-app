@@ -22,6 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@adraffy/ens-normalize": "1.11.1",
     "@ai-sdk/anthropic": "^2.0.40",
     "@ai-sdk/react": "^3.0.41",
     "@cetusprotocol/aggregator-sdk": "^1.6.0",

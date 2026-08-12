@@ -4,7 +4,10 @@
 TWV-2026-012 (task 45). Companion: TWV-2026-016 (task 7, registry
 chainId), TWV-2026-008 (task 8, Permit/Permit2 decoding).
 
-**Status:** Audit + design contract. Ran at commit of this note.
+**Status:** Implemented 2026-08-11 (spec phase H of
+`docs/wallet-standards-hardening-spec.md`). §1 below is preserved as the
+2026-04-16 audit that motivated the contract; §6 records what shipped
+and the two deviations.
 
 A typed-data signature whose `domainSeparator` is reused across
 contract deployments — or whose `chainId` doesn't match the chain
@@ -175,9 +178,43 @@ CI runs tests covering:
 
 ## 5. Follow-up tickets (not blocking this note)
 
-- Add `DomainCard` to `EvmSignMessageSheet` above `DecodedPermitCard`
-  and `RawMessageCard`.
-- Extend `HeuristicInspector` with the `typedData.chainId-mismatch`
-  annotation.
-- Ship a known-contract lookup table in `constants/`.
-- Wire the regression tests into CI.
+All four landed — see §6.
+
+- ~~Add `DomainCard` to `EvmSignMessageSheet`~~ → `SigningDomainCard`.
+- ~~Extend `HeuristicInspector` with `typedData.chainId-mismatch`~~.
+- ~~Ship a known-contract lookup table~~ → reused
+  `services/decoders/knownSpenders.ts` rather than a new table in
+  `constants/`; see §6.
+- ~~Wire the regression tests into CI~~ → `eip712Domain.test.ts`.
+
+## 6. What shipped — 2026-08-11
+
+| §2 requirement | Shipped as |
+| :---- | :---- |
+| Domain block above the fold | `SigningDomainCard` in `EvmSignMessageSheet.tsx`, rendered before the SIWE / permit / raw cards, no disclosure toggle |
+| chainId-mismatch detection | `typedData.chainId-mismatch` in `HeuristicInspector.ts` |
+| chainId-mismatch refusal | `chainMismatch` in the sheet: refusal card + `disabled` approve button. Not a hold, not a confirmation |
+| Known-contract lookup | `isKnownSpender(verifyingContract, chainId)` |
+| Regression tests | `services/decoders/__tests__/eip712Domain.test.ts` |
+
+Two deliberate deviations from §2:
+
+1. **Lookup table location.** §2.3 called for a new bundled table in
+   `constants/`. It ships as an extension of
+   `services/decoders/knownSpenders.ts` instead — that table was already
+   bundled-at-build-time, offline-safe and reviewer-gated, so a second
+   one would have been two lists to keep honest rather than one. Phase F
+   extended it with the Seaport addresses at the same time.
+
+   The "Fresh contract" badge for deployments under 30 days old is
+   **not** implemented: §2.3 sources it from `services/indexer/` at
+   signing time, which contradicts the same section's "NEVER fetches at
+   signing time" rule. Left out pending a resolution of that conflict.
+
+2. **Chain resolution.** §2.2 says to use the registry-derived active
+   chain. The implementation uses the **per-origin** chain the adapter
+   resolved for this dApp session (`activeChainId` stamped onto
+   `EvmSignTypedDataPayload`), which is stricter: the home-screen active
+   chain and the chain a dApp is on can differ, and comparing against
+   the home-screen one would produce false mismatches. This follows the
+   dApp-bridge isolation rule.

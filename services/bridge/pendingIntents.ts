@@ -1,8 +1,40 @@
 import * as SecureStore from "expo-secure-store";
+import { originKey } from "@/services/permissions/caip";
 import type { ApprovalDecision, ApprovalIntent } from "./approval";
 
 const STORAGE_KEY = "dapp_bridge.pending_intents";
 const STALE_MS = 5 * 60 * 1000;
+
+/**
+ * Queue caps — spec phase Q.
+ *
+ * `ppom/batching.js` fires ten un-awaited `eth_sendTransaction` calls in
+ * a loop. `DappBridge.enqueue` already refuses the second and later
+ * request *from the same origin* with -32002, so that specific loop does
+ * not reach this store ten deep. These caps exist for the paths that
+ * guard does not cover: several origins, the re-push in
+ * `runOnDemandInspector`, and a persisted queue restored from storage.
+ *
+ * A dApp with a legitimate need for a dozen simultaneous approvals does
+ * not exist. `wallet_sendCalls` is the supported way to ask for many
+ * actions at once, and it is the one that gets a single reviewable sheet.
+ */
+const MAX_PENDING_TOTAL = 8;
+const MAX_PENDING_PER_ORIGIN = 2;
+
+/**
+ * How long after one sheet resolves a newly-presented one keeps its
+ * approve button inert.
+ *
+ * This is the phase-Q finding that is not about counting. Rejecting a
+ * request paints the next one **instantly, in the same place**, so the
+ * reject button of sheet *n* sits under the finger that is about to
+ * approve sheet *n+1*. Nine rejections train the muscle and the tenth is
+ * a drain. The attack is a mis-tap, not a crash, and no cap prevents it.
+ */
+export const QUEUE_INPUT_LOCK_MS = 700;
+/** A sheet counts as "presented during a drain" within this window. */
+export const QUEUE_DRAIN_WINDOW_MS = 1500;
 
 type Listener = (intents: ApprovalIntent[]) => void;
 type ResolveListener = (id: string, decision: ApprovalDecision) => void;
@@ -29,10 +61,34 @@ class PendingIntentsStore {
     return [...this.intents];
   }
 
-  push(intent: ApprovalIntent): void {
+  /**
+   * Returns `false` when a cap refused the intent, so the caller can
+   * answer the dApp with `resourceUnavailable` rather than growing the
+   * queue without bound.
+   */
+  push(intent: ApprovalIntent): boolean {
+    if (this.intents.length >= MAX_PENDING_TOTAL) return false;
+    const host = originKey(intent.origin.url);
+    const fromOrigin = this.intents.filter(
+      (i) => originKey(i.origin.url) === host,
+    ).length;
+    if (fromOrigin >= MAX_PENDING_PER_ORIGIN) return false;
     this.intents = [...this.intents, intent];
     this.notify();
     void this.persist();
+    return true;
+  }
+
+  /** When the last decision was delivered, for the input-lock window. */
+  private lastResolveAt = 0;
+
+  /**
+   * True when a sheet appearing right now is appearing *because* another
+   * one just went away, which is when a queued approve tap is most
+   * likely to land on something the user has not read.
+   */
+  isDraining(): boolean {
+    return Date.now() - this.lastResolveAt < QUEUE_DRAIN_WINDOW_MS;
   }
 
   /**
@@ -40,6 +96,7 @@ class PendingIntentsStore {
    * execution completes so UI can show a transient "executing" state.
    */
   resolve(id: string, decision: ApprovalDecision): void {
+    this.lastResolveAt = Date.now();
     for (const l of this.resolveListeners) {
       try {
         l(id, decision);
@@ -93,7 +150,13 @@ class PendingIntentsStore {
             },
             { stale: [], fresh: [] },
           );
-          this.intents = fresh;
+          // Phase Q — the cap applies to a restored queue too. A
+          // persisted list is one of the few ways to arrive here already
+          // deeper than any live path allows.
+          this.intents = fresh.slice(0, MAX_PENDING_TOTAL);
+          for (const dropped of fresh.slice(MAX_PENDING_TOTAL)) {
+            this.resolve(dropped.id, { id: dropped.id, outcome: "reject" });
+          }
           this.notify();
           // Synthesize reject decisions for stale intents so the dApp
           // observer (DappBridge) can post -32002 back to the WebView.
@@ -125,6 +188,12 @@ class PendingIntentsStore {
     this.intents = [];
     this.notify();
     void this.persist();
+  }
+
+  /** Test seam — the caps and the drain window are time- and count-based. */
+  __resetForTest(): void {
+    this.intents = [];
+    this.lastResolveAt = 0;
   }
 }
 

@@ -63,6 +63,60 @@ export const KNOWN_SPENDERS: ReadonlyArray<KnownSpender> = [
     name: "CoW VaultRelayer",
     chainIds: [1],
   },
+
+  // ── NFT marketplaces (spec phase F item a) ──────────────────────────
+  //
+  // Until these landed, `setApprovalForAll` to OpenSea's conduit rendered
+  // as a bare hex address — visually identical to approving a drainer.
+  // The user had no way to tell the most-used marketplace on the chain
+  // from an attacker's contract, which made the existing "unknown
+  // spender" warning noise rather than signal.
+  //
+  // Seaport is deployed at the same address on every chain it ships to
+  // (deterministic deployment), as are the ConduitController and the
+  // canonical OpenSea conduit. Addresses verified against
+  // ProjectOpenSea/seaport's README and seaport-js `constants.ts`
+  // (`OPENSEA_CONDUIT_ADDRESS`, keyed by conduit key
+  // 0x0000007b02230091a7ed01230072f7006a004d60a8d4e71d599b8104250f0000).
+  {
+    address: "0x0000000000000068F116a894984e2DB1123eB395",
+    name: "Seaport 1.6",
+    chainIds: [1, 10, 137, 8453, 42161],
+  },
+  {
+    address: "0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC",
+    name: "Seaport 1.5",
+    chainIds: [1, 10, 137, 8453, 42161],
+  },
+  {
+    // Spec phase P. `maliciousSeaport` signs against 1.1, so without it
+    // the most-used order format in the dapp's adversarial suite renders
+    // its marketplace as a bare address. Verified 2026-08-12 against the
+    // deployment table in ProjectOpenSea/seaport's README, the same
+    // primary source the 1.5 and 1.6 entries above came from.
+    address: "0x00000000006c3852cbEf3e08E8dF289169EdE581",
+    name: "Seaport 1.1",
+    chainIds: [1, 10, 137, 8453, 42161],
+  },
+  {
+    address: "0x00000000F9490004C11Cef243f5400493c00Ad63",
+    name: "Seaport ConduitController",
+    chainIds: [1, 10, 137, 8453, 42161],
+  },
+  {
+    // The conduit is the address users actually grant `setApprovalForAll`
+    // to — Seaport itself pulls tokens through it rather than directly.
+    address: "0x1E0049783F008A0085193E00003D00cd54003c71",
+    name: "OpenSea Conduit",
+    chainIds: [1, 10, 137, 8453, 42161],
+  },
+  // Blur and LooksRare v2 are deliberately ABSENT. Their addresses could
+  // not be confirmed against a primary source at the time this landed,
+  // and a wrong entry here is far worse than a missing one: it would
+  // print a trusted marketplace name next to an address that is not that
+  // marketplace, which is precisely the attack this table defends
+  // against. Add them only with a verified deployment source, per the
+  // second-reviewer rule at the top of this file.
 ];
 
 const ALLOW = new Set(

@@ -46,6 +46,7 @@ import type {
 } from "@/services/chains/types";
 import { PermissionStore } from "@/services/permissions/store";
 import { addressesEqual } from "@/services/walletKit/chainInfo";
+import { decodeAuthEntry } from "./authEntry";
 import { assertStellarErrorCode, STELLAR_ERROR_CODES } from "./errorCodes";
 import { resolveStellarChainConfigForPassphrase } from "./horizonClient";
 import { getStellarInjectedScript } from "./injectedScript";
@@ -54,6 +55,7 @@ import {
   networkToChain,
   type StellarConnectPayload,
   type StellarNetwork,
+  type StellarSignAuthEntryPayload,
   type StellarSignMessagePayload,
   type StellarSignTransactionPayload,
 } from "./payloads";
@@ -74,6 +76,16 @@ export interface StellarSignerFns {
     address: string,
     message: string,
   ) => Promise<{ signedMessage: string; signerAddress: string }>;
+  /**
+   * SEP-43 `signAuthEntry` (spec phase I). Optional so an older
+   * registered signer keeps type-checking; the adapter presence-checks
+   * it and reports "no signer" rather than crashing.
+   */
+  signAuthEntry?: (
+    address: string,
+    authEntryXdr: string,
+    networkPassphrase: string,
+  ) => Promise<{ signedAuthEntry: string; signerAddress: string }>;
 }
 
 let signerImpl: StellarSignerFns | null = null;
@@ -228,13 +240,12 @@ class StellarAdapter implements ChainAdapter {
         case "SUBMIT_BLOB":
           return this.handleSignMessage(req, ctx);
         case "SUBMIT_AUTH_ENTRY":
-          // §0 Soroban non-goal — always declined, never enqueued as an
-          // intent. Must still respond (§1.5 — no client timeout on
-          // this message type).
-          return rpcError(
-            STELLAR_ERROR_CODES.UNSUPPORTED,
-            "Soroban signing is not supported.",
-          );
+          // Spec phase I. This arm used to be a fixed decline (the
+          // original Stellar bridge scoped Soroban out), which left
+          // SEP-43's `signAuthEntry` unreachable and any Soroban dApp
+          // needing contract-to-contract or multi-party authorisation
+          // unable to proceed at all.
+          return this.handleSignAuthEntry(req, ctx);
         case "SUBMIT_TOKEN":
           // §16 future work — deferred out of v1's dispatch table.
           return rpcError(
@@ -504,6 +515,67 @@ class StellarAdapter implements ChainAdapter {
     };
   }
 
+  private handleSignAuthEntry(
+    req: ChainRequest,
+    ctx: AdapterContext,
+  ): ChainResult {
+    const params = (req.params ?? {}) as {
+      authEntryXdr?: string;
+      networkPassphrase?: string;
+      accountToSign?: string;
+      address?: string;
+    };
+    const authEntryXdr = asString(params.authEntryXdr);
+    if (!authEntryXdr) {
+      return rpcError(STELLAR_ERROR_CODES.INVALID_PARAMS, "missing auth entry");
+    }
+
+    const wallet = pickStellarWalletForOrigin(ctx, req.origin.url);
+    if (!wallet) {
+      return rpcError(
+        STELLAR_ERROR_CODES.UNAUTHORIZED,
+        "no Stellar wallet available",
+      );
+    }
+
+    const requested = params.accountToSign ?? params.address;
+    if (requested && !addressesEqual("stellar", requested, wallet.address)) {
+      return rpcError(
+        STELLAR_ERROR_CODES.USER_REJECT,
+        "The user rejected this request.",
+      );
+    }
+
+    const decoded = decodeAuthEntry(authEntryXdr);
+    // Source-account credentials carry no signature slot — the
+    // transaction's own source signature covers them. Refuse rather
+    // than raise a sheet that cannot produce anything.
+    if (decoded.usesSourceAccount) {
+      return rpcError(
+        STELLAR_ERROR_CODES.INVALID_PARAMS,
+        "auth entry does not require a signature",
+      );
+    }
+
+    return {
+      status: "needs-approval",
+      intent: makeIntent<StellarSignAuthEntryPayload>(
+        req,
+        "signAuthEntry",
+        {
+          address: wallet.address,
+          authEntryXdr,
+          networkPassphrase:
+            typeof params.networkPassphrase === "string"
+              ? params.networkPassphrase
+              : undefined,
+          decoded,
+        },
+        wallet,
+      ),
+    };
+  }
+
   // ── Approval execution ────────────────────────────────────────────
 
   async executeApproval(
@@ -542,6 +614,28 @@ class StellarAdapter implements ChainAdapter {
         const r = await signerImpl.signMessage(p.address, p.message);
         return {
           signedMessage: r.signedMessage,
+          signerAddress: r.signerAddress,
+        };
+      }
+      case "signAuthEntry": {
+        if (!signerImpl?.signAuthEntry) {
+          throw codedError(
+            STELLAR_ERROR_CODES.INTERNAL,
+            "no Stellar signer registered",
+          );
+        }
+        const p = intent.payload as StellarSignAuthEntryPayload;
+        // Same rule as `signTransaction`: sign `authEntryXdr`, the
+        // original string, never a reconstruction from `p.decoded`. A
+        // decoder bug must be able to produce a wrong display but never
+        // a wrong signature.
+        const r = await signerImpl.signAuthEntry(
+          p.address,
+          p.authEntryXdr,
+          p.networkPassphrase ?? Networks.PUBLIC,
+        );
+        return {
+          signedAuthEntry: r.signedAuthEntry,
           signerAddress: r.signerAddress,
         };
       }

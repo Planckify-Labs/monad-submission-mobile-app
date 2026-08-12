@@ -283,7 +283,17 @@ export class DappBridge {
       return;
     }
 
-    pendingIntentsStore.push(merged);
+    // Phase Q — a refused push means a queue cap was hit. Answer the
+    // dApp rather than dropping the request on the floor: an unanswered
+    // request leaves the page waiting forever, which is its own bug.
+    if (!pendingIntentsStore.push(merged)) {
+      this.pendingByOrigin.delete(originHost);
+      this.postError(
+        intent.id,
+        -32002,
+        "Resource unavailable — too many approvals are already pending",
+      );
+    }
   }
 
   /** Called by the screen on WebView navigation — enforces §10.4 inv 5. */

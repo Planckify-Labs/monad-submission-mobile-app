@@ -34,6 +34,40 @@ export const HeuristicInspector: IntentInspector = {
 
     if (intent.kind === "signTypedData") {
       const payload = intent.payload as EvmSignTypedDataPayload;
+
+      // TWV-2026-012 §2.2 companion — the `typedData.chainId-mismatch`
+      // annotation the design note called for. Compared against the
+      // chain the adapter resolved for this origin, never an RPC
+      // `eth_chainId` (that is the whole point of TWV-2026-016). The
+      // sheet independently refuses to sign on this condition; the
+      // annotation exists so the risk banner and the event log record
+      // it too.
+      const domainChainRaw = (
+        payload.typedData as { domain?: { chainId?: unknown } }
+      )?.domain?.chainId;
+      const domainChainId =
+        typeof domainChainRaw === "bigint"
+          ? Number(domainChainRaw)
+          : typeof domainChainRaw === "string" ||
+              typeof domainChainRaw === "number"
+            ? Number(domainChainRaw)
+            : undefined;
+      if (
+        domainChainId !== undefined &&
+        Number.isFinite(domainChainId) &&
+        payload.activeChainId !== undefined &&
+        domainChainId !== payload.activeChainId
+      ) {
+        annotations.push({
+          code: "typedData.chainId-mismatch",
+          severity: "danger" as const,
+          title: "Signature is for a different chain",
+          detail:
+            "This signature is built for a chain this site is not connected to, so it could be reused there later.",
+          source: "heuristic",
+        });
+      }
+
       const permit =
         tryDecodeErc2612(payload.typedData) ??
         tryDecodePermit2(payload.typedData);

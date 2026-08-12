@@ -862,6 +862,15 @@ export interface ClearSigningDescriptor {
   /** Resolved function / instruction / method name. */
   functionName?: string;
   fields: ClearSigningField[];
+  /**
+   * Hand-written cautions a decoder wants shown alongside its fields:
+   * "this order sends nothing back to you", "this grant never expires".
+   *
+   * Generic rather than a per-standard union, so a newly docked decoder
+   * raises one without this file or the sheet learning the standard.
+   * Copy is rendered verbatim, so it must never carry raw payload text.
+   */
+  warnings?: Array<{ title: string; detail: string }>;
 }
 
 export interface ResolveClearSigningDescriptorArgs {
@@ -888,6 +897,19 @@ export interface ResolveClearSigningDescriptorArgs {
    * bridge signer's fallbacks.
    */
   network?: string;
+  /**
+   * The address that will actually sign, taken from `intent.wallet` and
+   * never from the home-screen active wallet (dApp-bridge isolation
+   * rule).
+   *
+   * Decoders need this to answer "does this order pay *me*". A
+   * marketplace order's own `offerer` field is dApp-supplied and
+   * therefore proves nothing: an attacker who sets `offerer` to an
+   * address they control, and lists that same address as a
+   * consideration recipient, satisfies every self-consistency check
+   * while the person signing still receives nothing (spec §17.6).
+   */
+  signer?: string;
 }
 
 /**

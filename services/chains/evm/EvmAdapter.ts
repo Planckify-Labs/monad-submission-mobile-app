@@ -29,8 +29,13 @@ import type {
   ChainResult,
   Origin,
 } from "@/services/chains/types";
+import type { ApproveTargetKind } from "@/services/decoders/calldata";
+import { validateTypedData } from "@/services/decoders/typedDataValidate";
 import { originKey } from "@/services/permissions/caip";
 import { PermissionStore } from "@/services/permissions/store";
+import { proxyAuthHeaders, rpcFetchOptions } from "@/services/rpc/proxyAuth";
+import { isDefaultToken } from "@/services/tokens/tokenList";
+import { addWatchedAsset } from "@/services/tokens/watchedAssets";
 import { getAccountForWallet } from "@/services/walletService";
 import { Bundler, getBundlerConfig, type UserOperation } from "./bundler";
 import { type UserChain, UserChainStore } from "./chainStore";
@@ -49,6 +54,7 @@ import {
   decideAuthorizationByBytecode,
   AUTHORIZED_DELEGATORS as EIP7702_ALLOWLIST,
 } from "./eip7702Guard";
+import { probeAssetInterface, probeErc20Facts } from "./erc165";
 import { PROVIDER_ERRORS, ProviderRpcError } from "./errors";
 import {
   sanitiseChainString,
@@ -56,8 +62,10 @@ import {
   validateBlockExplorerUrls,
 } from "./explorerAllowlist";
 import { getEvmInjectedScript } from "./injectedScript";
+import { normalizeSendCalls, normalizeTx } from "./normalizeRequest";
 import { OriginChainStore } from "./originChainStore";
 import type {
+  ApproveTargetResolution,
   EvmAddChainPayload,
   EvmAuthorizationPayload,
   EvmBatchCallsPayload,
@@ -71,7 +79,13 @@ import type {
   GasEstimate,
 } from "./payloads";
 import { getPaymasterConfig, Paymaster } from "./paymaster";
+import { parseRpcQuantity } from "./rpcEncoding";
 import { verifySignature } from "./signatureVerifier";
+import {
+  canExecuteAtomically,
+  firstUnsupportedCapability,
+  resolveCapabilities,
+} from "./walletCapabilities";
 
 const AUTHORIZED_DELEGATORS = EIP7702_ALLOWLIST;
 
@@ -98,6 +112,16 @@ type ChainConfig = {
 const GAS_ESTIMATE_TIMEOUT_MS = 4000;
 
 /**
+ * EIP-5792 batch ceiling (error 5740).
+ *
+ * The number that matters is not what we can execute but what a person
+ * can actually read on one sheet before approving. Past that, "no" is
+ * the honest answer rather than a scroll view nobody reaches the bottom
+ * of.
+ */
+const MAX_BATCH_CALLS = 25;
+
+/**
  * Resolve `p`, or reject after `ms`. Used to cap non-essential
  * pre-approval RPC reads so a slow / rate-limited endpoint can never
  * block the approval sheet from appearing.
@@ -111,18 +135,44 @@ function raceTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   ]);
 }
 
-// viem transport for a chain config, forwarding any `fetchHeaders` (custom
-// chains carry the dApp's Origin/Referer so an Origin-gated RPC proxy accepts
-// the wallet's native fetch). `http`'s own options (retry/timeout) merge in.
+/**
+ * viem transport for a chain config.
+ *
+ * Two header sources, and they are for different endpoints:
+ *
+ *  - **`proxyAuthHeaders`** attaches our `Authorization: Bearer` to the
+ *    rpc-proxy, and *only* to it. Every other client in the app
+ *    (`utils/clients.ts`, `MultiProvider`) already did this; the dApp
+ *    bridge did not, so every read a dApp made through the proxy came
+ *    back `401 unauthorized`. Locally-answered methods like
+ *    `eth_chainId` hid it — those never touch the network — so the
+ *    symptom was that connecting and signing looked fine while anything
+ *    needing a real read (`eth_blockNumber`, `eth_estimateGas`,
+ *    `eth_getTransactionReceipt`) failed. That is why contract
+ *    deployment and NFT minting failed and a plain signature did not:
+ *    ethers polls all three around a deploy.
+ *  - **`config.fetchHeaders`** carries a *custom* chain's Origin /
+ *    Referer / Cookie so a dApp's own Origin-gated RPC accepts the
+ *    wallet's native fetch.
+ *
+ * They never apply to the same URL, and that separation is the point:
+ * `proxyAuthHeaders` is origin-gated on the set the backend feed
+ * registered, so a dApp-added RPC can never receive our bearer. Spraying
+ * the key at every endpoint would both break direct-to-provider calls
+ * (Alchemy answers 401 to an unexpected bearer) and leak our token into
+ * third-party logs.
+ */
 function httpTransport(
   config: ChainConfig,
   extra?: { retryCount?: number; timeout?: number },
 ) {
+  const headers = {
+    ...proxyAuthHeaders(config.rpcUrl),
+    ...(config.fetchHeaders ?? {}),
+  };
   return http(config.rpcUrl, {
     ...(extra ?? {}),
-    ...(config.fetchHeaders
-      ? { fetchOptions: { headers: config.fetchHeaders } }
-      : {}),
+    ...(Object.keys(headers).length > 0 ? { fetchOptions: { headers } } : {}),
   });
 }
 
@@ -338,6 +388,65 @@ export class EvmAdapter implements ChainAdapter {
       chain: config.chain,
       transport: httpTransport(config, { retryCount: 0, timeout: 3000 }),
     }) as PublicClient;
+  }
+
+  /**
+   * Resolve what an `approve` target actually is — spec phase D, made
+   * shared by phase L.
+   *
+   * Selector `0x095ea7b3` is byte-identical between ERC-20 and ERC-721,
+   * so this is the only way to tell "approve 5 tokens" from "approve
+   * token #5", and without it a token id above 2^255 false-flags as an
+   * unlimited allowance. This lives on the adapter rather than inline in
+   * `eth_sendTransaction` because `wallet_sendCalls` needs the identical
+   * answer: a batch that resolved its approve targets less well than a
+   * single transaction would reintroduce the phase-L asymmetry one layer
+   * down.
+   *
+   * Returns `undefined` on a failed or timed-out probe. Indeterminate is
+   * a real answer here and the decoder renders it as such; guessing is
+   * what phase D exists to stop.
+   *
+   * Phase N adds `decimals()` / `totalSupply()` for confirmed ERC-20
+   * targets. The supply read is what lets the decoder replace the
+   * decimals-blind `2²⁵⁵` threshold with a fact, and `decimals` is what
+   * lets the sheet render the allowance as a number instead of a
+   * 20-digit integer.
+   */
+  private async resolveApproveTarget(
+    ctx: AdapterContext,
+    chainId: number,
+    to: `0x${string}` | undefined,
+    data: Hex | undefined,
+  ): Promise<ApproveTargetResolution | undefined> {
+    if (!to || data?.slice(0, 10).toLowerCase() !== "0x095ea7b3") {
+      return undefined;
+    }
+    let kind: ApproveTargetKind;
+    if (isDefaultToken(to, chainId)) {
+      kind = "erc20";
+    } else {
+      try {
+        kind = await raceTimeout(
+          probeAssetInterface(this.preflightClient(ctx), to),
+          GAS_ESTIMATE_TIMEOUT_MS,
+        );
+      } catch {
+        return undefined;
+      }
+    }
+    if (kind !== "erc20") return { kind };
+    // Best-effort: a token that will not answer these still gets the
+    // offline threshold, which is strictly the pre-phase-N behaviour.
+    try {
+      const facts = await raceTimeout(
+        probeErc20Facts(this.preflightClient(ctx), to),
+        GAS_ESTIMATE_TIMEOUT_MS,
+      );
+      return { kind, ...facts };
+    } catch {
+      return { kind };
+    }
   }
 
   private walletClient(ctx: AdapterContext, wallet: TWallet) {
@@ -625,8 +734,15 @@ export class EvmAdapter implements ChainAdapter {
         // see HARD_REJECT_METHODS in services/bridge/DappBridge.ts).
         // Intentionally no case here; defence-in-depth below also returns
         // PROVIDER_ERRORS.unsupportedMethod for any method not matched.
+        // v1 is refused deliberately (spec §17.11). It carries no domain
+        // separator, which conflicts with phase H's binding requirement,
+        // and its params are reversed (`[data, from]`) so it already
+        // failed here as "invalid address" — a refusal that read like a
+        // bug in us. It is also absent from MetaMask's own `openrpc.yaml`,
+        // so declining it costs no conformance.
         case "eth_signTypedData":
         case "eth_signTypedData_v1":
+          return err(PROVIDER_ERRORS.unsupportedMethod(req.method));
         case "eth_signTypedData_v3":
         case "eth_signTypedData_v4": {
           const [address, typedDataRaw] = params as [unknown, unknown];
@@ -635,22 +751,44 @@ export class EvmAdapter implements ChainAdapter {
           if (!ctx.activeWallet) return err(PROVIDER_ERRORS.disconnected());
           if (ctx.activeWallet.address.toLowerCase() !== address.toLowerCase())
             return err(PROVIDER_ERRORS.unauthorized());
-          const typedData =
+          const typedDataRawParsed =
             typeof typedDataRaw === "string"
               ? safeJson(typedDataRaw)
               : typedDataRaw;
-          if (!typedData || typeof typedData !== "object")
+          // Phase O — structural validation before an intent exists, so
+          // a payload that cannot be signed never opens a sheet. The old
+          // code cast straight to the payload type, which is how six
+          // malformed `malformed-signatures.js` cases reached the user
+          // as approve-then-fail, and how a decimal `verifyingContract`
+          // reached it as a 48-digit number where a token name belongs.
+          const validated = validateTypedData(typedDataRawParsed);
+          if (!validated.ok) {
+            if (__DEV__) {
+              console.warn(
+                "[EvmAdapter] rejected typed data:",
+                validated.reason,
+              );
+            }
             return err(PROVIDER_ERRORS.invalidParams("typedData"));
+          }
+          // TWV-2026-012 — stamp the registry-resolved chain for this
+          // origin so the sheet can check `domain.chainId` against it.
+          // Resolved here, not in the sheet, because this is the only
+          // layer that knows which chain the *origin* is on.
+          const typedDataCfg = this.resolveConfig(ctx);
           const payload: EvmSignTypedDataPayload = {
-            typedData: typedData as EvmSignTypedDataPayload["typedData"],
+            typedData:
+              validated.value as unknown as EvmSignTypedDataPayload["typedData"],
             address: address as `0x${string}`,
-            method:
-              req.method === "eth_signTypedData_v1"
-                ? "eth_signTypedData"
-                : (req.method as
-                    | "eth_signTypedData"
-                    | "eth_signTypedData_v3"
-                    | "eth_signTypedData_v4"),
+            activeChainId: typedDataCfg?.chain.id,
+            activeChainName: typedDataCfg?.chain.name,
+            undeclaredMessageKeys:
+              validated.undeclaredKeys.length > 0
+                ? validated.undeclaredKeys
+                : undefined,
+            method: req.method as
+              | "eth_signTypedData_v3"
+              | "eth_signTypedData_v4",
           };
           return needsApproval(
             this.annotateCustomChain(
@@ -697,6 +835,14 @@ export class EvmAdapter implements ChainAdapter {
           } catch {
             // non-fatal: sheet will show dApp values only
           }
+
+          // Phase D — resolve what an `approve` target actually is.
+          normalized.payload.approveTarget = await this.resolveApproveTarget(
+            ctx,
+            cfg.chain.id,
+            normalized.payload.to,
+            normalized.payload.data,
+          );
 
           return needsApproval(
             this.annotateCustomChain(
@@ -822,6 +968,58 @@ export class EvmAdapter implements ChainAdapter {
             ctx.activeWallet.address as `0x${string}`,
           );
           if ("error" in normalized) return err(normalized.error);
+          // EIP-5792 defines a cap so a dApp cannot hand the user an
+          // unreviewable wall of calls. Ours is deliberately generous:
+          // the limit that matters is what a person can actually read on
+          // one sheet, and past that the honest answer is no.
+          if (normalized.payload.calls.length > MAX_BATCH_CALLS) {
+            return err(PROVIDER_ERRORS.bundleTooLarge());
+          }
+          // A capability the dApp did NOT mark optional is a hard
+          // requirement. Silently ignoring one means executing a batch
+          // under different terms than were asked for — a paymaster the
+          // dApp expected to sponsor the gas, say, that we never applied.
+          const unsupported = firstUnsupportedCapability(
+            normalized.payload.capabilities,
+            normalized.payload.calls.map((c) => c.capabilities),
+          );
+          if (unsupported) {
+            return err(PROVIDER_ERRORS.unsupportedCapability(unsupported));
+          }
+          // When the dApp demands all-or-nothing execution and we cannot
+          // guarantee it, reject at *request* time. Falling through to
+          // the sequential path would let an approve land with its swap
+          // reverted, leaving a live allowance the dApp believes was
+          // never granted. Rejecting before an approval sheet is raised
+          // also means the user is never asked to authorise a batch that
+          // cannot legally execute.
+          //
+          // 5760, not -32602: the dApp's correct recovery is to re-send
+          // without `atomicRequired`, and "invalid params" tells it to do
+          // the one thing that cannot help.
+          if (
+            normalized.payload.atomicRequired &&
+            !canExecuteAtomically(ctx.activeWallet, normalized.payload.chainId)
+          ) {
+            return err(PROVIDER_ERRORS.atomicityNotSupported());
+          }
+          // Phase L — resolve approve targets for every entry, so a
+          // batched `approve` is classified exactly as well as a
+          // standalone one. Without this a one-call batch would still
+          // degrade to `approveUnknownAsset` while `eth_sendTransaction`
+          // named the token, which is the same asymmetry in a smaller
+          // form. Probes run concurrently and each is individually
+          // bounded, so the sheet is not gated on the slowest RPC read.
+          normalized.payload.approveTargets = await Promise.all(
+            normalized.payload.calls.map((c) =>
+              this.resolveApproveTarget(
+                ctx,
+                normalized.payload.chainId,
+                c.to,
+                c.data,
+              ),
+            ),
+          );
           return needsApproval(
             this.annotateCustomChain(
               makeIntent(
@@ -838,64 +1036,104 @@ export class EvmAdapter implements ChainAdapter {
           const [bundleId] = params as [string];
           const record = BundleStatusStore.get(bundleId);
           if (!record) {
-            return err(
-              PROVIDER_ERRORS.invalidParams(`unknown bundle ${bundleId}`),
-            );
+            // 5730, not -32602. The id is well-formed; we just do not
+            // know it, and that is a different fact for the dApp.
+            return err(PROVIDER_ERRORS.unknownBundleId(String(bundleId)));
           }
-          return resolved({
-            version: "1.0",
-            chainId: toHex(record.chainId),
-            status:
-              record.status === "CONFIRMED"
-                ? 200
+          // EIP-5792 2.0.0 result shape. `id` echoes the request, and
+          // the numeric `status` replaces the draft's bare pending/
+          // confirmed split:
+          //   100 pending · 200 confirmed · 400 not included (no retry)
+          //   500 reverted completely · 600 reverted partially
+          // 600 exists because "some calls landed" is a materially
+          // different fact from 500's "nothing landed" — reporting a
+          // partial batch as 500 tells the dApp on-chain state is
+          // unchanged when it is not.
+          const statusCode =
+            record.status === "CONFIRMED"
+              ? 200
+              : record.status === "FAILED_PARTIAL"
+                ? 600
                 : record.status === "FAILED"
                   ? 500
-                  : 100,
+                  : 100;
+          return resolved({
+            version: "2.0.0",
+            id: bundleId,
+            chainId: toHex(record.chainId),
+            status: statusCode,
+            atomic: record.atomic,
             receipts: record.receipts
               .filter(
                 (r): r is Extract<typeof r, { status: "CONFIRMED" }> =>
                   r.status === "CONFIRMED",
               )
               .map((r) => r.receipt),
-            atomic: record.atomic,
           });
         }
         case "wallet_showCallsStatus": {
           const [bundleId] = params as [string];
+          if (!BundleStatusStore.get(bundleId)) {
+            return err(PROVIDER_ERRORS.unknownBundleId(String(bundleId)));
+          }
           this.opts.onShowCallsStatus?.(bundleId);
           return resolved(null);
         }
         case "wallet_getCapabilities": {
-          const [addressRaw] = params as [unknown];
+          const [addressRaw, chainFilterRaw] = params as [unknown, unknown];
           const address =
             typeof addressRaw === "string"
               ? addressRaw
               : ctx.activeWallet?.address;
           if (!address || !isAddress(address))
             return err(PROVIDER_ERRORS.invalidParams("address"));
-          const smart =
+
+          // A dApp may ask about an address we don't hold. Answer for it
+          // honestly (every capability degrades to unsupported) rather
+          // than describing the active wallet under someone else's
+          // address.
+          const wallet =
             ctx.activeWallet &&
             ctx.activeWallet.address.toLowerCase() === address.toLowerCase()
-              ? ctx.activeWallet.type === "Smart4337" ||
-                ctx.activeWallet.type === "Smart7702"
-              : false;
+              ? ctx.activeWallet
+              : null;
+
+          // Chains we can actually serve this origin: the one it is on,
+          // plus any it added itself via wallet_addEthereumChain.
           const cfg = this.resolveConfig(ctx);
-          const chainIdHex = cfg ? toHex(cfg.chain.id) : "0x1";
-          const paymasterUrl = cfg
-            ? getPaymasterConfig(cfg.chain.id)?.url
-            : undefined;
-          return resolved({
-            [address]: {
-              [chainIdHex]: {
-                atomicBatch: { supported: smart },
-                paymasterService: {
-                  supported: smart && !!paymasterUrl,
-                  url: paymasterUrl,
-                },
-                auxiliaryFunds: { supported: false },
-              },
-            },
-          });
+          const servable = new Set<number>();
+          if (cfg) servable.add(cfg.chain.id);
+          for (const c of UserChainStore.list(req.origin.url)) {
+            servable.add(c.chainId);
+          }
+
+          // Second parameter is an optional chain filter. Honour it by
+          // intersecting with what we can serve — the spec asks for the
+          // requested chains, not for every chain we know about, and a
+          // chain we cannot serve must be omitted rather than answered
+          // for optimistically.
+          let chainIds = [...servable];
+          if (chainFilterRaw !== undefined && chainFilterRaw !== null) {
+            if (!Array.isArray(chainFilterRaw))
+              return err(PROVIDER_ERRORS.invalidParams("chainIds"));
+            const requested: number[] = [];
+            for (const entry of chainFilterRaw) {
+              if (typeof entry !== "string" || !isHex(entry))
+                return err(PROVIDER_ERRORS.invalidParams("chainIds"));
+              requested.push(Number(fromHex(entry as Hex, "number")));
+            }
+            chainIds = requested.filter((id) => servable.has(id));
+          }
+
+          const byChain: Record<string, Record<string, unknown>> = {};
+          for (const chainId of chainIds) {
+            byChain[toHex(chainId)] = resolveCapabilities({
+              address: address as `0x${string}`,
+              chainId,
+              wallet,
+            });
+          }
+          return resolved({ [address]: byChain });
         }
 
         // ---------- Subscriptions (defer) ----------
@@ -1038,6 +1276,16 @@ export class EvmAdapter implements ChainAdapter {
     if (!wallet) throw PROVIDER_ERRORS.disconnected();
 
     if (wallet.type === "Smart4337" || wallet.type === "Smart7702") {
+      // A bare CREATE has no call target, and the 4337 execution path can
+      // only express "call this address with this data". Deploying from a
+      // smart account goes through a factory call the dApp builds itself.
+      // Refuse explicitly rather than submitting a UserOp that quietly
+      // does something other than what was approved.
+      if (payload.to === undefined) {
+        throw PROVIDER_ERRORS.unsupportedMethod(
+          "contract creation from a smart account",
+        );
+      }
       return this.execViaBundler(wallet, [payload], payload.chainId, ctx);
     }
 
@@ -1050,7 +1298,13 @@ export class EvmAdapter implements ChainAdapter {
       to: payload.to,
       value: payload.value,
       data: payload.data,
-      gas: payload.gas,
+      // The dApp's own limit wins when it sent one; otherwise use the
+      // estimate we already computed for the sheet rather than making
+      // viem re-estimate. A contract deployment is the case that needs
+      // this: init-code costs far more than the 21000 a bare send does,
+      // and an absent limit here used to mean a second round-trip on the
+      // signing path.
+      gas: payload.gas ?? useEstimate?.wallet.gas,
     };
     if (payload.type === 0) {
       tx.gasPrice =
@@ -1245,26 +1499,35 @@ export class EvmAdapter implements ChainAdapter {
 
   private async execWatchAsset(intent: ApprovalIntent): Promise<boolean> {
     const payload = intent.payload as EvmWatchAssetPayload;
+    // EIP-747 asks for a boolean meaning "is it being tracked now". This
+    // used to return a hardcoded `true` after calling an `onWatchAsset`
+    // hook that nothing wired, so the dApp was told the token had been
+    // added and the user went looking for something that was never
+    // recorded. Persist first, and answer with what actually happened.
+    const stored = addWatchedAsset(payload, intent.origin.url);
     if (this.opts.onWatchAsset) {
       await this.opts.onWatchAsset(payload);
     }
-    return true;
+    return stored;
   }
 
   private async execSendCalls(
     intent: ApprovalIntent,
     _decision: ApprovalDecision,
     ctx: AdapterContext,
-  ): Promise<string> {
+  ): Promise<{ id: string }> {
     const payload = intent.payload as EvmBatchCallsPayload;
     const wallet = intent.wallet ?? ctx.activeWallet;
     if (!wallet) throw PROVIDER_ERRORS.disconnected();
     const bundleId = randomId();
-    const atomic =
-      wallet.type === "Smart4337" ||
-      (wallet.type === "Smart7702" &&
-        wallet.smart7702?.authorizationByChain?.[payload.chainId] !==
-          undefined);
+    const atomic = canExecuteAtomically(wallet, payload.chainId);
+    // Re-check at execution time as well as at request time: approval is
+    // asynchronous, and a 7702 delegation can be revoked while the sheet
+    // is open. Honouring atomicRequired only on the request path would
+    // let that window through to the sequential fallback.
+    if (payload.atomicRequired && !atomic) {
+      throw PROVIDER_ERRORS.invalidParams("atomicRequired");
+    }
     await BundleStatusStore.create({
       bundleId,
       chainId: payload.chainId,
@@ -1298,7 +1561,7 @@ export class EvmAdapter implements ChainAdapter {
           },
         })),
       });
-      return bundleId;
+      return { id: bundleId };
     }
 
     // EOA sequential path
@@ -1336,7 +1599,10 @@ export class EvmAdapter implements ChainAdapter {
       } catch (e) {
         failedAt = i;
         await BundleStatusStore.update(bundleId, {
-          status: "FAILED",
+          // Anything already mined means on-chain state changed, which is
+          // spec code 600 rather than 500. Only a failure on the very
+          // first call leaves the chain untouched.
+          status: receipts.length > 0 ? "FAILED_PARTIAL" : "FAILED",
           receipts: [
             ...receipts,
             {
@@ -1357,7 +1623,7 @@ export class EvmAdapter implements ChainAdapter {
         receipts,
       });
     }
-    return bundleId;
+    return { id: bundleId };
   }
 
   private async execViaBundler(
@@ -1566,7 +1832,10 @@ export class EvmAdapter implements ChainAdapter {
           nativeCurrency: chainStored.nativeCurrency,
           rpcUrls: { default: { http: chainStored.rpcUrls } },
         } as unknown as Chain,
-        transport: http(chainStored.rpcUrls[0]),
+        transport: http(
+          chainStored.rpcUrls[0],
+          rpcFetchOptions(chainStored.rpcUrls[0]),
+        ),
       }) as PublicClient;
     }
     return verifySignature({
@@ -1582,22 +1851,18 @@ export class EvmAdapter implements ChainAdapter {
     payload: EvmSendTxPayload,
     rawTx: Record<string, unknown>,
   ): Promise<GasEstimate> {
-    const dAppGas =
-      typeof rawTx.gas === "string"
-        ? safeBigint(rawTx.gas as string)
-        : undefined;
-    const dAppMaxFee =
-      typeof rawTx.maxFeePerGas === "string"
-        ? safeBigint(rawTx.maxFeePerGas as string)
-        : undefined;
-    const dAppPrio =
-      typeof rawTx.maxPriorityFeePerGas === "string"
-        ? safeBigint(rawTx.maxPriorityFeePerGas as string)
-        : undefined;
-    const dAppGasPrice =
-      typeof rawTx.gasPrice === "string"
-        ? safeBigint(rawTx.gasPrice as string)
-        : undefined;
+    // These re-read the raw request purely to show the dApp's own
+    // numbers beside ours. `normalizeTx` has already rejected the
+    // request if any of them are malformed, so an unparseable field
+    // here can only mean "absent".
+    const quantity = (v: unknown): bigint | undefined => {
+      const parsed = parseRpcQuantity(v);
+      return parsed.ok ? parsed.value : undefined;
+    };
+    const dAppGas = quantity(rawTx.gas);
+    const dAppMaxFee = quantity(rawTx.maxFeePerGas);
+    const dAppPrio = quantity(rawTx.maxPriorityFeePerGas);
+    const dAppGasPrice = quantity(rawTx.gasPrice);
 
     const walletGas = await pc.estimateGas({
       account: payload.from,
@@ -1742,90 +2007,6 @@ function makeIntent<P>(
   };
 }
 
-function normalizeTx(
-  raw: Record<string, unknown>,
-  chainId: number,
-  from: `0x${string}`,
-):
-  | {
-      payload: EvmSendTxPayload;
-    }
-  | { error: ProviderRpcError } {
-  try {
-    const to = raw.to as `0x${string}` | undefined;
-    if (!to || !isAddress(to))
-      return { error: PROVIDER_ERRORS.invalidParams("to") };
-    const value = raw.value ? safeBigint(raw.value as string) : undefined;
-    const data = (raw.data ?? raw.input) as Hex | undefined;
-    const gas = raw.gas ? safeBigint(raw.gas as string) : undefined;
-    const maxFeePerGas = raw.maxFeePerGas
-      ? safeBigint(raw.maxFeePerGas as string)
-      : undefined;
-    const maxPriorityFeePerGas = raw.maxPriorityFeePerGas
-      ? safeBigint(raw.maxPriorityFeePerGas as string)
-      : undefined;
-    const gasPrice = raw.gasPrice
-      ? safeBigint(raw.gasPrice as string)
-      : undefined;
-    const accessList = raw.accessList as EvmSendTxPayload extends {
-      accessList?: infer A;
-    }
-      ? A
-      : undefined;
-    const nonce =
-      typeof raw.nonce === "string"
-        ? Number(fromHex(raw.nonce as Hex, "number"))
-        : typeof raw.nonce === "number"
-          ? raw.nonce
-          : undefined;
-    const explicitType =
-      typeof raw.type === "string"
-        ? Number(fromHex(raw.type as Hex, "number"))
-        : typeof raw.type === "number"
-          ? raw.type
-          : undefined;
-
-    let type: 0 | 1 | 2;
-    if (explicitType === 0 || explicitType === 1 || explicitType === 2) {
-      type = explicitType;
-    } else if (maxFeePerGas || maxPriorityFeePerGas) type = 2;
-    else if (accessList && gasPrice) type = 1;
-    else if (gasPrice) type = 0;
-    else type = 2;
-
-    // reject invalid combos at the boundary
-    if (type === 2 && gasPrice)
-      return {
-        error: PROVIDER_ERRORS.invalidParams("gasPrice with type 2 tx"),
-      };
-    if (type === 0 && (maxFeePerGas || maxPriorityFeePerGas))
-      return {
-        error: PROVIDER_ERRORS.invalidParams("dynamic-fee fields on legacy tx"),
-      };
-
-    const common = { to, from, value, data, gas, nonce, chainId } as const;
-    const payload: EvmSendTxPayload =
-      type === 0
-        ? { ...common, type: 0, gasPrice }
-        : type === 1
-          ? { ...common, type: 1, gasPrice, accessList }
-          : {
-              ...common,
-              type: 2,
-              maxFeePerGas,
-              maxPriorityFeePerGas,
-              accessList,
-            };
-    return { payload };
-  } catch (e) {
-    return {
-      error: PROVIDER_ERRORS.invalidParams(
-        e instanceof Error ? e.message : "tx",
-      ),
-    };
-  }
-}
-
 function normalizeAddChain(
   raw: Record<string, unknown>,
 ): { payload: EvmAddChainPayload } | { error: ProviderRpcError } {
@@ -1900,52 +2081,6 @@ function normalizeWatchAsset(
     };
   }
   return { error: PROVIDER_ERRORS.invalidParams("unsupported type") };
-}
-
-function normalizeSendCalls(
-  raw: Record<string, unknown>,
-  activeChainId: number,
-  activeAddress: `0x${string}`,
-): { payload: EvmBatchCallsPayload } | { error: ProviderRpcError } {
-  if (!raw || typeof raw !== "object")
-    return { error: PROVIDER_ERRORS.invalidParams("sendCalls") };
-  const version = (raw.version as string) ?? "1.0";
-  if (version !== "1.0")
-    return { error: PROVIDER_ERRORS.invalidParams("version") };
-  const chainIdHex = raw.chainId as Hex | undefined;
-  const chainId = chainIdHex
-    ? Number(fromHex(chainIdHex, "number"))
-    : activeChainId;
-  if (chainId !== activeChainId)
-    return { error: PROVIDER_ERRORS.chainNotConnected() };
-  const from = ((raw.from as string) ?? activeAddress) as `0x${string}`;
-  if (from.toLowerCase() !== activeAddress.toLowerCase())
-    return { error: PROVIDER_ERRORS.invalidParams("from") };
-  const callsRaw = raw.calls as Array<Record<string, unknown>> | undefined;
-  if (!Array.isArray(callsRaw))
-    return { error: PROVIDER_ERRORS.invalidParams("calls") };
-  const calls = callsRaw.map((c) => ({
-    to: c.to as `0x${string}`,
-    value: c.value ? safeBigint(c.value as string) : undefined,
-    data: c.data as Hex | undefined,
-    gas: c.gas ? safeBigint(c.gas as string) : undefined,
-  }));
-  return {
-    payload: {
-      version: "1.0",
-      chainId,
-      from,
-      calls,
-      capabilities: raw.capabilities as Record<string, unknown> | undefined,
-    },
-  };
-}
-
-function safeBigint(v: string | number | bigint): bigint {
-  if (typeof v === "bigint") return v;
-  if (typeof v === "number") return BigInt(v);
-  if (v.startsWith("0x")) return BigInt(v);
-  return BigInt(v);
 }
 
 function safeJson(s: string): unknown {

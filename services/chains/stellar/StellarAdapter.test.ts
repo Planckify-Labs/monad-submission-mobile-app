@@ -60,12 +60,12 @@ describe("StellarAdapter — dispatch table (§4.1)", () => {
 });
 
 describe("StellarAdapter — always-declined arms never become intents (§0, §4.1)", () => {
-  it("SUBMIT_AUTH_ENTRY responds with a fixed decline, not needs-approval", () => {
-    assert.match(
-      src,
-      /case\s*"SUBMIT_AUTH_ENTRY":[\s\S]{0,300}Soroban signing is not supported/,
-    );
-  });
+  // SUBMIT_AUTH_ENTRY used to live in this group. Spec phase I turned it
+  // into a real capability: SEP-43 defines `signAuthEntry`, and Soroban
+  // needs it for contract-to-contract and multi-party authorisation, so
+  // a fixed decline left those dApps unable to proceed at all. It now
+  // raises an approval intent like any other signing request — see the
+  // dedicated group below.
 
   it("SUBMIT_TOKEN responds with a fixed decline, not needs-approval", () => {
     assert.match(src, /case\s*"SUBMIT_TOKEN":[\s\S]{0,200}Not supported yet/);
@@ -73,6 +73,33 @@ describe("StellarAdapter — always-declined arms never become intents (§0, §4
 
   it("REQUEST_USER_INFO responds with a fixed decline, not needs-approval", () => {
     assert.match(src, /case\s*"REQUEST_USER_INFO":[\s\S]{0,200}Not supported/);
+  });
+});
+
+describe("StellarAdapter — SEP-43 signAuthEntry (spec phase I)", () => {
+  it("routes SUBMIT_AUTH_ENTRY to a handler, not a fixed decline", () => {
+    assert.match(
+      src,
+      /case\s*"SUBMIT_AUTH_ENTRY":[\s\S]{0,400}this\.handleSignAuthEntry/,
+    );
+  });
+
+  it("raises an approval intent rather than signing silently", () => {
+    assert.match(src, /handleSignAuthEntry[\s\S]*?status:\s*"needs-approval"/);
+  });
+
+  it("refuses an entry with source-account credentials", () => {
+    // Those carry no signature slot — the transaction's own source
+    // signature covers them. Raising a sheet that cannot produce
+    // anything would be worse than declining.
+    assert.match(src, /usesSourceAccount[\s\S]{0,200}INVALID_PARAMS/);
+  });
+
+  it("signs the original XDR, never a rebuild from the decoded view", () => {
+    assert.match(
+      src,
+      /signAuthEntry\(\s*\n?\s*p\.address,\s*\n?\s*p\.authEntryXdr/,
+    );
   });
 });
 

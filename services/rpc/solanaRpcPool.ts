@@ -18,8 +18,13 @@ import type {
   SolanaRpcApi,
   SolanaRpcSubscriptionsApi,
 } from "@solana/kit";
-import { createSolanaRpc } from "@solana/kit";
+import {
+  createDefaultRpcTransport,
+  createSolanaRpc,
+  createSolanaRpcFromTransport,
+} from "@solana/kit";
 import type { SolanaCluster } from "@/services/chains/solana/payloads";
+import { proxyAuthHeaders } from "./proxyAuth";
 
 type CacheKey = string;
 type CacheEntry = { value: unknown; expiresAt: number };
@@ -223,8 +228,33 @@ export function getSolanaRpcSubscriptions(
   return undefined;
 }
 
+/**
+ * Default factory: `createSolanaRpc` with the rpc-proxy bearer attached
+ * when (and only when) the URL is an origin the backend feed registered.
+ *
+ * `createSolanaRpc(url)` sends no custom headers at all, so a Solana RPC
+ * behind our authenticated proxy answered 401 to everything. Same defect
+ * the EVM bridge had; `proxyAuthHeaders` being origin-gated is what
+ * keeps the key off a public endpoint like `api.mainnet-beta.solana.com`.
+ */
+function defaultRpcFactory(url: string): Rpc<SolanaRpcApi> {
+  const headers = proxyAuthHeaders(url);
+  if (Object.keys(headers).length === 0) return createSolanaRpc(url);
+  return createSolanaRpcFromTransport(
+    // `headers` is branded to forbid the hop-by-hop names a browser
+    // controls; `Authorization` is not one of them, and the cast is only
+    // to satisfy that brand from a plain record.
+    createDefaultRpcTransport({
+      url,
+      headers: headers as Parameters<
+        typeof createDefaultRpcTransport
+      >[0]["headers"],
+    }),
+  );
+}
+
 /** Test-only — inject a fake RPC factory in place of @solana/kit. */
-let rpcFactory: (url: string) => Rpc<SolanaRpcApi> = createSolanaRpc;
+let rpcFactory: (url: string) => Rpc<SolanaRpcApi> = defaultRpcFactory;
 export function __setRpcFactoryForTests(
   factory: (url: string) => Rpc<SolanaRpcApi>,
 ): void {

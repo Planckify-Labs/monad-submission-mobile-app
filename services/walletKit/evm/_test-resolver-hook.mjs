@@ -64,6 +64,26 @@ const STUB_SOURCES = {
     };
     export function track() {}
   `,
+  // `services/tokens/tokenList.ts` persists through expo-sqlite, which
+  // ships JSX in `expo-sqlite/build/hooks.js` and cannot be parsed by
+  // Node's strip-types loader. `EvmAdapter` imports `isDefaultToken`
+  // from it for the phase-D ERC-20/ERC-721 `approve` disambiguation.
+  // Stub at our own module boundary, same rule as mmkv/posthog above;
+  // mirrored on the vitest side by an alias in vitest.config.ts.
+  "token-list": `
+    export function isDefaultToken() { return false; }
+    export function getDefaultTokens() { return []; }
+    export function getAllDefaultTokens() { return []; }
+    export function getUserTokens() { return []; }
+    export function getTokenPrefs() { return undefined; }
+    export function getAllTokenPrefs() { return new Map(); }
+    export function addUserToken() {}
+    export function pinToken() {}
+    export function hideToken() {}
+    export function unhideToken() {}
+    export function markAsSpam() {}
+    export const TOP_100_NAMES = [];
+  `,
   // In-memory AsyncStorage stub for the permissions store test
   // (services/permissions/store.ts persists grants through it).
   "async-storage": `
@@ -183,6 +203,14 @@ export async function resolve(specifier, context, nextResolve) {
     return {
       shortCircuit: true,
       url: stubUrl(STUB_SOURCES["analytics-posthog"]),
+      format: "module",
+    };
+  }
+  // Stub the token registry (`@/services/tokens/tokenList`).
+  if (specifier === "@/services/tokens/tokenList") {
+    return {
+      shortCircuit: true,
+      url: stubUrl(STUB_SOURCES["token-list"]),
       format: "module",
     };
   }

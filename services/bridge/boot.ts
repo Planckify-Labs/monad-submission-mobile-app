@@ -1,4 +1,7 @@
-import { SuiJsonRpcClient as SuiClient } from "@mysten/sui/jsonRpc";
+import {
+  SuiJsonRpcClient as SuiClient,
+  JsonRpcHTTPTransport as SuiHTTPTransport,
+} from "@mysten/sui/jsonRpc";
 import { createSolanaRpc } from "@solana/kit";
 import type { WebView } from "react-native-webview";
 import { evmRenderers } from "@/components/dapps-browser/approvals/renderers";
@@ -14,6 +17,7 @@ import { createSuiAdapter } from "@/services/chains/sui/SuiAdapter";
 import { installSuiSigner } from "@/services/chains/sui/signer";
 import type { AdapterContext } from "@/services/chains/types";
 import { PermissionStore } from "@/services/permissions/store";
+import { proxyAuthHeaders } from "@/services/rpc/proxyAuth";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import { initDappBridge } from "./DappBridge";
 import { bridgeEventBus } from "./events";
@@ -180,7 +184,19 @@ export function bootBridge(opts: BootOpts) {
               : network === "devnet"
                 ? "https://fullnode.devnet.sui.io:443"
                 : "https://fullnode.mainnet.sui.io:443";
-          return { client: new SuiClient({ url, network }) };
+          // Public fullnodes, so no proxy bearer applies — but route the
+          // header through the same origin-gated helper every other
+          // adapter now uses, so pointing this at our proxy later is a
+          // config change rather than a silent 401.
+          return {
+            client: new SuiClient({
+              network,
+              transport: new SuiHTTPTransport({
+                url,
+                rpc: { headers: proxyAuthHeaders(url) },
+              }),
+            }),
+          };
         },
       });
     } else {

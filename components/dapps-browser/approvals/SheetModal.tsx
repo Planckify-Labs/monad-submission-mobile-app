@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { BackHandler, Modal, Text, TouchableOpacity, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useQueueInputLock } from "@/services/bridge/useApprovalQueue";
 
 interface Props {
   onDismiss: () => void;
@@ -61,28 +62,42 @@ export function PrimaryActions({
   disabled?: boolean;
   loading?: boolean;
 }): React.ReactElement {
+  // Phase Q — when this sheet appeared because the last one just went
+  // away, approve stays inert for a moment. Reject does not: the escape
+  // must never be the slower option, or the lock becomes an obstacle to
+  // the safe choice. Applied here, in the shared action bar, so no sheet
+  // has to opt in.
+  const queueLocked = useQueueInputLock();
+  const approveBlocked = disabled || loading || queueLocked;
   return (
-    <View className="flex-row px-4 pt-3 pb-4 gap-3">
-      <TouchableOpacity
-        onPress={onReject}
-        className="flex-1 py-4 rounded-2xl bg-light items-center"
-        disabled={loading}
-      >
-        <Text className="text-light-matte-black font-bold">{rejectLabel}</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
-        onPress={onApprove}
-        className={`flex-1 py-4 rounded-2xl items-center ${
-          disabled || loading
-            ? "bg-light-primary-red/40"
-            : "bg-light-primary-red"
-        }`}
-        disabled={disabled || loading}
-      >
-        <Text className="text-white font-bold">
-          {loading ? "…" : approveLabel}
+    <View className="px-4 pt-3 pb-4">
+      {queueLocked && (
+        <Text className="text-xs text-gray-500 mb-2 text-center">
+          Another request just closed. Take a moment to read this one.
         </Text>
-      </TouchableOpacity>
+      )}
+      <View className="flex-row gap-3">
+        <TouchableOpacity
+          onPress={onReject}
+          className="flex-1 py-4 rounded-2xl bg-light items-center"
+          disabled={loading}
+        >
+          <Text className="text-light-matte-black font-bold">
+            {rejectLabel}
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={onApprove}
+          className={`flex-1 py-4 rounded-2xl items-center ${
+            approveBlocked ? "bg-light-primary-red/40" : "bg-light-primary-red"
+          }`}
+          disabled={approveBlocked}
+        >
+          <Text className="text-white font-bold">
+            {loading ? "…" : approveLabel}
+          </Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }

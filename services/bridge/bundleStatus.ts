@@ -14,18 +14,32 @@ export type BundleCallStatus =
     }
   | { status: "FAILED"; error: string };
 
+/**
+ * Terminal states map onto EIP-5792 `wallet_getCallsStatus` codes at the
+ * RPC boundary (`EvmAdapter`):
+ *
+ *   PENDING        → 100
+ *   CONFIRMED      → 200
+ *   FAILED         → 500  (reverted completely — nothing landed)
+ *   FAILED_PARTIAL → 600  (reverted partially — some calls landed)
+ *
+ * The 500/600 split only arises on the sequential EOA path, where an
+ * early call can be mined before a later one throws. Reporting that as
+ * 500 would tell the dApp no state changed, which is exactly wrong.
+ */
 export interface BundleStatusRecord {
   bundleId: string;
   chainId: number;
   from: `0x${string}`;
   atomic: boolean;
   calls: Array<{
-    to: `0x${string}`;
+    /** Absent for a contract-creation call. */
+    to?: `0x${string}`;
     value?: string;
     data?: `0x${string}`;
   }>;
   receipts: Array<BundleCallStatus>;
-  status: "PENDING" | "CONFIRMED" | "FAILED";
+  status: "PENDING" | "CONFIRMED" | "FAILED" | "FAILED_PARTIAL";
   userOpHash?: `0x${string}`;
   createdAt: number;
   updatedAt: number;

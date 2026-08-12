@@ -49,6 +49,16 @@ import {
   TOKEN_PROGRAM_ADDRESS,
 } from "@solana-program/token";
 import { TOKEN_2022_PROGRAM_ADDRESS } from "@solana-program/token-2022";
+import {
+  DEFAULT_MICRO_LAMPORTS_PER_CU,
+  fetchPriorityFee,
+  PRIORITY_FEE_TIMEOUT_MS,
+  PROVISIONAL_COMPUTE_UNITS,
+  setComputeUnitLimitInstruction,
+  setComputeUnitPriceInstruction,
+  simulateComputeUnits,
+  withFeeTimeout,
+} from "./priorityFee";
 
 export type SolanaRpc = Rpc<SolanaRpcApi>;
 export type SolanaRpcSubs = RpcSubscriptions<SolanaRpcSubscriptionsApi>;
@@ -131,15 +141,46 @@ export async function buildAndSendSplTransfer(
     { programAddress: tokenProgram },
   );
 
-  const message = pipe(
-    createTransactionMessage({ version: 0 }),
-    (m) => setTransactionMessageFeePayerSigner(signer, m),
-    (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
-    (m) => appendTransactionMessageInstruction(createAtaIx, m),
-    (m) => appendTransactionMessageInstruction(transferIx, m),
+  // Phase J — same treatment as the native path. Writable set is the
+  // sender's token account, the recipient's, and the fee payer; the
+  // mint is read-only so it does not belong in the contention scope.
+  const microLamports = await withFeeTimeout(
+    fetchPriorityFee(rpc, [signer.address, senderAta, recipientAta]),
+    PRIORITY_FEE_TIMEOUT_MS,
+    DEFAULT_MICRO_LAMPORTS_PER_CU,
   );
 
-  const signed = await signTransactionMessageWithSigners(message);
+  const build = (unitLimit: number) =>
+    pipe(
+      createTransactionMessage({ version: 0 }),
+      (m) => setTransactionMessageFeePayerSigner(signer, m),
+      (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+      (m) =>
+        appendTransactionMessageInstruction(
+          setComputeUnitLimitInstruction(unitLimit),
+          m,
+        ),
+      (m) =>
+        appendTransactionMessageInstruction(
+          setComputeUnitPriceInstruction(microLamports),
+          m,
+        ),
+      (m) => appendTransactionMessageInstruction(createAtaIx, m),
+      (m) => appendTransactionMessageInstruction(transferIx, m),
+    );
+
+  const provisional = await signTransactionMessageWithSigners(
+    build(PROVISIONAL_COMPUTE_UNITS),
+  );
+  const measured = await withFeeTimeout(
+    simulateComputeUnits(rpc, getBase64EncodedWireTransaction(provisional)),
+    PRIORITY_FEE_TIMEOUT_MS,
+    null,
+  );
+  const signed =
+    measured === null
+      ? provisional
+      : await signTransactionMessageWithSigners(build(measured));
 
   if (rpcSubs) {
     const sendAndConfirm = sendAndConfirmTransactionFactory({

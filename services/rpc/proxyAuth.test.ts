@@ -1,4 +1,6 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   chainRpcUrl,
   isProxyUrl,
@@ -51,7 +53,9 @@ describe("proxyAuth", () => {
   });
 
   it("reads the url a viem chain will actually call", () => {
-    expect(chainRpcUrl({ rpcUrls: { default: { http: [PROXY] } } })).toBe(PROXY);
+    expect(chainRpcUrl({ rpcUrls: { default: { http: [PROXY] } } })).toBe(
+      PROXY,
+    );
     expect(chainRpcUrl({} as never)).toBeUndefined();
   });
 
@@ -59,5 +63,54 @@ describe("proxyAuth", () => {
     expect(rpcFetchOptions(PROXY)).toEqual({
       fetchOptions: { headers: { Authorization: `Bearer ${KEY}` } },
     });
+  });
+});
+
+// ---------------------------------------------------------------------
+// 2026-08-12 — the dApp bridge read through an unauthenticated transport
+// and every proxied read came back 401. Locally-answered methods
+// (`eth_chainId`) hid it, so connecting and signing looked fine while
+// contract deployment and NFT minting failed: ethers polls
+// `eth_blockNumber`, `eth_estimateGas` and `eth_getTransactionReceipt`
+// around a deploy, and all three went to the proxy.
+//
+// Asserted structurally because the defect was a *missing* call at a
+// transport construction site, and no behavioural test of the adapter
+// would have caught a header that was never attached.
+// ---------------------------------------------------------------------
+describe("every RPC transport attaches proxy auth", () => {
+  const repoRoot = join(__dirname, "..", "..");
+  const sites: Array<[string, string]> = [
+    // The dApp bridge's own EVM clients — the ones that produced the 401.
+    ["services/chains/evm/EvmAdapter.ts", "proxyAuthHeaders"],
+    // Pre-sign simulation on both EVM approval sheets.
+    [
+      "components/dapps-browser/approvals/EvmTransactionSheet.tsx",
+      "rpcFetchOptions",
+    ],
+    [
+      "components/dapps-browser/approvals/EvmBatchCallsSheet.tsx",
+      "rpcFetchOptions",
+    ],
+    // Non-EVM adapters build their own transports and had the same gap.
+    ["services/chains/stellar/horizonClient.ts", "proxyAuthHeaders"],
+    ["services/chains/stellar/sorobanRpcClient.ts", "proxyAuthHeaders"],
+    ["services/rpc/solanaRpcPool.ts", "proxyAuthHeaders"],
+    ["services/bridge/boot.ts", "proxyAuthHeaders"],
+  ];
+
+  it.each(sites)("%s routes headers through proxyAuth", (rel, symbol) => {
+    const src = readFileSync(join(repoRoot, rel), "utf8");
+    expect(src).toContain(symbol);
+  });
+
+  it("still refuses to send the bearer to an unregistered origin", () => {
+    // The reason this is origin-gated rather than a blanket header: a
+    // provider that receives an unexpected bearer rejects the request
+    // (Alchemy answers 401), and our token would land in third-party
+    // logs. A dApp-added custom RPC must never receive it.
+    expect(proxyAuthHeaders("https://mainnet.infura.io/v3/abc")).toEqual({});
+    expect(proxyAuthHeaders("https://api.mainnet-beta.solana.com")).toEqual({});
+    expect(proxyAuthHeaders(undefined)).toEqual({});
   });
 });

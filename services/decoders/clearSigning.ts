@@ -23,8 +23,11 @@ import type {
   ClearSigningDescriptor,
   ResolveClearSigningDescriptorArgs,
 } from "@/services/walletKit/types";
-import { tryDecodeErc2612 } from "./erc2612";
-import { tryDecodePermit2 } from "./permit2";
+// Side-effect import: docks the built-in typed-data decoders. A new
+// EIP-712 standard becomes legible by adding a file there and one
+// `registerTypedDataDecoder` call — this function does not change.
+import "./typedDataDecoders";
+import { decodeTypedData } from "./typedDataRegistry";
 
 function bespokeFallback(
   args: ResolveClearSigningDescriptorArgs,
@@ -33,49 +36,10 @@ function bespokeFallback(
   if (!call || typeof call !== "object") return null;
   const typedData = (call as { typedData?: unknown }).typedData;
   if (!typedData || typeof typedData !== "object") return null;
-
+  // The signer comes from the caller (`intent.wallet`), never from a
+  // field inside the payload — see `ResolveClearSigningDescriptorArgs`.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const permit = tryDecodeErc2612(typedData as any);
-  if (permit) {
-    return {
-      intent: "Permit token spending",
-      source: "bespoke",
-      target: permit.token.toLowerCase(),
-      functionName: "Permit",
-      fields: [
-        { label: "Owner", value: permit.owner },
-        { label: "Spender", value: permit.spender },
-        {
-          label: "Allowance (raw units)",
-          value: permit.isUnlimited ? "Unlimited" : permit.amount.toString(),
-        },
-        { label: "Deadline (unix)", value: permit.deadline.toString() },
-      ],
-    };
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const permit2 = tryDecodePermit2(typedData as any);
-  if (permit2) {
-    return {
-      intent: "Permit2 approval",
-      source: "bespoke",
-      target: permit2.verifyingContract.toLowerCase(),
-      functionName: "Permit2",
-      fields: [
-        { label: "Spender", value: permit2.spender },
-        ...permit2.tokens.flatMap((t, i) => [
-          { label: `Token ${i + 1}`, value: t.address },
-          {
-            label: `Amount ${i + 1} (raw units)`,
-            value: t.amount.toString(),
-          },
-        ]),
-      ],
-    };
-  }
-
-  return null;
+  return decodeTypedData(typedData as any, { signer: args.signer });
 }
 
 /**

@@ -43,8 +43,16 @@ export function ApprovalHost(): React.ReactElement | null {
   }
 
   const Component = match.Component;
+  // `key` is load-bearing, not tidiness (spec phase Q). Two consecutive
+  // requests of the same kind render the same element type in the same
+  // position, so without a key React reuses the instance and the new
+  // sheet inherits the previous one's state: the last transaction's
+  // simulated asset movement, an expanded raw-data panel, a half-armed
+  // biometric prompt. Keying by intent id makes every request a fresh
+  // mount, which is also what re-arms the queue input lock.
   return (
     <Component
+      key={intent.id}
       intent={intent}
       onDecision={(d) => {
         const bridge = getDappBridge();

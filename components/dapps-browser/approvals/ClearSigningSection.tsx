@@ -139,7 +139,15 @@ export function ClearSigningSection({
       return;
     }
     let alive = true;
-    void resolveClearSigningSummary(ns, { call, network }).then(
+    void resolveClearSigningSummary(ns, {
+      call,
+      network,
+      // From the intent, never `useWallet()` — the dApp-bridge
+      // isolation rule. This is also the address a marketplace decoder
+      // checks consideration recipients against (spec §17.6): the
+      // order's own `offerer` field is attacker-set and proves nothing.
+      signer: intent.wallet?.address,
+    }).then(
       (d) => {
         if (!alive) return;
         setDescriptor(d);
@@ -154,7 +162,7 @@ export function ClearSigningSection({
     return () => {
       alive = false;
     };
-  }, [ns, call, network, onDescriptorResolved]);
+  }, [ns, call, network, intent.wallet?.address, onDescriptorResolved]);
 
   // Phase D — AI summary, only ever fed a resolved descriptor.
   useEffect(() => {
@@ -211,6 +219,24 @@ export function ClearSigningSection({
 
   return (
     <View>
+      {/*
+        Decoder-declared cautions, rendered above the descriptor so they
+        are read before the reassuring detail rather than after it.
+        Generic by design: the copy is written by whichever decoder
+        claimed the payload, so a newly docked standard raises a warning
+        without this component learning it exists.
+      */}
+      {descriptor?.warnings?.map((w) => (
+        <View
+          key={w.title}
+          className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3"
+        >
+          <Text className="text-xs font-bold text-red-800 uppercase">
+            {w.title}
+          </Text>
+          <Text className="text-sm text-red-900 mt-1">{w.detail}</Text>
+        </View>
+      ))}
       {descriptor && (
         <View className="bg-white border border-gray-200 rounded-xl p-3 mb-3">
           <Text className="text-xs text-gray-500 mb-1">What this does</Text>

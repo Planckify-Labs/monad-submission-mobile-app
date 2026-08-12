@@ -61,6 +61,43 @@ const SELECTOR_DB: Record<string, string[]> = {
     "function safeBatchTransferFrom(address from, address to, uint256[] ids, uint256[] amounts, bytes data)",
   ],
   "0xa22cb465": ["function setApprovalForAll(address operator, bool approved)"],
+
+  // delegate.xyz — spec phase F item b. Grants another address standing
+  // rights over the signer's NFTs. Heavily used legitimately (a cold
+  // vault delegating to a hot wallet for claims and airdrops), which is
+  // exactly why it is abused, and critically it does NOT look like an
+  // approval: no `approve`, no `setApprovalForAll`, so nothing in
+  // `classifyRisk` caught it. Both the v1 (`delegateFor*`) and v2
+  // (`delegate*`) registries are covered.
+  "0x685ee3e8": ["function delegateForAll(address delegate, bool value)"],
+  "0x49c95d29": [
+    "function delegateForContract(address delegate, address contract_, bool value)",
+  ],
+  "0x537a5c3d": [
+    "function delegateForToken(address delegate, address contract_, uint256 tokenId, bool value)",
+  ],
+  "0x30ff3140": [
+    "function delegateAll(address to, bytes32 rights, bool enable)",
+  ],
+  "0xd90e73ab": [
+    "function delegateContract(address to, address contract_, bytes32 rights, bool enable)",
+  ],
+  "0xb18e2bbb": [
+    "function delegateERC721(address to, address contract_, uint256 tokenId, bytes32 rights, bool enable)",
+  ],
+  "0x003c2ba6": [
+    "function delegateERC20(address to, address contract_, bytes32 rights, uint256 amount)",
+  ],
+  "0xab764683": [
+    "function delegateERC1155(address to, address contract_, uint256 tokenId, bytes32 rights, uint256 amount)",
+  ],
+
+  // Spec §17.12 — the dapp's "mint ERC-20" case rendered as an unknown
+  // selector. No risk classification: minting to yourself is ordinary,
+  // and the `to` argument is visible in the decoded fields, which is
+  // what a user needs to spot a mint that pays somebody else.
+  "0x40c10f19": ["function mint(address to, uint256 amount)"],
+
   "0xac9650d8": ["function multicall(bytes[] data)"],
   "0x5ae401dc": ["function multicall(uint256 deadline, bytes[] data)"],
   "0x38ed1739": [
@@ -116,11 +153,136 @@ export interface DecodedCalldata {
         approved: boolean;
       }
     | {
+        /** Confirmed ERC-20 allowance. Only emitted once the target is known. */
         kind: "approve";
         spender: `0x${string}`;
         amount: bigint;
         isUnlimited: boolean;
+        /**
+         * Phase N — *why* we called it unlimited, which decides how
+         * confidently the UI may phrase it.
+         *
+         * `"supply"` means the allowance is at or above the token's
+         * entire total supply, which is a fact and reads as one.
+         * `"threshold"` means only the offline `2²⁵⁵` heuristic fired,
+         * so the copy hedges. Absent when the allowance is bounded.
+         */
+        unlimitedBasis?: "supply" | "threshold";
+        /**
+         * Token decimals when the probe resolved them, so the UI can
+         * render "18,446,744,073,710 USDC" rather than a 20-digit
+         * integer. Absent means show the raw value.
+         */
+        decimals?: number;
+      }
+    | {
+        /** Confirmed ERC-721 single-token approval — never "unlimited". */
+        kind: "approveNft";
+        operator: `0x${string}`;
+        tokenId: bigint;
+      }
+    | {
+        /**
+         * `approve` whose target could not be typed. The second argument
+         * is reported verbatim without claiming it is an amount or a
+         * token id, and `isUnlimited` is deliberately not computed.
+         *
+         * This is the only safe default. Falling back to the ERC-20
+         * reading is what produced the wrong copy; falling back to
+         * ERC-721 would suppress a real unlimited-allowance warning.
+         */
+        kind: "approveUnknownAsset";
+        spender: `0x${string}`;
+        value: bigint;
+        /**
+         * The second argument is at or above the unlimited-allowance
+         * threshold. We cannot say it IS an unlimited allowance without
+         * knowing the contract is an ERC-20 — but staying silent is
+         * worse. Before phase D a failed RPC probe still produced the
+         * unlimited warning; treating "unresolved" as "no warning" would
+         * have quietly removed the highest-frequency drain warning in
+         * the wallet on exactly the flaky-network path where it matters.
+         *
+         * The UI must phrase this conditionally ("if this is a token").
+         */
+        looksUnlimited: boolean;
+      }
+    | {
+        /**
+         * delegate.xyz. Same weight as `setApprovalForAll`: it hands a
+         * third party standing authority over assets without ever using
+         * the word approve.
+         */
+        kind: "delegate";
+        delegate: `0x${string}`;
+        /** Scope of the grant, as the registry expresses it. */
+        scope: "all" | "contract" | "token";
+        /** Present for contract- and token-scoped grants. */
+        contract?: `0x${string}`;
+        tokenId?: bigint;
+        /** False when the call is revoking rather than granting. */
+        enabled: boolean;
       };
+}
+
+/**
+ * How loudly a decoded call must be presented — spec phase L.
+ *
+ * This exists so a *batch* can be scored without re-deriving the rules
+ * the single-transaction sheet uses. `wallet_sendCalls` shipped a sheet
+ * that rendered function names and never read `risk` at all, so the same
+ * `approve(spender, MAX)` was a red banner through `eth_sendTransaction`
+ * and a bare parameter list through the batch method. A batch is exactly
+ * as dangerous as its most dangerous entry, and expressing that needs one
+ * shared ranking rather than two sheets agreeing by coincidence.
+ *
+ * The mapping mirrors `CalldataRiskSection` exactly: `none` means that
+ * component renders nothing, so a batch-level banner never promises a
+ * per-call banner the user then cannot find.
+ */
+export type CalldataRiskSeverity = "high" | "medium" | "none";
+
+export function calldataRiskSeverity(
+  decoded: DecodedCalldata | null | undefined,
+): CalldataRiskSeverity {
+  const risk = decoded?.risk;
+  if (!risk) return "none";
+  switch (risk.kind) {
+    case "setApprovalForAll":
+      return risk.approved ? "high" : "none";
+    case "delegate":
+      return risk.enabled ? "high" : "none";
+    case "approve":
+      return risk.isUnlimited ? "high" : "none";
+    case "approveUnknownAsset":
+      // Amber either way: we could not type the contract, so we cannot
+      // say whether the second argument is an allowance or a token id.
+      return risk.looksUnlimited ? "high" : "medium";
+    case "approveNft":
+      return "medium";
+    default:
+      return "none";
+  }
+}
+
+/**
+ * What the `approve` target is, when the caller could resolve it.
+ * Supplied by the adapter (registry lookup, then ERC-165 probe); the
+ * decoder itself is pure and never reaches the network.
+ */
+export type ApproveTargetKind = "erc20" | "erc721" | "erc1155" | "unknown";
+
+export interface DecodeCalldataOptions {
+  /** Defaults to `"unknown"`, which yields `approveUnknownAsset`. */
+  approveTargetKind?: ApproveTargetKind;
+  /**
+   * Phase N — the `approve` target's `totalSupply()`, when the adapter
+   * resolved it. An allowance at or above everything that exists is
+   * unbounded in practice, which is a fact rather than a threshold.
+   */
+  totalSupply?: bigint;
+  /** The `approve` target's `decimals()`, for rendering the amount. */
+  decimals?: number;
 }
 
 // TWV-2026-009 — "unlimited" threshold for ERC-20 `approve`. Any value
@@ -131,7 +293,62 @@ export interface DecodedCalldata {
 const UINT256_MAX = (1n << 256n) - 1n;
 const UNLIMITED_APPROVE_THRESHOLD = UINT256_MAX / 2n;
 
-function classifyRisk(decoded: DecodedCalldata): DecodedCalldata["risk"] {
+/** delegate.xyz function name → grant scope. */
+const DELEGATE_SCOPES: Record<string, "all" | "contract" | "token"> = {
+  delegateForAll: "all",
+  delegateAll: "all",
+  delegateForContract: "contract",
+  delegateContract: "contract",
+  delegateERC20: "contract",
+  delegateForToken: "token",
+  delegateERC721: "token",
+  delegateERC1155: "token",
+};
+
+function classifyDelegate(
+  decoded: DecodedCalldata,
+): DecodedCalldata["risk"] | undefined {
+  const scope = decoded.functionName
+    ? DELEGATE_SCOPES[decoded.functionName]
+    : undefined;
+  if (!scope || !decoded.args) return undefined;
+  const delegate = decoded.args[0]?.value;
+  if (typeof delegate !== "string") return undefined;
+
+  // Both registry generations put the delegate first, but differ after
+  // that, so read by argument *name* rather than by position.
+  const byName = (n: string): unknown =>
+    decoded.args?.find((a) => a.name === n)?.value;
+  const contract = byName("contract_");
+  const tokenId = byName("tokenId");
+  // v1 signals revocation with `value: false`, v2 with `enable: false`.
+  // ERC-20/1155 grants carry an `amount` instead, where zero is the
+  // revocation. Absent all three, treat it as a grant: under-warning on
+  // a revoke is harmless, under-warning on a grant is not.
+  const enableFlag = byName("enable") ?? byName("value");
+  const amount = byName("amount");
+  const enabled =
+    typeof enableFlag === "boolean"
+      ? enableFlag
+      : typeof amount === "bigint"
+        ? amount > 0n
+        : true;
+
+  return {
+    kind: "delegate",
+    delegate: delegate as `0x${string}`,
+    scope,
+    contract:
+      typeof contract === "string" ? (contract as `0x${string}`) : undefined,
+    tokenId: typeof tokenId === "bigint" ? tokenId : undefined,
+    enabled,
+  };
+}
+
+function classifyRisk(
+  decoded: DecodedCalldata,
+  opts?: DecodeCalldataOptions,
+): DecodedCalldata["risk"] {
   if (decoded.functionName === "setApprovalForAll" && decoded.args) {
     const operator = decoded.args[0]?.value;
     const approved = decoded.args[1]?.value;
@@ -143,15 +360,57 @@ function classifyRisk(decoded: DecodedCalldata): DecodedCalldata["risk"] {
       };
     }
   }
+  const delegate = classifyDelegate(decoded);
+  if (delegate) return delegate;
   if (decoded.functionName === "approve" && decoded.args) {
     const spender = decoded.args[0]?.value;
     const amount = decoded.args[1]?.value;
     if (typeof spender === "string" && typeof amount === "bigint") {
+      // Selector 0x095ea7b3 is shared by ERC-20 `approve(spender, amount)`
+      // and ERC-721 `approve(to, tokenId)` with byte-identical encoding,
+      // so the calldata cannot disambiguate them and the roundtrip gate
+      // passes for both. Only the caller's contract-type resolution can.
+      const kind = opts?.approveTargetKind ?? "unknown";
+      if (kind === "erc721" || kind === "erc1155") {
+        return {
+          kind: "approveNft",
+          operator: spender as `0x${string}`,
+          tokenId: amount,
+        };
+      }
+      if (kind !== "erc20") {
+        return {
+          kind: "approveUnknownAsset",
+          spender: spender as `0x${string}`,
+          value: amount,
+          looksUnlimited: amount >= UNLIMITED_APPROVE_THRESHOLD,
+        };
+      }
+      // Phase N — supply first, threshold as the floor.
+      //
+      // The two rules are OR-ed rather than layered, and that ordering
+      // is deliberate. A hostile token can report whatever
+      // `totalSupply()` it likes: report `type(uint256).max` and a
+      // supply-only rule would clear an allowance of `max - 1`. Keeping
+      // the offline threshold underneath means the probe can only ever
+      // *add* a warning, which is the same phase-D rule that says a
+      // failed probe must never remove one.
+      const overSupply =
+        opts?.totalSupply !== undefined &&
+        opts.totalSupply > 0n &&
+        amount >= opts.totalSupply;
+      const overThreshold = amount >= UNLIMITED_APPROVE_THRESHOLD;
       return {
         kind: "approve",
         spender: spender as `0x${string}`,
         amount,
-        isUnlimited: amount >= UNLIMITED_APPROVE_THRESHOLD,
+        isUnlimited: overSupply || overThreshold,
+        unlimitedBasis: overSupply
+          ? "supply"
+          : overThreshold
+            ? "threshold"
+            : undefined,
+        decimals: opts?.decimals,
       };
     }
   }
@@ -171,6 +430,7 @@ function classifyRisk(decoded: DecodedCalldata): DecodedCalldata["risk"] {
 export function decodeCalldataAgainst(
   data: `0x${string}`,
   candidates: readonly string[],
+  opts?: DecodeCalldataOptions,
 ): DecodedCalldata | null {
   // Normalize hex case exactly once, at the boundary. viem's decoder
   // matches selectors case-sensitively, and the roundtrip comparison
@@ -215,7 +475,7 @@ export function decodeCalldataAgainst(
         roundtripVerified: true,
         raw: data,
       };
-      out.risk = classifyRisk(out);
+      out.risk = classifyRisk(out, opts);
       return out;
     } catch {
       // try next candidate
@@ -233,6 +493,7 @@ export function decodeCalldataAgainst(
 
 export function decodeCalldata(
   data: `0x${string}` | undefined | null,
+  opts?: DecodeCalldataOptions,
 ): DecodedCalldata | null {
   if (!data || data === "0x") return null;
   if (data.length < 10) {
@@ -247,5 +508,5 @@ export function decodeCalldata(
   if (!candidates || candidates.length === 0) {
     return { selector, signature: null, raw: data };
   }
-  return decodeCalldataAgainst(data, candidates);
+  return decodeCalldataAgainst(data, candidates, opts);
 }

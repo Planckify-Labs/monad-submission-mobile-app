@@ -163,6 +163,7 @@ function pickNetwork(r){var nd=r&&r.networkDetails;return{network:nd&&nd.network
 function pickNetworkDetails(r){return (r&&r.networkDetails)||{};}
 function pickSignTx(r){return{signedTxXdr:r&&r.signedTransaction,signerAddress:r&&r.signerAddress};}
 function pickSignMsg(r){return{signedMessage:r&&r.signedBlob,signerAddress:r&&r.signerAddress};}
+function pickSignAuthEntry(r){return{signedAuthEntry:r&&r.signedAuthEntry,signerAddress:r&&r.signerAddress};}
 window.freighterApi={
   isConnected:function(){return dispatch("REQUEST_CONNECTION_STATUS",{});},
   getAddress:function(){return dispatch("REQUEST_PUBLIC_KEY",{}).then(function(r){return{address:r&&r.publicKey};});},
@@ -171,6 +172,8 @@ window.freighterApi={
   getNetworkDetails:function(){return dispatch("REQUEST_NETWORK_DETAILS",{}).then(pickNetworkDetails);},
   signTransaction:function(xdr,opts){return dispatch("SUBMIT_TRANSACTION",Object.assign({transactionXdr:xdr},opts)).then(pickSignTx);},
   signMessage:function(msg,opts){return dispatch("SUBMIT_BLOB",Object.assign({blob:msg},opts)).then(pickSignMsg);},
+  // SEP-43 signAuthEntry(entryXdr, { networkPassphrase, address }).
+  signAuthEntry:function(entryXdr,opts){return dispatch("SUBMIT_AUTH_ENTRY",Object.assign({authEntryXdr:entryXdr},opts)).then(pickSignAuthEntry);},
   isAllowed:function(){return dispatch("REQUEST_ALLOWED_STATUS",{});},
   setAllowed:function(){return dispatch("SET_ALLOWED_STATUS",{});},
 };

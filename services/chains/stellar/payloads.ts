@@ -56,13 +56,39 @@ export type StellarDecodedOperation =
   | {
       // Soroban invocation. Structural fields added by task 65
       // (TWV-2026-066) so Stage-2 can resolve the on-chain contract
-      // spec; all optional — non-invokeContract host functions (upload
-      // WASM, create contract) still decode to the bare tag.
+      // spec. Phase B added the two deployment host functions, which
+      // previously decoded to the bare tag and were therefore signed
+      // blind.
       kind: "invokeHostFunction";
+      /**
+       * Which host function this is. `undefined` means the XDR shape
+       * could not be read; consumers must treat that as unknown, never
+       * as `invokeContract`.
+       */
+      hostFunction?: "invokeContract" | "uploadContractWasm" | "createContract";
       contractId?: string;
       function?: string;
       /** base64 `ScVal` per invocation argument, order preserved. */
       argsXdr?: string[];
+      /** `uploadContractWasm` — size of the code being uploaded. */
+      wasmByteLength?: number;
+      /**
+       * SHA-256 of the uploaded WASM (`uploadContractWasm`), or the hash
+       * of the code being instantiated (`createContract`). The hash is
+       * the code's on-chain identity and the only value a user could
+       * check against a publisher's release notes, so it is surfaced
+       * verbatim rather than truncated.
+       */
+      wasmHash?: string;
+      /** `createContract` — deployment salt, hex. */
+      salt?: string;
+      /** `createContract` — deployer address, when the preimage is address-based. */
+      deployer?: string;
+      /**
+       * `createContract` wrapping a classic asset (the Stellar Asset
+       * Contract) rather than instantiating uploaded WASM.
+       */
+      fromAsset?: string;
     }
   | { kind: "other"; type: string };
 
@@ -84,6 +110,17 @@ export type StellarSignTransactionPayload = {
   fee?: string; // stroops, string (bigint-unsafe JSON otherwise)
   sequence?: string;
   memo?: { type: "none" | "text" | "id" | "hash" | "return"; value?: string };
+  /**
+   * Present only for a fee-bump envelope (phase K). When set, the fields
+   * above describe the INNER transaction and this describes who pays.
+   * The sheet must show both — a fee bump has two source accounts, and
+   * showing one is how a user misreads who is on the hook for the fee.
+   */
+  feeBump?: {
+    feeSource: string;
+    /** Total fee the fee source commits to, in stroops. */
+    fee: string;
+  };
   /** Populated by StellarPreflightInspector (§8.2). */
   preflight?: {
     destinationExists?: boolean;
@@ -97,10 +134,35 @@ export type StellarSignMessagePayload = {
   networkPassphrase?: string;
 };
 
+/**
+ * SEP-43 `signAuthEntry` — spec phase I. Soroban's mechanism for
+ * authorising a sub-invocation without being the transaction source.
+ */
+export type StellarSignAuthEntryPayload = {
+  address: string;
+  /** The `SorobanAuthorizationEntry`, base64 XDR, exactly as supplied. */
+  authEntryXdr: string;
+  networkPassphrase?: string;
+  /**
+   * Structural decode patched in by the adapter so the sheet can
+   * describe the invocation being authorised. Signing always re-parses
+   * `authEntryXdr`, never this view.
+   */
+  decoded?: {
+    address?: string;
+    contractId?: string;
+    function?: string;
+    subInvocationCount?: number;
+    expirationLedger?: number;
+    usesSourceAccount?: boolean;
+  };
+};
+
 export type StellarApprovalPayload =
   | ({ kind: "connect" } & StellarConnectPayload)
   | ({ kind: "signTransaction" } & StellarSignTransactionPayload)
-  | ({ kind: "signMessage" } & StellarSignMessagePayload);
+  | ({ kind: "signMessage" } & StellarSignMessagePayload)
+  | ({ kind: "signAuthEntry" } & StellarSignAuthEntryPayload);
 
 // ── Helpers ────────────────────────────────────────────────────────────
 

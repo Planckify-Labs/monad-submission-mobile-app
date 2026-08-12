@@ -4,6 +4,7 @@ import { Text, TouchableOpacity, View } from "react-native";
 import type { ApprovalIntent } from "@/services/bridge/approval";
 import { getDappBridge } from "@/services/bridge/DappBridge";
 import { InspectorRegistry } from "@/services/bridge/inspector";
+import { useApprovalQueue } from "@/services/bridge/useApprovalQueue";
 import { truncateAddress } from "@/utils/walletUtils";
 import { RiskBanner } from "./RiskBanner";
 
@@ -46,9 +47,32 @@ export function ApprovalShell({
   );
   const canAskAgent = onDemandInspectors.some((i) => i.name === "agent");
 
+  // Phase Q — say how many requests are waiting, and offer one tap out.
+  // A sheet that hides the queue turns "another one appeared" into a
+  // surprise every time, which is what makes rapid-fire approvals work.
+  const queue = useApprovalQueue(intent.id);
+
   return (
     <View className="flex-1">
       <View className="px-4 pt-2 pb-3">
+        {queue.depth > 1 && (
+          <View className="flex-row items-center mb-2">
+            <View className="bg-amber-100 rounded-full px-2 py-0.5">
+              <Text className="text-xs font-semibold text-amber-900">
+                Request {queue.position} of {queue.depth}
+              </Text>
+            </View>
+            <View className="flex-1" />
+            <TouchableOpacity
+              onPress={queue.rejectAll}
+              accessibilityLabel="reject-all-pending"
+            >
+              <Text className="text-xs font-semibold text-light-primary-red underline">
+                Reject all
+              </Text>
+            </TouchableOpacity>
+          </View>
+        )}
         <Text className="text-lg font-semibold text-gray-900">{title}</Text>
         <View className="flex-row items-center mt-2">
           <Globe size={14} color={isSecure ? "#059669" : "#ea580c"} />

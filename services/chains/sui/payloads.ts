@@ -62,6 +62,49 @@ export type SuiTxOptions = {
 };
 
 /**
+ * Reference from a PTB command to a value: a transaction input, the
+ * result of an earlier command, or the gas coin. Semantic passes follow
+ * these to reconstruct data flow (e.g. which `SplitCoins` produced the
+ * coin a `kiosk::purchase` pays with) without any RPC.
+ */
+export type SuiArgRef =
+  | { kind: "input"; index: number }
+  | { kind: "result"; command: number; nested?: number }
+  | { kind: "gas" }
+  | { kind: "unknown" };
+
+/**
+ * A PTB input, decoded far enough to resolve literals offline. `pure`
+ * inputs keep their BCS bytes so a pass can interpret them per the
+ * Move type it knows the parameter to be — 8 bytes is a `u64` price,
+ * 32 an address or object id. Nothing here is guessed from the bytes
+ * alone; a pass that cannot type an input leaves it unresolved.
+ */
+export type SuiDecodedInput =
+  | { kind: "pure"; bytes: string /* base64 */ }
+  | { kind: "object"; objectId?: string; shared?: boolean }
+  | { kind: "unknown" };
+
+/**
+ * Output of a PTB semantic pass — see `services/chains/sui/ptbSemantics.ts`.
+ *
+ * Deliberately generic (`code` + hand-written rows) rather than a
+ * discriminated union of every Sui standard we might one day decode.
+ * That is what lets a new standard dock as a self-contained pass: it
+ * emits rows, and the sheet renders them without this file, the
+ * inspector or the sheet learning the standard's name.
+ */
+export interface SuiPtbSemantic {
+  /** Stable machine code, e.g. `"kiosk.purchase"`. Never shown to users. */
+  code: string;
+  /** Hand-written user-facing heading. */
+  title: string;
+  /** Hand-written label/value rows, rendered verbatim. */
+  fields: Array<{ label: string; value: string }>;
+  severity?: "info" | "warn";
+}
+
+/**
  * PTB-decoded structural view emitted by `SuiPtbDecoderInspector`.
  * Discriminated by `kind`; sheets and the agent reader narrow on it.
  */
@@ -73,6 +116,10 @@ export type SuiDecodedCommand =
       function: string;
       argumentCount: number;
       typeArgumentCount: number;
+      /** Fully-qualified Move type arguments, in declaration order. */
+      typeArguments?: string[];
+      /** Argument references, index-aligned with the Move signature. */
+      arguments?: SuiArgRef[];
     }
   | {
       kind: "TransferObjects";
@@ -83,6 +130,8 @@ export type SuiDecodedCommand =
       kind: "SplitCoins";
       sourceArgIndex: number;
       amountCount: number;
+      /** Where each split amount comes from. */
+      amountArgs?: SuiArgRef[];
     }
   | {
       kind: "MergeCoins";
@@ -93,11 +142,33 @@ export type SuiDecodedCommand =
       kind: "Publish";
       modules: number;
       dependencies: number;
+      /** Package ids this publish depends on. */
+      dependencyIds?: string[];
+      /** Total compiled bytecode size across all modules, in bytes. */
+      moduleBytes?: number;
+      /**
+       * Module names lifted out of the compiled bytecode, present only
+       * when every module parsed cleanly. A partial or failed parse
+       * yields `undefined` rather than a partial list: on a signing
+       * surface a wrong module name is worse than no module name.
+       */
+      moduleNames?: string[];
     }
   | {
       kind: "Upgrade";
       modules: number;
       dependencies: number;
+      dependencyIds?: string[];
+      moduleBytes?: number;
+      moduleNames?: string[];
+      /** The package being replaced. */
+      packageId?: string;
+      /**
+       * The `UpgradeTicket` argument. The ticket is minted by
+       * `0x2::package::authorize_upgrade`, which consumes the
+       * `UpgradeCap` — see the `package.upgrade` semantic pass.
+       */
+      ticketArg?: SuiArgRef;
     }
   | {
       kind: "MakeMoveVec";
@@ -153,6 +224,14 @@ export type SuiSignTxPayload = {
   options?: SuiTxOptions;
   simulation?: SuiSimulationSummary;
   decoded?: SuiDecodedCommand[];
+  /** Decoded PTB inputs, index-aligned with `SuiArgRef`'s `input` index. */
+  inputs?: SuiDecodedInput[];
+  /**
+   * Standard-level readings of the PTB produced by the semantic-pass
+   * registry. Additive: structural `decoded` rows are always present
+   * regardless of whether any pass matched.
+   */
+  semantics?: SuiPtbSemantic[];
   /** Decoded structural fields. */
   sender?: string;
   /** ≠ sender ⇒ sponsored tx; sheets render an annotation. */

@@ -40,7 +40,9 @@ export function isProxyUrl(url: string | undefined): boolean {
  * key is configured — the proxy disables auth when its own key is unset, so an
  * absent key is a valid local-dev setup rather than an error.
  */
-export function proxyAuthHeaders(url: string | undefined): Record<string, string> {
+export function proxyAuthHeaders(
+  url: string | undefined,
+): Record<string, string> {
   if (!isProxyUrl(url)) return {};
   const key = process.env.EXPO_PUBLIC_RPC_PROXY_API_KEY?.trim();
   return key ? { Authorization: `Bearer ${key}` } : {};
@@ -54,7 +56,9 @@ export function rpcFetchOptions(
   url: string | undefined,
 ): { fetchOptions: { headers: Record<string, string> } } | undefined {
   const headers = proxyAuthHeaders(url);
-  return Object.keys(headers).length > 0 ? { fetchOptions: { headers } } : undefined;
+  return Object.keys(headers).length > 0
+    ? { fetchOptions: { headers } }
+    : undefined;
 }
 
 /** The URL a viem chain will actually be called on. */

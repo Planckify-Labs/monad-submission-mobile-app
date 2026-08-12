@@ -107,6 +107,59 @@ export function EvmSignMessageSheet({
     return { typedData: p.typedData };
   }, [intent.payload, isTyped, siwe, decoded]);
 
+  // TWV-2026-012 — the signing domain. A typed-data signature is only as
+  // trustworthy as its domain: the domain binds the signature to one
+  // chain and one contract, so a decoder that renders an order perfectly
+  // while the domain goes unchecked is worse than no decoder at all. It
+  // implies a verification that did not happen.
+  const domain = useMemo<SigningDomain | null>(() => {
+    if (!isTyped) return null;
+    const p = intent.payload as EvmSignTypedDataPayload;
+    const d = (p.typedData as { domain?: Record<string, unknown> }).domain;
+    if (!d || typeof d !== "object") return null;
+    const rawChainId = d.chainId;
+    const chainId =
+      typeof rawChainId === "bigint"
+        ? Number(rawChainId)
+        : typeof rawChainId === "string"
+          ? Number(rawChainId)
+          : typeof rawChainId === "number"
+            ? rawChainId
+            : undefined;
+    return {
+      name: typeof d.name === "string" ? d.name : undefined,
+      version: typeof d.version === "string" ? d.version : undefined,
+      chainId: Number.isFinite(chainId) ? chainId : undefined,
+      verifyingContract:
+        typeof d.verifyingContract === "string"
+          ? d.verifyingContract
+          : undefined,
+      activeChainId: p.activeChainId,
+      activeChainName: p.activeChainName,
+    };
+  }, [intent.payload, isTyped]);
+
+  // Phase O — fields the dApp put in `message` that its own `types` do
+  // not declare. They are stripped before this sheet sees the payload
+  // (they are not in the signed hash), so the risk is not what gets
+  // signed but what the user is shown: rendering them would display a
+  // field the signature does not cover.
+  const undeclaredKeys = useMemo(() => {
+    if (!isTyped) return null;
+    const p = intent.payload as EvmSignTypedDataPayload;
+    return p.undeclaredMessageKeys?.length ? p.undeclaredMessageKeys : null;
+  }, [intent.payload, isTyped]);
+
+  // Refusal, not a warning. A domain chainId that does not match the
+  // chain this origin is on has no legitimate reading — it is the shape
+  // of a signature harvested on one chain to be replayed on another. The
+  // existing hold-to-sign affordance is not enough, so there is no
+  // approve path at all in this state.
+  const chainMismatch =
+    domain?.chainId !== undefined &&
+    domain.activeChainId !== undefined &&
+    domain.chainId !== domain.activeChainId;
+
   return (
     <SheetModal
       onDismiss={() => onDecision({ id: intent.id, outcome: "reject" })}
@@ -120,6 +173,12 @@ export function EvmSignMessageSheet({
           contentContainerClassName="pb-4"
           showsVerticalScrollIndicator
         >
+          {/* TWV-2026-012 §2.1 — unconditional, above every decoded
+              card, including the permit cards which historically buried
+              the domain in the raw-JSON fallback below the fold. */}
+          {domain && <SigningDomainCard domain={domain} />}
+          {chainMismatch && <ChainMismatchCard domain={domain} />}
+          {undeclaredKeys && <UndeclaredFieldsCard keys={undeclaredKeys} />}
           {siwe && <SiweCard siwe={siwe} />}
           {decoded && <DecodedPermitCard decoded={decoded} />}
           {/* Task 65 — descriptor (only when SIWE/permit didn't match),
@@ -145,9 +204,19 @@ export function EvmSignMessageSheet({
       )}
       <PrimaryActions
         approveLabel={
-          pending ? "Authenticating…" : holdRequired ? "Hold to sign" : "Sign"
+          chainMismatch
+            ? "Can't sign"
+            : pending
+              ? "Authenticating…"
+              : holdRequired
+                ? "Hold to sign"
+                : "Sign"
         }
+        disabled={chainMismatch}
         onApprove={() => {
+          // Hard stop. Not a confirmation, not a hold — there is no
+          // input that produces a signature from this state.
+          if (chainMismatch) return;
           if (holdRequired && holdProgress < 1) {
             // Simulate a 1.5s hold with a timer; simple UX placeholder.
             const start = Date.now();
@@ -167,6 +236,122 @@ export function EvmSignMessageSheet({
         loading={pending}
       />
     </SheetModal>
+  );
+}
+
+interface SigningDomain {
+  name?: string;
+  version?: string;
+  chainId?: number;
+  verifyingContract?: string;
+  activeChainId?: number;
+  activeChainName?: string;
+}
+
+/**
+ * TWV-2026-012 §2.1 — the four `EIP712Domain` fields, unconditionally
+ * and without a disclosure toggle. A missing field is rendered as
+ * missing rather than omitted: a domain with no `verifyingContract` is
+ * a fact the user should see, and silently dropping the row would make
+ * it indistinguishable from a domain that has one.
+ */
+function SigningDomainCard({
+  domain,
+}: {
+  domain: SigningDomain;
+}): React.ReactElement {
+  const known = domain.verifyingContract
+    ? isKnownSpender(domain.verifyingContract, domain.chainId)
+    : null;
+  return (
+    <View className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-3">
+      <Text className="text-xs text-gray-500 font-semibold mb-1 uppercase">
+        Signing domain
+      </Text>
+      <Row k="Name" v={domain.name ?? "Not set"} />
+      <Row k="Version" v={domain.version ?? "Not set"} />
+      <Row
+        k="Chain"
+        v={
+          domain.chainId === undefined
+            ? "Not set"
+            : domain.chainId === domain.activeChainId && domain.activeChainName
+              ? `${domain.chainId} · ${domain.activeChainName}`
+              : String(domain.chainId)
+        }
+      />
+      <Row k="Contract" v={domain.verifyingContract ?? "Not set"} />
+      {known && (
+        <View className="bg-green-100 border border-green-300 rounded-lg p-2 mt-2">
+          <Text className="text-xs text-green-800">
+            Known contract: {known.name}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+/**
+ * TWV-2026-012 §2.2 — refusal card. Deliberately explains *why* rather
+ * than only blocking: a silent rejection reaches the dApp as a generic
+ * "user rejected", which teaches the user nothing and reads to them as
+ * the wallet being broken.
+ */
+function ChainMismatchCard({
+  domain,
+}: {
+  domain: SigningDomain | null;
+}): React.ReactElement | null {
+  if (!domain) return null;
+  const target = String(domain.chainId);
+  const active = domain.activeChainName
+    ? `${domain.activeChainId} (${domain.activeChainName})`
+    : String(domain.activeChainId);
+  return (
+    <View className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3">
+      <Text className="text-xs font-bold text-red-800 uppercase">
+        Takumi won&apos;t sign this
+      </Text>
+      <Text className="text-sm text-red-900 mt-1">
+        This signature is built for chain {target}, but this site is connected
+        to chain {active}. A signature meant for another chain can be reused
+        there without your knowledge, so it cannot be signed here.
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * Phase O — `signExtraDataNotTyped`.
+ *
+ * A payload whose `message` carries keys its own `types` never declare
+ * is not a formatting slip. Those keys are invisible to the hash, so a
+ * wallet that renders `message` directly can be made to display terms
+ * the signature does not cover: agree to one thing on screen, sign
+ * another. We strip them and say that we did, because silently dropping
+ * a field the dApp sent is its own kind of surprise.
+ */
+function UndeclaredFieldsCard({
+  keys,
+}: {
+  keys: string[];
+}): React.ReactElement {
+  return (
+    <View className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3">
+      <Text className="text-xs font-bold text-amber-900 uppercase">
+        This request carried fields it does not sign
+      </Text>
+      <Text className="text-sm text-amber-900 mt-1">
+        The site sent {keys.length === 1 ? "a field" : "fields"} that
+        {keys.length === 1 ? " is" : " are"} not part of what you would be
+        signing, so {keys.length === 1 ? "it is" : "they are"} not shown below.
+        Only continue if you trust this site.
+      </Text>
+      <Text className="text-xs text-amber-800 mt-2" selectable>
+        {keys.join(", ")}
+      </Text>
+    </View>
   );
 }
 

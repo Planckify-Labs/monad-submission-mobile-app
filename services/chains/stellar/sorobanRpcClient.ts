@@ -15,6 +15,7 @@
 import { Networks } from "@stellar/stellar-base";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { assertStellarChain } from "@/constants/configs/chainConfig";
+import { proxyAuthHeaders } from "@/services/rpc/proxyAuth";
 
 /** Structured Soroban RPC failure — mirrors `HorizonRequestError`'s shape. */
 export class SorobanRpcError extends Error {
@@ -38,6 +39,21 @@ export interface SimulateResult {
   /** base64 `SorobanAuthorizationEntry[]` the invocation requires. */
   auth: string[];
   latestLedger: number;
+  /**
+   * Present when the invocation touches ledger entries that have been
+   * archived. Soroban entries have a TTL, and once archived an
+   * invocation reading them fails at consensus with nothing useful to
+   * show the user.
+   *
+   * The preamble describes a `RestoreFootprint` operation that must be
+   * submitted and confirmed FIRST. The original invocation then has to
+   * be re-simulated, because this footprint and resource fee were
+   * computed against pre-restore ledger state.
+   */
+  restorePreamble?: {
+    transactionData: string;
+    minResourceFee: string;
+  };
 }
 
 export type GetTransactionStatus = "NOT_FOUND" | "SUCCESS" | "FAILED";
@@ -77,9 +93,17 @@ async function rpcCall<T>(
   method: string,
   params: Record<string, unknown>,
 ): Promise<T> {
+  // The wallet's Soroban endpoint is the same authenticated rpc-proxy the
+  // EVM chains use, and a plain `fetch` sent it no bearer — every read
+  // came back 401. `proxyAuthHeaders` is origin-gated on what the
+  // backend feed registered, so a public Soroban endpoint still gets no
+  // header and our key never leaves our own infrastructure.
   const res = await fetch(rpcUrl, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...proxyAuthHeaders(rpcUrl),
+    },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
   if (!res.ok) {
@@ -135,6 +159,10 @@ export function getSorobanRpcClient(
         transactionData?: string;
         minResourceFee?: string;
         results?: { auth?: string[]; xdr?: string }[];
+        restorePreamble?: {
+          transactionData?: string;
+          minResourceFee?: string;
+        };
         latestLedger: number;
         error?: string;
       }>(rpcUrl, "simulateTransaction", { transaction: txXdrBase64 });
@@ -152,11 +180,23 @@ export function getSorobanRpcClient(
           raw,
         );
       }
+      // An empty `transactionData` on the preamble means "nothing to
+      // restore" — treat only a fully-populated preamble as real, so a
+      // partial response cannot trigger a pointless restore transaction.
+      const preamble =
+        raw.restorePreamble?.transactionData &&
+        raw.restorePreamble.minResourceFee !== undefined
+          ? {
+              transactionData: raw.restorePreamble.transactionData,
+              minResourceFee: raw.restorePreamble.minResourceFee,
+            }
+          : undefined;
       return {
         transactionData: raw.transactionData,
         minResourceFee: raw.minResourceFee,
         auth: raw.results?.[0]?.auth ?? [],
         latestLedger: raw.latestLedger,
+        restorePreamble: preamble,
       };
     },
     async sendTransaction(txXdrBase64: string): Promise<SendTransactionResult> {

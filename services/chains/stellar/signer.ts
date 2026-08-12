@@ -35,6 +35,7 @@ import type { StellarChainConfig } from "@/constants/configs/chainConfig";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import { getStellarSignerForWallet } from "@/services/walletService";
+import { signAuthEntry as signSorobanAuthEntry } from "./authEntry";
 import type { StellarHorizonClient } from "./horizonClient";
 import { transactionToBase64Xdr } from "./horizonClient";
 import { registerStellarSigner, type StellarSignerFns } from "./StellarAdapter";
@@ -84,13 +85,12 @@ export function installStellarSigner(deps?: InstallStellarSignerDeps): void {
     signTransaction: async (address, xdr, networkPassphrase, opts) => {
       try {
         const keypair = await resolveSigner(address);
-        // §0 non-goal territory (fee-bump transactions) is out of scope
-        // — a dApp handing us a classic envelope always decodes to
-        // `Transaction`, never `FeeBumpTransaction`.
-        const tx = TransactionBuilder.fromXDR(
-          xdr,
-          networkPassphrase,
-        ) as Transaction;
+        // Phase K — fee-bump envelopes are accepted now. `fromXDR`
+        // returns `Transaction | FeeBumpTransaction`; both expose
+        // `sign`, and the sheet renders the inner/outer split so the
+        // user can see they are signing as fee source rather than as
+        // the author of the operations.
+        const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase);
         tx.sign(keypair);
         // NEVER tx.toXDR() directly — Hermes ambient-Buffer base64 bug.
         // Reuse the already-shipped, already-tested helper.
@@ -122,6 +122,27 @@ export function installStellarSigner(deps?: InstallStellarSignerDeps): void {
       } catch (err) {
         if (typeof __DEV__ !== "undefined" && __DEV__) {
           console.error("[Stellar bridge signer] signMessage failed");
+        }
+        throw err;
+      }
+    },
+
+    // SEP-43 `signAuthEntry` — spec phase I. The preimage construction
+    // and the Hermes-safe base64 both live in `authEntry.ts`; this stays
+    // a thin wrapper so the keypair never leaves this module's dwell
+    // site (TWV-2026-090).
+    signAuthEntry: async (address, authEntryXdr, networkPassphrase) => {
+      try {
+        const keypair = await resolveSigner(address);
+        const signedAuthEntry = await signSorobanAuthEntry(
+          authEntryXdr,
+          networkPassphrase,
+          keypair,
+        );
+        return { signedAuthEntry, signerAddress: address };
+      } catch (err) {
+        if (typeof __DEV__ !== "undefined" && __DEV__) {
+          console.error("[Stellar bridge signer] signAuthEntry failed");
         }
         throw err;
       }

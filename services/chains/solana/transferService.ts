@@ -46,6 +46,16 @@ import {
   signTransactionMessageWithSigners,
 } from "@solana/kit";
 import { getTransferSolInstruction } from "@solana-program/system";
+import {
+  DEFAULT_MICRO_LAMPORTS_PER_CU,
+  fetchPriorityFee,
+  PRIORITY_FEE_TIMEOUT_MS,
+  PROVISIONAL_COMPUTE_UNITS,
+  setComputeUnitLimitInstruction,
+  setComputeUnitPriceInstruction,
+  simulateComputeUnits,
+  withFeeTimeout,
+} from "./priorityFee";
 
 /**
  * Convenience type alias so callers don't have to spell out the generic.
@@ -141,22 +151,59 @@ export async function buildAndSendSolTransfer(
 
   const { value: latestBlockhash } = await rpc.getLatestBlockhash().send();
 
-  const message = pipe(
-    createTransactionMessage({ version: 0 }),
-    (m) => setTransactionMessageFeePayerSigner(signer, m),
-    (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
-    (m) =>
-      appendTransactionMessageInstruction(
-        getTransferSolInstruction({
-          source: signer,
-          destination: address(to) as Address,
-          amount: lamports,
-        }),
-        m,
-      ),
+  // Phase J — priority fee scoped to the accounts this transfer actually
+  // locks, so an uncontended transfer does not pay a hot account's
+  // premium. Bounded: a fee oracle that hangs must not block the send.
+  const destination = address(to) as Address;
+  const microLamports = await withFeeTimeout(
+    fetchPriorityFee(rpc, [signer.address, destination]),
+    PRIORITY_FEE_TIMEOUT_MS,
+    DEFAULT_MICRO_LAMPORTS_PER_CU,
   );
 
-  const signed = await signTransactionMessageWithSigners(message);
+  const build = (unitLimit: number) =>
+    pipe(
+      createTransactionMessage({ version: 0 }),
+      (m) => setTransactionMessageFeePayerSigner(signer, m),
+      (m) => setTransactionMessageLifetimeUsingBlockhash(latestBlockhash, m),
+      // Compute budget goes first: the runtime reads these before the
+      // instructions they govern.
+      (m) =>
+        appendTransactionMessageInstruction(
+          setComputeUnitLimitInstruction(unitLimit),
+          m,
+        ),
+      (m) =>
+        appendTransactionMessageInstruction(
+          setComputeUnitPriceInstruction(microLamports),
+          m,
+        ),
+      (m) =>
+        appendTransactionMessageInstruction(
+          getTransferSolInstruction({
+            source: signer,
+            destination,
+            amount: lamports,
+          }),
+          m,
+        ),
+    );
+
+  // Two passes: a generous provisional limit so simulation can run, then
+  // a limit sized to what the run actually cost. A tight limit is
+  // cheaper, and the default 200k over-reserves for a bare transfer.
+  const provisional = await signTransactionMessageWithSigners(
+    build(PROVISIONAL_COMPUTE_UNITS),
+  );
+  const measured = await withFeeTimeout(
+    simulateComputeUnits(rpc, getBase64EncodedWireTransaction(provisional)),
+    PRIORITY_FEE_TIMEOUT_MS,
+    null,
+  );
+  const signed =
+    measured === null
+      ? provisional
+      : await signTransactionMessageWithSigners(build(measured));
 
   if (rpcSubs) {
     // `sendAndConfirmTransactionFactory` requires a subscriptions client;

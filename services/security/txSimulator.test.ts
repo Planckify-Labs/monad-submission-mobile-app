@@ -70,11 +70,52 @@ describe("predictAssetDeltasFromCalldata", () => {
       to: TOKEN,
       data,
       chainId: 1,
+      // Phase D — an allowance delta may only be claimed once the target
+      // is confirmed ERC-20; the same bytes on an ERC-721 are a token id.
+      approveTargetKind: "erc20",
     });
     assert.equal(deltas.length, 1);
     assert.equal(deltas[0]?.kind, "approve");
     assert.equal(deltas[0]?.amount, "unlimited");
     assert.equal(deltas[0]?.counterparty.toLowerCase(), SPENDER);
+  });
+
+  it("claims no allowance delta when the approve target is unresolved", () => {
+    // Guessing here is what phase D removes: an "unlimited allowance"
+    // row on what may be an NFT approval is a false alarm, and a
+    // "1 token" row on a real max-approve is a missed one. The sheet
+    // carries the conditional caution instead.
+    const max = (1n << 256n) - 1n;
+    const data = encodeFunctionData({
+      abi: [parseAbiItem("function approve(address spender, uint256 amount)")],
+      args: [SPENDER, max],
+    });
+    const { deltas, coverage } = predictAssetDeltasFromCalldata({
+      from: FROM,
+      to: TOKEN,
+      data,
+      chainId: 1,
+    });
+    assert.equal(deltas.length, 0);
+    assert.equal(coverage, "partial");
+  });
+
+  it("emits a single-item delta for a confirmed ERC-721 approve", () => {
+    const data = encodeFunctionData({
+      abi: [parseAbiItem("function approve(address spender, uint256 amount)")],
+      args: [SPENDER, 1n << 255n],
+    });
+    const { deltas } = predictAssetDeltasFromCalldata({
+      from: FROM,
+      to: TOKEN,
+      data,
+      chainId: 1,
+      approveTargetKind: "erc721",
+    });
+    assert.equal(deltas.length, 1);
+    // The token id must never reach the amount field.
+    assert.equal(deltas[0]?.amount, 1n);
+    assert.equal(deltas[0]?.symbol, "NFT");
   });
 
   it("emits an approveAll delta for setApprovalForAll(operator, true)", () => {

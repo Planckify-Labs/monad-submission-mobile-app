@@ -12,7 +12,13 @@ import type {
   GasEstimate,
 } from "@/services/chains/evm/payloads";
 import { decodeCalldata } from "@/services/decoders";
+import {
+  deployedContractLabel,
+  describeDeployedContract,
+  guessDeployedContractKind,
+} from "@/services/decoders/deployedContractKind";
 import { originHost } from "@/services/permissions/caip";
+import { rpcFetchOptions } from "@/services/rpc/proxyAuth";
 import { detectClaimMismatch } from "@/services/security/claimLabelDelta";
 import {
   type AssetDelta,
@@ -26,17 +32,18 @@ import type {
 } from "@/services/walletKit/types";
 import { truncateAddress } from "@/utils/walletUtils";
 import { ApprovalShell } from "./ApprovalShell";
+// Phase L — the risk banners live here so the batch sheet renders the
+// identical set. Do not re-inline them.
+import { CalldataRiskSection, riskConfirmLabel } from "./CalldataRiskSection";
 import { ClearSigningSection } from "./ClearSigningSection";
+import { CounterpartyLabel } from "./CounterpartyLabel";
 import { PrimaryActions, SheetModal } from "./SheetModal";
 import { useBiometricApproval } from "./useBiometricApproval";
 
-// TWV-2026-009 — user-visible copy for the high-risk calldata variants.
-// Keep the sentences identical to the spec so reviewers can grep for
-// them; copy drift is a merge-block.
-const SET_APPROVAL_FOR_ALL_COPY =
-  "This gives the operator permission to move ALL current and future NFTs you hold in this collection. Revoke as soon as the dApp is done.";
-const UNLIMITED_APPROVE_COPY =
-  "This lets the spender move an unlimited amount of this token from your wallet — now and forever, until you revoke.";
+// Phase B — contract creation has no recipient, so the sheet must say
+// what is happening instead of showing a blank "To" row.
+const DEPLOYMENT_COPY =
+  "This creates a new contract on the network rather than sending to an existing address. The code has not been reviewed by TakumiPay.";
 
 interface Props {
   intent: ApprovalIntent<EvmSendTxPayload & { gasEstimate?: GasEstimate }>;
@@ -52,16 +59,56 @@ export function EvmTransactionSheet({
     tx.gasEstimate?.recommended ?? "wallet",
   );
   const [showRaw, setShowRaw] = useState(false);
-  const decoded = useMemo(() => decodeCalldata(tx.data), [tx.data]);
+
+  // A transaction with no recipient is a contract creation; that absence
+  // *is* the protocol-level definition. `normalizeTx` only accepts a
+  // missing `to` alongside init-code, so `undefined` here always means
+  // "deploy this code", never "send to nowhere".
+  const target = tx.to;
+  const isDeployment = target === undefined;
+  const initCodeBytes = tx.data ? (tx.data.length - 2) / 2 : 0;
+
+  // Deployment calldata is constructor init-code, not an ABI call. Running
+  // the 4-byte selector decoders over it would mis-hit some unrelated
+  // signature and render a confident lie, so every decode path below is
+  // gated off for deployments.
+  // Prefer the inspector's decode: it carries the adapter's resolved
+  // `approveTarget`, which is what separates an ERC-20 allowance
+  // from an NFT approval. Re-decoding locally would drop that and fall
+  // back to indeterminate.
+  const decoded = useMemo(
+    () =>
+      isDeployment
+        ? null
+        : (tx.decoded ??
+          decodeCalldata(tx.data, {
+            approveTargetKind: tx.approveTarget?.kind,
+            totalSupply: tx.approveTarget?.totalSupply,
+            decimals: tx.approveTarget?.decimals,
+          })),
+    [isDeployment, tx.decoded, tx.data, tx.approveTarget],
+  );
+
+  // What this deployment actually deploys, read from the init-code. A
+  // sheet that says only "Contract deployment" gives the same label to
+  // an NFT collection, a token, and an arbitrary program.
+  const deployKind = useMemo(
+    () => guessDeployedContractKind(isDeployment ? tx.data : undefined),
+    [isDeployment, tx.data],
+  );
+  const deployDescription = useMemo(
+    () => describeDeployedContract(deployKind),
+    [deployKind],
+  );
 
   const hasCalldata = !!tx.data && tx.data !== "0x";
   // Task 65 — Stage-2 descriptor input + ERC-8213 Flow B digest input.
   const clearSigningCall = useMemo(
     () =>
-      hasCalldata
-        ? { to: tx.to, chainId: tx.chainId, data: tx.data }
+      hasCalldata && target !== undefined
+        ? { to: target, chainId: tx.chainId, data: tx.data }
         : undefined,
-    [hasCalldata, tx.to, tx.chainId, tx.data],
+    [hasCalldata, target, tx.chainId, tx.data],
   );
   const digestArgs = useMemo<ComputeSigningDigestArgs>(
     () => ({ kind: "calldata", calldata: tx.data ?? "0x" }),
@@ -101,14 +148,21 @@ export function EvmTransactionSheet({
   // fallback when on-chain simulation isn't available.
   const staticSim = useMemo(
     () =>
-      predictAssetDeltasFromCalldata({
-        from: tx.from,
-        to: tx.to,
-        value: tx.value,
-        data: tx.data,
-        chainId: tx.chainId,
-      }),
-    [tx.from, tx.to, tx.value, tx.data, tx.chainId],
+      target === undefined
+        ? // A deployment has no recipient to attribute deltas to, and no
+          // way to know statically what its constructor does. "partial"
+          // is the honest answer and drives the same "couldn't enumerate"
+          // caution any other opaque payload gets.
+          { deltas: [] as AssetDelta[], coverage: "partial" as const }
+        : predictAssetDeltasFromCalldata({
+            from: tx.from,
+            to: target,
+            value: tx.value,
+            data: tx.data,
+            chainId: tx.chainId,
+            approveTargetKind: tx.approveTarget?.kind,
+          }),
+    [tx.from, target, tx.value, tx.data, tx.chainId, tx.approveTarget],
   );
 
   // TWV-2026-011 follow-up — real trace-based simulation. Built on a
@@ -126,7 +180,14 @@ export function EvmTransactionSheet({
     if (cfg.namespace !== "eip155") return null;
     return createPublicClient({
       chain: cfg.chain,
-      transport: http(row.rpcUrl, { retryCount: 0, timeout: 8000 }),
+      // The wallet's own RPC is behind an authenticated proxy; without
+      // the bearer every simulation read comes back 401 and the sheet
+      // silently degrades to "could not simulate".
+      transport: http(row.rpcUrl, {
+        retryCount: 0,
+        timeout: 8000,
+        ...(rpcFetchOptions(row.rpcUrl) ?? {}),
+      }),
     });
   }, [blockchains, tx.chainId]);
 
@@ -138,7 +199,9 @@ export function EvmTransactionSheet({
   useEffect(() => {
     const hasSomethingToSimulate =
       (!!tx.data && tx.data !== "0x") || (!!tx.value && tx.value > 0n);
-    if (!pinnedClient || !hasSomethingToSimulate) {
+    // Deployments are excluded: the tracer needs a call target, and the
+    // contract this creates has no address until it is mined.
+    if (!pinnedClient || !hasSomethingToSimulate || target === undefined) {
       setSim({ phase: "unavailable" });
       return;
     }
@@ -146,7 +209,7 @@ export function EvmTransactionSheet({
     setSim({ phase: "loading" });
     void simulateAssetChanges(pinnedClient, {
       from: tx.from,
-      to: tx.to,
+      to: target,
       value: tx.value,
       data: tx.data,
       chainId: tx.chainId,
@@ -161,24 +224,24 @@ export function EvmTransactionSheet({
     return () => {
       cancelled = true;
     };
-  }, [pinnedClient, tx.from, tx.to, tx.value, tx.data, tx.chainId]);
+  }, [pinnedClient, tx.from, target, tx.value, tx.data, tx.chainId]);
 
   // Deltas fed to the claim-vs-result cross-check. When the real trace is
   // available it wins: an on-chain net-inflow figure is far harder to
   // spoof than the static guess.
   const claimDeltas = useMemo<AssetDelta[]>(() => {
-    if (sim.phase === "ok") {
+    if (sim.phase === "ok" && target !== undefined) {
       return sim.changes.map((c) => ({
         token: c.token,
         symbol: c.symbol,
         direction: c.direction,
         amount: c.amount,
-        counterparty: tx.to,
+        counterparty: target,
         kind: c.token === null ? "native" : "transfer",
       }));
     }
     return staticSim.deltas;
-  }, [sim, staticSim.deltas, tx.to]);
+  }, [sim, staticSim.deltas, target]);
 
   const claimMismatch = useMemo(
     () =>
@@ -297,51 +360,7 @@ export function EvmTransactionSheet({
               </Text>
             )}
           </View>
-          {decoded?.risk?.kind === "setApprovalForAll" &&
-            decoded.risk.approved && (
-              <View className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3">
-                <Text className="text-xs font-bold text-red-800 uppercase">
-                  High risk — grants control of entire collection
-                </Text>
-                <Text className="text-sm text-red-900 mt-1">
-                  {SET_APPROVAL_FOR_ALL_COPY}
-                </Text>
-                <View className="flex-row mt-2">
-                  <Text className="text-xs text-red-700 w-20">Operator</Text>
-                  <Text className="text-xs text-red-900 flex-1" selectable>
-                    {decoded.risk.operator}
-                  </Text>
-                </View>
-                <View className="flex-row mt-1">
-                  <Text className="text-xs text-red-700 w-20">Collection</Text>
-                  <Text className="text-xs text-red-900 flex-1" selectable>
-                    {tx.to}
-                  </Text>
-                </View>
-              </View>
-            )}
-          {decoded?.risk?.kind === "approve" && decoded.risk.isUnlimited && (
-            <View className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3">
-              <Text className="text-xs font-bold text-red-800 uppercase">
-                Unlimited approval
-              </Text>
-              <Text className="text-sm text-red-900 mt-1">
-                {UNLIMITED_APPROVE_COPY}
-              </Text>
-              <View className="flex-row mt-2">
-                <Text className="text-xs text-red-700 w-20">Spender</Text>
-                <Text className="text-xs text-red-900 flex-1" selectable>
-                  {decoded.risk.spender}
-                </Text>
-              </View>
-              <View className="flex-row mt-1">
-                <Text className="text-xs text-red-700 w-20">Token</Text>
-                <Text className="text-xs text-red-900 flex-1" selectable>
-                  {tx.to}
-                </Text>
-              </View>
-            </View>
-          )}
+          <CalldataRiskSection decoded={decoded} contractAddress={target} />
           {/* Task 65 — descriptor card + AI summary + signing digest.
               The digest renders even when nothing resolves (that's when
               independent verification matters most); the unrecognized
@@ -365,10 +384,36 @@ export function EvmTransactionSheet({
             onDescriptorResolved={onDescriptorResolved}
           />
           <View className="bg-gray-50 rounded-xl p-3 mb-3">
-            <Text className="text-xs text-gray-500">To</Text>
-            <Text className="text-sm text-gray-900" selectable>
-              {tx.to}
-            </Text>
+            {isDeployment ? (
+              <>
+                <Text className="text-xs text-gray-500">Action</Text>
+                <Text className="text-sm font-medium text-gray-900">
+                  {deployedContractLabel(deployKind.kind)}
+                </Text>
+                {/* Read off the init-code being signed, so it costs no
+                    RPC call. Hedged on purpose: matching selectors proves
+                    they are present, not that the code behaves. */}
+                {deployDescription && (
+                  <Text className="text-sm text-gray-800 mt-1">
+                    {deployDescription}
+                  </Text>
+                )}
+                <Text className="text-xs text-gray-600 mt-1">
+                  {DEPLOYMENT_COPY}
+                </Text>
+                <Text className="text-xs text-gray-500 mt-2">Code size</Text>
+                <Text className="text-sm text-gray-900">
+                  {initCodeBytes.toLocaleString()} bytes
+                </Text>
+              </>
+            ) : (
+              <>
+                <Text className="text-xs text-gray-500">To</Text>
+                {/* Phase R — the ENS name is additive; the full address
+                    stays on screen. */}
+                <CounterpartyLabel address={target} />
+              </>
+            )}
             {tx.value && tx.value > 0n && (
               <>
                 <Text className="text-xs text-gray-500 mt-2">Value</Text>
@@ -497,14 +542,7 @@ export function EvmTransactionSheet({
       )}
       <PrimaryActions
         approveLabel={
-          pending
-            ? "Authenticating…"
-            : decoded?.risk?.kind === "setApprovalForAll" &&
-                decoded.risk.approved
-              ? "Grant full collection access"
-              : decoded?.risk?.kind === "approve" && decoded.risk.isUnlimited
-                ? "Approve unlimited"
-                : "Confirm"
+          pending ? "Authenticating…" : (riskConfirmLabel(decoded) ?? "Confirm")
         }
         onApprove={() => {
           void gatedApprove();

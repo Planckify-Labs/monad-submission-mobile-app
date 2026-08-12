@@ -17,7 +17,13 @@ export type ApprovalKind =
   | "addChain"
   | "watchAsset"
   | "sendCalls"
-  | "signAuthorization";
+  | "signAuthorization"
+  /**
+   * SEP-43 Soroban authorization entry (spec phase I). Distinct from
+   * `signAuthorization`, which is EVM EIP-7702 delegation — unrelated
+   * protocols that happen to share a word.
+   */
+  | "signAuthEntry";
 
 export interface ApprovalIntent<P = unknown> {
   id: string;

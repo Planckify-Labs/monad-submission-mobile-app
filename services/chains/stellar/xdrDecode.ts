@@ -16,7 +16,12 @@
  */
 
 import type { Transaction, xdr } from "@stellar/stellar-base";
-import { Address, TransactionBuilder } from "@stellar/stellar-base";
+import {
+  Address,
+  FeeBumpTransaction,
+  hash,
+  TransactionBuilder,
+} from "@stellar/stellar-base";
 
 import type { StellarDecodedOperation } from "./payloads";
 
@@ -29,6 +34,18 @@ export interface DecodedStellarTransaction {
     value?: string;
   };
   operations: StellarDecodedOperation[];
+  /**
+   * Present only for a fee-bump envelope (phase K). When set, every
+   * other field above describes the INNER transaction, and this
+   * describes who is paying for it. Sheets must render both: a fee-bump
+   * envelope has two source accounts and showing one is how a user
+   * misreads who pays.
+   */
+  feeBump?: {
+    feeSource: string;
+    /** Total fee the fee source commits to, in stroops. */
+    fee: string;
+  };
 }
 
 function assetString(asset: unknown): string {
@@ -45,12 +62,79 @@ function assetString(asset: unknown): string {
   return "unknown";
 }
 
+/** Lowercase hex, byte by byte. */
+function toHex(bytes: Uint8Array): string {
+  let out = "";
+  for (const b of bytes) out += b.toString(16).padStart(2, "0");
+  return out;
+}
+
 /**
- * Structural decode of a Soroban `invokeHostFunction` operation. Only
- * the `invokeContract` host-function arm carries a contract invocation;
- * the others (upload WASM, create contract) return the bare tag. Fully
- * defensive: any shape surprise degrades to the bare tag rather than
- * throwing — the raw XDR stays the signing source of truth either way.
+ * Deployment host functions — `uploadContractWasm` and
+ * `createContract` / `…V2`. These previously fell through to the bare
+ * `{ kind: "invokeHostFunction" }` tag, meaning a Soroban deploy was
+ * signed with nothing on screen describing it.
+ *
+ * What each arm surfaces is chosen for verifiability, not completeness:
+ * the WASM hash is the code's on-chain identity, so it is the one value
+ * a user can compare against a publisher's release notes. The resulting
+ * contract id is deliberately *not* derived here — that needs the
+ * network passphrase, which this pure decode does not receive, and a
+ * contract id computed against the wrong network would be worse than
+ * none.
+ */
+function decodeDeployHostFunction(
+  func: xdr.HostFunction,
+  type: string,
+): StellarDecodedOperation {
+  if (type === "hostFunctionTypeUploadContractWasm") {
+    const wasm = func.wasm() as unknown as Uint8Array;
+    const bytes = wasm instanceof Uint8Array ? wasm : new Uint8Array(wasm);
+    return {
+      kind: "invokeHostFunction",
+      hostFunction: "uploadContractWasm",
+      wasmByteLength: bytes.length,
+      wasmHash: toHex(new Uint8Array(hash(Buffer.from(bytes)))),
+    };
+  }
+
+  const args =
+    type === "hostFunctionTypeCreateContractV2"
+      ? func.createContractV2()
+      : func.createContract();
+
+  const out: Extract<StellarDecodedOperation, { kind: "invokeHostFunction" }> =
+    {
+      kind: "invokeHostFunction",
+      hostFunction: "createContract",
+    };
+
+  const executable = args.executable();
+  if (executable.switch().name === "contractExecutableWasm") {
+    out.wasmHash = toHex(new Uint8Array(executable.wasmHash()));
+  }
+
+  const preimage = args.contractIdPreimage();
+  if (preimage.switch().name === "contractIdPreimageFromAddress") {
+    const fromAddress = preimage.fromAddress();
+    out.salt = toHex(new Uint8Array(fromAddress.salt()));
+    try {
+      out.deployer = Address.fromScAddress(fromAddress.address()).toString();
+    } catch {
+      // Address shape surprise — leave it unset rather than guessing.
+    }
+  } else {
+    out.fromAsset = assetString(preimage.fromAsset());
+  }
+
+  return out;
+}
+
+/**
+ * Structural decode of a Soroban `invokeHostFunction` operation, across
+ * all three host-function arms. Fully defensive: any shape surprise
+ * degrades to the bare tag rather than throwing — the raw XDR stays the
+ * signing source of truth either way.
  */
 function decodeInvokeHostFunction(
   o: Record<string, unknown>,
@@ -60,8 +144,9 @@ function decodeInvokeHostFunction(
     if (!func || typeof func.switch !== "function") {
       return { kind: "invokeHostFunction" };
     }
-    if (func.switch().name !== "hostFunctionTypeInvokeContract") {
-      return { kind: "invokeHostFunction" };
+    const type = func.switch().name;
+    if (type !== "hostFunctionTypeInvokeContract") {
+      return decodeDeployHostFunction(func, type);
     }
     const invocation = func.invokeContract();
     const contractId = Address.fromScAddress(
@@ -75,6 +160,7 @@ function decodeInvokeHostFunction(
     const argsXdr = invocation.args().map((a) => a.toXDR("base64"));
     return {
       kind: "invokeHostFunction",
+      hostFunction: "invokeContract",
       contractId,
       function: functionName,
       argsXdr,
@@ -188,7 +274,32 @@ export function decodeStellarTransaction(
   xdr: string,
   networkPassphrase: string,
 ): DecodedStellarTransaction {
-  const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase) as Transaction;
+  const parsed = TransactionBuilder.fromXDR(xdr, networkPassphrase);
+
+  // Phase K — fee-bump envelopes. A fee bump wraps an inner transaction
+  // that someone else authored and pays its fee on their behalf. It has
+  // TWO source accounts, and showing only one is exactly how a user
+  // misreads who is paying: the operations belong to the inner source,
+  // the fee belongs to the outer one.
+  if (parsed instanceof FeeBumpTransaction) {
+    const inner = parsed.innerTransaction;
+    return {
+      // Operations, memo and sequence all belong to the inner envelope
+      // — that is what will actually execute.
+      sourceAccount: inner.source,
+      fee: String(inner.fee ?? "0"),
+      sequence: String(inner.sequence ?? "0"),
+      memo: decodeMemo(inner),
+      operations: inner.operations.map(decodeOperation),
+      feeBump: {
+        feeSource: parsed.feeSource,
+        // The outer fee is the total the fee source commits to.
+        fee: String(parsed.fee ?? "0"),
+      },
+    };
+  }
+
+  const tx = parsed as Transaction;
   return {
     sourceAccount: tx.source,
     fee: String(tx.fee ?? "0"),

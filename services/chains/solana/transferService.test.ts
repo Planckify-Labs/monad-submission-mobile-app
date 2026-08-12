@@ -240,9 +240,27 @@ describe("buildAndSendSolTransfer (fallback / no-subscriptions path)", () => {
     const feePayerAddress = compiled.staticAccounts[0];
     assert.equal(feePayerAddress, signer.address);
 
-    // 5. The message has exactly one instruction (our transfer).
-    assert.equal(compiled.instructions.length, 1);
-    const instr = compiled.instructions[0];
+    // 5. Spec phase J — the message now carries two compute-budget
+    //    instructions ahead of the transfer. Before this, every
+    //    first-party send went out at the 200k default limit with no
+    //    priority fee, so under congestion it could be deprioritised
+    //    and never land, which surfaces to the user as a send that
+    //    silently did nothing.
+    assert.equal(compiled.instructions.length, 3);
+
+    // Compute budget must come FIRST: the runtime reads these before
+    // the instructions they govern.
+    const budgetProgram = compiled.staticAccounts.indexOf(
+      "ComputeBudget111111111111111111111111111111" as never,
+    );
+    assert.ok(budgetProgram >= 0, "ComputeBudget program must be referenced");
+    assert.equal(compiled.instructions[0].programAddressIndex, budgetProgram);
+    assert.equal(compiled.instructions[1].programAddressIndex, budgetProgram);
+    // Discriminators: 2 = SetComputeUnitLimit, 3 = SetComputeUnitPrice.
+    assert.equal((compiled.instructions[0].data as Uint8Array)[0], 2);
+    assert.equal((compiled.instructions[1].data as Uint8Array)[0], 3);
+
+    const instr = compiled.instructions[2];
     assert.ok(instr.data, "transfer instruction must have data bytes");
 
     // 6. Decode the instruction data and verify lamports round-trip.

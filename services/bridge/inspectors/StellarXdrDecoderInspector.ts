@@ -52,16 +52,31 @@ export const StellarXdrDecoderInspector: IntentInspector = {
 
     const annotations: IntentAnnotation[] = [];
 
+    // On a fee bump the account we sign as is the OUTER fee source; the
+    // inner source is someone else's by design, so comparing against it
+    // would warn on every legitimate sponsorship (phase K).
+    const signingSource = decoded.feeBump?.feeSource ?? decoded.sourceAccount;
     if (
       payload.address &&
-      decoded.sourceAccount &&
-      payload.address.toLowerCase() !== decoded.sourceAccount.toLowerCase()
+      signingSource &&
+      payload.address.toLowerCase() !== signingSource.toLowerCase()
     ) {
       annotations.push({
         code: "sender.mismatch",
         severity: "warn",
         title: "Sender address mismatch",
-        detail: `The transaction's source account (${decoded.sourceAccount}) does not match the connected wallet (${payload.address}).`,
+        detail: `The transaction's source account (${signingSource}) does not match the connected wallet (${payload.address}).`,
+        source: "stellar-xdr-decoder",
+      });
+    }
+
+    if (decoded.feeBump) {
+      annotations.push({
+        code: "feeBump.paying-for-another",
+        severity: "info",
+        title: "You are paying the fee for someone else",
+        detail:
+          "This request asks you to cover the network fee for a transaction someone else created. Their operations run, not yours.",
         source: "stellar-xdr-decoder",
       });
     }
@@ -112,6 +127,7 @@ export const StellarXdrDecoderInspector: IntentInspector = {
         fee: decoded.fee,
         sequence: decoded.sequence,
         memo: decoded.memo,
+        feeBump: decoded.feeBump,
         decoded: decoded.operations,
       } as Partial<ApprovalIntent["payload"]>,
     };

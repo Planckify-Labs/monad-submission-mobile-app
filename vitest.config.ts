@@ -11,6 +11,15 @@ export default defineConfig({
         __dirname,
         "services/analytics/posthog.mock.ts",
       ),
+      // `services/tokens/tokenList.ts` persists through expo-sqlite, whose
+      // build output ships JSX. EvmAdapter imports `isDefaultToken` from
+      // it for the phase-D approve disambiguation, so any test reaching
+      // the adapter pulls SQLite in. Twin of the `token-list` stub in
+      // services/walletKit/evm/_test-resolver-hook.mjs.
+      "@/services/tokens/tokenList": path.resolve(
+        __dirname,
+        "services/tokens/tokenList.mock.ts",
+      ),
       // `react-native-quick-crypto` is a Nitro native module and cannot load
       // outside the app runtime. The Node twin is real Argon2id + AES-GCM, so
       // the envelope tests still exercise genuine crypto.
@@ -29,6 +38,13 @@ export default defineConfig({
       // destinations) stays testable; mirrored on the node side by the
       // resolver hook's mmkv-storage stub.
       "@/lib/storage/mmkv": path.resolve(__dirname, "lib/storage/mmkv.mock.ts"),
+      // `expo-secure-store` is a native module. Stubbed in-memory so the
+      // dApp bridge's pending-approval queue (spec phase Q) is testable;
+      // mirrored on the node side by the resolver hook's own stub.
+      "expo-secure-store": path.resolve(
+        __dirname,
+        "lib/storage/expoSecureStore.mock.ts",
+      ),
       "@": path.resolve(__dirname, "."),
     },
   },
@@ -39,6 +55,13 @@ export default defineConfig({
   define: { __DEV__: "false" },
   test: {
     include: [
+      // Wallet-standards hardening spec
+      // (docs/wallet-standards-hardening-spec.md) — phases B/C/D/F.
+      "services/decoders/walletStandards.test.ts",
+      // Round 2 (spec §17, phases L–R) — findings from running the bridge
+      // against the MetaMask/test-dapp adversarial corpus.
+      "services/decoders/walletStandardsRound2.test.ts",
+      "services/chains/evm/eip5792.test.ts",
       "services/rpc/proxyAuth.test.ts",
       "services/chains/addressCompare.test.ts",
       "services/agent-executors/sui.test.ts",

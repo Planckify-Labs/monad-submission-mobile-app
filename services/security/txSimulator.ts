@@ -19,7 +19,10 @@
 
 import { ethAddress, type PublicClient } from "viem";
 import { simulateCalls } from "viem/actions";
-import { decodeCalldata } from "../decoders/calldata.ts";
+import {
+  type ApproveTargetKind,
+  decodeCalldata,
+} from "../decoders/calldata.ts";
 
 export interface TxSimulationInput {
   to: `0x${string}`;
@@ -27,6 +30,13 @@ export interface TxSimulationInput {
   value?: bigint;
   data?: `0x${string}`;
   chainId: number;
+  /**
+   * The adapter's resolution of what `to` is. Required for `approve`:
+   * ERC-20 and ERC-721 share the selector byte-for-byte, so without it
+   * the decoder must report indeterminate and no allowance delta can be
+   * claimed.
+   */
+  approveTargetKind?: ApproveTargetKind;
 }
 
 export type AssetDeltaDirection = "in" | "out";
@@ -74,7 +84,9 @@ export function predictAssetDeltasFromCalldata(input: TxSimulationInput): {
   coverage: "full" | "partial";
 } {
   const deltas: AssetDelta[] = [];
-  const decoded = decodeCalldata(input.data);
+  const decoded = decodeCalldata(input.data, {
+    approveTargetKind: input.approveTargetKind,
+  });
 
   if (input.value && input.value > 0n) {
     deltas.push({
@@ -121,6 +133,25 @@ export function predictAssetDeltasFromCalldata(input: TxSimulationInput): {
     });
     return { deltas, coverage: "full" };
   }
+
+  if (decoded.risk?.kind === "approveNft") {
+    // One item, not an allowance. The token id is an identifier, so it
+    // must never reach the amount field.
+    deltas.push({
+      token: input.to,
+      symbol: "NFT",
+      direction: "out",
+      amount: 1n,
+      counterparty: decoded.risk.operator,
+      kind: "approve",
+    });
+    return { deltas, coverage: "full" };
+  }
+
+  // `approveUnknownAsset` deliberately falls through to partial coverage
+  // below. We know an approval is happening but not whether the second
+  // argument is an amount or a token id, and a delta that guesses wrong
+  // is worse than the honest "could not enumerate".
 
   if (decoded.risk?.kind === "setApprovalForAll" && decoded.risk.approved) {
     deltas.push({
@@ -325,6 +356,79 @@ export async function simulateAssetChanges(
     if (isUnsupportedSimulationError(message)) {
       return { status: "unsupported" };
     }
+    return { status: "transport_error" };
+  }
+}
+
+/** Batch simulation adds which entries reverted, on top of the net deltas. */
+export type BatchTraceSimulationResult =
+  | {
+      status: "ok";
+      changes: SimulatedAssetChange[];
+      /** Index-aligned with the calls passed in. */
+      revertedIndexes: number[];
+    }
+  | { status: "unsupported" }
+  | { status: "transport_error" };
+
+/**
+ * Trace a whole `wallet_sendCalls` batch — spec phase L.
+ *
+ * The calls go to `simulateCalls` as one array rather than one request
+ * per entry, and that is the substance of this function rather than a
+ * convenience. Simulating each call independently would evaluate every
+ * entry against current chain state, so the swap in the canonical
+ * approve-then-swap batch would trace against a world where its own
+ * approve never happened and report a revert that will not occur. A
+ * false "this will fail" on a legitimate batch teaches users to ignore
+ * the warning, which costs more than showing nothing.
+ *
+ * The returned `changes` are therefore the signer's **net** position
+ * change across the batch, which is also the number the user actually
+ * cares about.
+ */
+export async function simulateBatchAssetChanges(
+  client: PublicClient,
+  input: {
+    from: `0x${string}`;
+    calls: ReadonlyArray<{
+      to?: `0x${string}`;
+      value?: bigint;
+      data?: `0x${string}`;
+    }>;
+  },
+): Promise<BatchTraceSimulationResult> {
+  // A batch entry with no recipient is a contract creation, which
+  // `eth_simulateV1` has no call target for. Rather than dropping it and
+  // tracing a batch the user was not asked to sign, decline to simulate
+  // the whole thing — the sheet then says so, which is accurate.
+  const calls: Array<{
+    to: `0x${string}`;
+    value: bigint;
+    data?: `0x${string}`;
+  }> = [];
+  for (const c of input.calls) {
+    if (!c.to) return { status: "unsupported" };
+    calls.push({ to: c.to, value: c.value ?? 0n, data: c.data });
+  }
+  try {
+    const { assetChanges, results } = await simulateCalls(client, {
+      account: input.from,
+      calls,
+      traceAssetChanges: true,
+      traceTransfers: true,
+    });
+    const revertedIndexes = results.flatMap((r, i) =>
+      r?.status === "failure" ? [i] : [],
+    );
+    return {
+      status: "ok",
+      changes: mapSimulatedAssetChanges(assetChanges),
+      revertedIndexes,
+    };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (isUnsupportedSimulationError(message)) return { status: "unsupported" };
     return { status: "transport_error" };
   }
 }

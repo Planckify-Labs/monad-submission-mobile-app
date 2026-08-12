@@ -35,6 +35,7 @@ import {
   TransactionBuilder,
   xdr,
 } from "@stellar/stellar-base";
+import { STELLAR_ERROR_CODES } from "./errorCodes";
 import {
   type StellarHorizonClient,
   transactionToBase64Xdr,
@@ -61,6 +62,81 @@ export interface InvokeSorobanArgs {
   contractId: string;
   method: string;
   args: xdr.ScVal[];
+  /**
+   * Called when simulation reports archived ledger entries and a
+   * `RestoreFootprint` transaction has to run first (spec phase E).
+   *
+   * A restore is a separate, separately-priced transaction, so it
+   * cannot be injected silently — the user is told what it costs and
+   * consents, or the invocation aborts. Omitting this callback means
+   * "never restore": the invocation fails with a curated error rather
+   * than spending the user's money without being asked.
+   */
+  onRestoreRequired?: (info: {
+    /** Restore fee in stroops, decimal string. */
+    feeStroops: string;
+  }) => Promise<boolean>;
+}
+
+/**
+ * Submit and confirm the `RestoreFootprint` transaction described by a
+ * simulation's `restorePreamble`.
+ */
+async function submitRestore(
+  a: InvokeSorobanArgs,
+  preamble: NonNullable<
+    Awaited<
+      ReturnType<SorobanRpcClient["simulateTransaction"]>
+    >["restorePreamble"]
+  >,
+): Promise<void> {
+  const sourceAddr = a.signer.publicKey();
+  // Re-read the sequence: the restore consumes one, and the invocation
+  // that follows must build on the updated value.
+  const loaded = await a.horizon.loadAccount(sourceAddr);
+  const account = new Account(sourceAddr, loaded.sequence);
+
+  const fee = (
+    parseInt(BASE_FEE, 10) + parseInt(preamble.minResourceFee, 10)
+  ).toString();
+
+  const restoreTx = new TransactionBuilder(account, {
+    fee,
+    networkPassphrase: a.rpc.networkPassphrase,
+  })
+    .addOperation(Operation.restoreFootprint({}))
+    .setSorobanData(new SorobanDataBuilder(preamble.transactionData).build())
+    .setTimeout(TX_TIMEOUT_SECS)
+    .build();
+
+  restoreTx.sign(a.signer);
+
+  const sent = await a.rpc.sendTransaction(transactionToBase64Xdr(restoreTx));
+  if (sent.status === "ERROR") {
+    throw new SorobanRpcError(
+      "Soroban sendTransaction rejected the restore",
+      undefined,
+      sent,
+    );
+  }
+
+  for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt++) {
+    await delay(POLL_INTERVAL_MS);
+    const got = await a.rpc.getTransaction(sent.hash);
+    if (got.status === "SUCCESS") return;
+    if (got.status === "FAILED") {
+      throw new SorobanRpcError(
+        "Soroban restore failed on-chain",
+        undefined,
+        got,
+      );
+    }
+  }
+  throw new SorobanRpcError(
+    "Soroban restore was not confirmed in time",
+    undefined,
+    { hash: sent.hash },
+  );
 }
 
 /**
@@ -86,7 +162,38 @@ export async function invokeSorobanContract(
     .setTimeout(TX_TIMEOUT_SECS)
     .build();
 
-  const sim = await a.rpc.simulateTransaction(transactionToBase64Xdr(simTx));
+  let sim = await a.rpc.simulateTransaction(transactionToBase64Xdr(simTx));
+
+  // Phase E — archived ledger entries. Without this the invocation fails
+  // at consensus with an opaque error and the user has no way forward.
+  if (sim.restorePreamble) {
+    const consented = await a.onRestoreRequired?.({
+      feeStroops: sim.restorePreamble.minResourceFee,
+    });
+    if (!consented) {
+      throw new SorobanRpcError(
+        "Soroban restore declined",
+        STELLAR_ERROR_CODES.ARCHIVED_STATE,
+        { reason: "archived-state" },
+      );
+    }
+    await submitRestore(a, sim.restorePreamble);
+
+    // Re-simulate: the footprint and resource fee above were computed
+    // against pre-restore ledger state and are stale now.
+    sim = await a.rpc.simulateTransaction(transactionToBase64Xdr(simTx));
+
+    // One attempt only. A second preamble means the restore did not
+    // cover what the invocation needs, and looping would spend the
+    // user's money once per round with no reason to expect convergence.
+    if (sim.restorePreamble) {
+      throw new SorobanRpcError(
+        "Soroban state still archived after restore",
+        STELLAR_ERROR_CODES.ARCHIVED_STATE,
+        { reason: "archived-state-after-restore" },
+      );
+    }
+  }
 
   // Sign the required auth. ADDRESS-credential entries need the payer's
   // signature (authorizeEntry); SOURCE_ACCOUNT entries are satisfied by the

@@ -66,8 +66,26 @@ export const SolanaProgramDecoderInspector: IntentInspector = {
         : null,
     );
 
+    // Decoder-declared risk, surfaced generically. A newly docked program
+    // decoder raises a banner by setting `risk` on the instruction it
+    // returns; this inspector never learns the program.
+    const annotations = decoded.flatMap((ins) => {
+      const risk = (ins as { risk?: { title: string; detail: string } }).risk;
+      if (!risk) return [];
+      const kind = (ins as { kind?: string }).kind ?? "instruction";
+      return [
+        {
+          code: `decoder.solana.${kind}`,
+          severity: "warn" as const,
+          title: risk.title,
+          detail: risk.detail,
+          source: "solana-program-decoder",
+        },
+      ];
+    });
+
     return {
-      annotations: [],
+      annotations,
       verdict: "allow",
       patch: {
         ...(payload as object),

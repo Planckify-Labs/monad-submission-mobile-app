@@ -163,6 +163,26 @@ export type SolanaDecodedInstruction =
       kind: string;
       programName?: string;
       data?: unknown;
+      /**
+       * Hand-written label/value rows a decoder wants shown. Generic on
+       * purpose: a new program decoder surfaces detail by filling these
+       * in, without the approval sheet learning the program.
+       */
+      fields?: Array<{ label: string; value: string }>;
+      /**
+       * Set by a decoder when the instruction grants standing authority
+       * over the user's assets, or replaces something already live.
+       * `SolanaProgramDecoderInspector` turns this into a sheet banner
+       * without knowing which program produced it, so declaring risk is
+       * all a newly docked decoder has to do.
+       */
+      risk?: {
+        severity: "warn";
+        /** Hand-written heading. */
+        title: string;
+        /** Hand-written explanation. Never raw instruction data. */
+        detail: string;
+      };
     };
 
 export interface SolanaAltReference {
