@@ -52,6 +52,18 @@ export const useDappsByCategory = (categoryId: string) => {
   });
 };
 
+/**
+ * NOT WIRED UP SERVER-SIDE. `dapps.controller.ts` has no `search` route, so
+ * `GET /dapps/search` falls through to `@Get(":id")` and 404s with
+ * "Dapp not found". Nothing calls this today.
+ *
+ * Address-bar suggestions deliberately do not use it: they rank the
+ * catalogue already in the React Query cache (see
+ * `hooks/dapps-browser/useOmniboxSuggestions.ts`), which is instant,
+ * works offline, and needs no round-trip per keystroke. Adding the
+ * endpoint is only worth it once the catalogue outgrows what the client
+ * holds.
+ */
 export const useDappSearch = (params?: TDappSearchParams) => {
   return useQuery({
     queryKey: ["dapps", "search", params],

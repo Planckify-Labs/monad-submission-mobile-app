@@ -68,6 +68,12 @@ export interface TDappPromotion {
   description: string;
   imageUrl: string;
   appearance?: TAppearance | null;
+  /**
+   * Label on the banner's call-to-action button ("Trade now", "Start
+   * earning"). Optional and additive: the hero renders a house default
+   * when the backend does not send one.
+   */
+  ctaLabel?: string | null;
   /** Where the banner opens; falls back to the linked dapp's site. */
   targetUrl: string | null;
   dappId: string | null;

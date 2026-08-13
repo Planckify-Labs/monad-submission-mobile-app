@@ -3,6 +3,7 @@ import { router } from "expo-router";
 import {
   ChevronRight,
   Fuel,
+  History,
   Plus,
   Shield,
   Sparkles,
@@ -662,6 +663,44 @@ export default function Wallet() {
                   numberOfLines={1}
                 >
                   Gas Settings
+                </Text>
+              </View>
+            </View>
+            <ChevronRight size={18} color="#c71c4b" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Browser Privacy"
+            accessibilityHint="Review and clear the sites the dApp browser suggests"
+            className="bg-light rounded-2xl p-4 mb-4 flex-row items-center justify-between mx-4"
+            onPress={() =>
+              // Cast rationale: same as the Gas Settings row — new route,
+              // typed-routes union refreshes only once the dev server runs.
+              router.push("/browser-privacy" as never)
+            }
+            style={{
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 2 },
+              shadowOpacity: 0.04,
+              shadowRadius: 8,
+              elevation: 2,
+            }}
+          >
+            <View className="flex-row items-center flex-1">
+              <View className="w-10 h-10 rounded-full bg-light-primary-red/10 items-center justify-center mr-3">
+                <History size={20} color="#c71c4b" />
+              </View>
+              <View className="flex-1">
+                <Text className="text-light-matte-black/50 text-xs mb-0.5">
+                  Settings
+                </Text>
+                <Text
+                  className="text-light-matte-black font-semibold text-base"
+                  numberOfLines={1}
+                >
+                  Browser Privacy
                 </Text>
               </View>
             </View>

@@ -523,6 +523,12 @@ function SitesBody({
   onDisconnectSite: (origin: string, addresses: string[]) => void;
   onVisitSite?: (origin: string) => void;
 }) {
+  // Connections only. Browsing history used to be cleared from the bottom
+  // of this list, and a red full-width button under six rows of "1 wallet"
+  // reads as "disconnect all of these" — a user could believe they had cut
+  // off every site when nothing had been revoked. It lives in Settings now
+  // (`app/browser-privacy.tsx`), and single entries are removed from the
+  // address-bar suggestion that shows them.
   return (
     <View className="mt-2">
       <ConnectedSitesList

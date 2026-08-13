@@ -6,7 +6,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Keyboard, StatusBar, TextInput, View } from "react-native";
+import { Alert, Keyboard, StatusBar, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import DappLoadingOverlay from "@/components/dapps-browser/DappLoadingOverlay";
@@ -23,15 +23,10 @@ function generateSessionNonce(): string {
 }
 
 // Bare hostname for the branded loading overlay ("https://jup.ag/" →
-// "jup.ag"). Best-effort: falls back to undefined so the loader just
-// omits the label rather than showing a half-parsed URL.
+// "jup.ag"). Falls back to undefined so the loader omits the label rather
+// than showing a half-parsed URL.
 function hostFromUrl(url: string): string | undefined {
-  if (!url) return undefined;
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return undefined;
-  }
+  return displayHost(url) || undefined;
 }
 
 // Known third-party log spam that some dApps ship (Datadog RUM double-
@@ -57,6 +52,51 @@ const WEBVIEW_NOISE_PATTERNS: readonly string[] = [
 ];
 
 const CONTEXT_NOISE_PREFIXES: readonly string[] = ["core/history", "core/rum"];
+
+/**
+ * Reads the icon the page declares for itself and hands it back so the
+ * address bar can show a real logo for sites the dApp catalogue does not
+ * carry (see `services/dappsBrowser/faviconStore.ts`).
+ *
+ * Read out of the DOM rather than guessed at `/favicon.ico`, so there is
+ * no extra request and no wrong answer for the many sites that serve
+ * their icon from a CDN. `link.href` is the resolved absolute URL, which
+ * is what saves us from re-implementing relative-URL resolution against a
+ * base tag. Largest declared size wins, since these end up on a 42px tile
+ * on a high-density screen.
+ *
+ * Reports nothing when the page declares nothing, which the store reads as
+ * "no news" and not as "delete what you had".
+ */
+const REPORT_FAVICON = `
+  (function() {
+    try {
+      if (window.top !== window) return;
+      var links = document.querySelectorAll("link[rel]");
+      var best = null;
+      var bestSize = -1;
+      for (var i = 0; i < links.length; i++) {
+        var link = links[i];
+        var rel = (link.getAttribute("rel") || "").toLowerCase();
+        // "mask-icon" is Safari's monochrome pinned-tab glyph, which is a
+        // silhouette rather than the site's logo.
+        if (rel.indexOf("icon") === -1 || rel.indexOf("mask") !== -1) continue;
+        var href = link.href;
+        if (!href) continue;
+        var sizes = (link.getAttribute("sizes") || "").toLowerCase();
+        var matched = sizes.match(/(\\d+)x(\\d+)/);
+        var size = matched
+          ? parseInt(matched[1], 10)
+          : (rel.indexOf("apple") !== -1 ? 180 : 32);
+        if (size > bestSize) { bestSize = size; best = href; }
+      }
+      if (!best) return;
+      window.ReactNativeWebView.postMessage(
+        JSON.stringify({ type: "takumi_favicon", href: best })
+      );
+    } catch (e) {}
+  })();
+`;
 
 function serialiseArg(a: unknown): string {
   if (typeof a === "string") return a;
@@ -93,8 +133,10 @@ import { mainnet } from "viem/chains";
 import type { TBlockchain } from "@/api/types/blockchain";
 import BrowserAddressBar from "@/components/dapps-browser/BrowserAddressBar";
 import BrowserNavigationControls from "@/components/dapps-browser/BrowserNavigationControls";
+import BrowserSuggestions from "@/components/dapps-browser/BrowserSuggestions";
 import ConnectionManagerSheet from "@/components/dapps-browser/connections/ConnectionManagerSheet";
 import DAppsHub from "@/components/dapps-browser/DAppsHub";
+import { useOmniboxSuggestions } from "@/hooks/dapps-browser/useOmniboxSuggestions";
 import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
 import { useDappConnections } from "@/hooks/useDappConnections";
 import { useWallet } from "@/hooks/useWallet";
@@ -103,6 +145,10 @@ import { ApprovalHost } from "@/services/bridge/ApprovalHost";
 import { bootBridge } from "@/services/bridge/boot";
 import { ChainAdapterRegistry } from "@/services/chains/registry";
 import type { AdapterContext } from "@/services/chains/types";
+import { FaviconStore } from "@/services/dappsBrowser/faviconStore";
+import { BrowserHistoryStore } from "@/services/dappsBrowser/historyStore";
+import { displayHost, parseOmnibox } from "@/services/dappsBrowser/omnibox";
+import type { Suggestion } from "@/services/dappsBrowser/suggest";
 import { getAccountForWallet } from "@/services/walletService";
 
 interface TBrowserState {
@@ -111,7 +157,6 @@ interface TBrowserState {
   canGoBack: boolean;
   canGoForward: boolean;
   loading: boolean;
-  isSecure: boolean;
 }
 
 /**
@@ -135,18 +180,19 @@ export default function DappsBrowser() {
   // Takumi wallet via the DappBridge; pool-level deposits spec §9.1).
   const { url: initialUrl } = useLocalSearchParams<{ url?: string }>();
   const webViewRef = useRef<WebView>(null);
-  const addressBarRef = useRef<TextInput>(null);
-  const [addressBarText, setAddressBarText] = useState("");
+  // What the user is typing. Separate from `browserState.url` on purpose:
+  // the committed URL changes constantly as a page redirects and routes,
+  // and merging the two is what used to overwrite a half-typed address.
+  const [draft, setDraft] = useState("");
+  const [isEditing, setIsEditing] = useState(false);
   const [showHub, setShowHub] = useState(true);
   const [showConnections, setShowConnections] = useState(false);
-  const [isAddressBarAutoFocus, setIsAddressBarAutoFocus] = useState(false);
   const [browserState, setBrowserState] = useState<TBrowserState>({
     url: "",
     title: "Web3 Ecosystem Hub",
     canGoBack: false,
     canGoForward: false,
     loading: false,
-    isSecure: true,
   });
 
   // TWV-2026-015 — per-session nonce. Rotated on every top-frame nav
@@ -279,43 +325,102 @@ export default function DappsBrowser() {
     [activeChain, resolveBackendEvmChain, resolveDefaultEvmChain],
   );
 
-  const formatUrl = useCallback((input: string): string => {
-    const trimmed = input.trim();
-    if (!trimmed.includes(".") || trimmed.includes(" ")) {
-      return `https://duckduckgo.com/?q=${encodeURIComponent(trimmed)}`;
-    }
-    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-      return `https://${trimmed}`;
-    }
-    return trimmed;
+  /**
+   * The single navigation path: everything (address-bar submit, suggestion
+   * tap, dApp card, deep link, connection manager) funnels through here.
+   *
+   * Navigating is purely a state change. `browserState.url` feeds the
+   * WebView's `source`, and both platforms no-op when the requested URL
+   * already matches what the WebView is showing, which is the documented
+   * way to drive it. The previous implementation ALSO injected
+   * `window.location.href = '<url>'` into the live page: that raced the
+   * source change into a double load, ran the navigation in the page's own
+   * JS context rather than the browser's, and interpolated the URL into a
+   * single-quoted string with no escaping, so a URL containing an
+   * apostrophe executed arbitrary script inside the currently open dApp.
+   */
+  const navigateToUrl = useCallback((input: string) => {
+    const intent = parseOmnibox(input);
+    // Empty or whitespace-only input: stay put rather than navigating to
+    // an empty search.
+    if (!intent) return;
+
+    setIsEditing(false);
+    setDraft("");
+    setShowHub(false);
+    setBrowserState((prev) => ({
+      ...prev,
+      url: intent.url,
+      // Drop the previous page's title immediately; it is attached to
+      // every bridge message as `origin.title` and shown in the connection
+      // manager, so carrying it across a navigation mislabels the new site.
+      title: "",
+      loading: true,
+    }));
+    Keyboard.dismiss();
   }, []);
 
-  const navigateToUrl = useCallback(
-    (url: string) => {
-      const formatted = formatUrl(url);
-      setAddressBarText(formatted);
-      setShowHub(false);
-      setBrowserState((prev) => ({ ...prev, url: formatted, loading: true }));
-      webViewRef.current?.stopLoading();
-      webViewRef.current?.injectJavaScript(
-        `window.location.href = '${formatted}';`,
-      );
-      Keyboard.dismiss();
+  const startEditing = useCallback(() => {
+    // Editing always starts from the committed URL, never a stale draft.
+    setDraft(browserState.url);
+    setIsEditing(true);
+  }, [browserState.url]);
+
+  const cancelEditing = useCallback(() => {
+    setIsEditing(false);
+    setDraft("");
+    Keyboard.dismiss();
+  }, []);
+
+  const suggestions = useOmniboxSuggestions(draft, isEditing);
+
+  const handleSelectSuggestion = useCallback(
+    (suggestion: Suggestion) => {
+      // Suggestion URLs come from the catalogue and from history, so they
+      // go through the same parser as typed input rather than being
+      // trusted: a bad `websiteUrl` row can't become a navigation.
+      navigateToUrl(suggestion.url);
     },
-    [formatUrl],
+    [navigateToUrl],
   );
 
+  /**
+   * Forgets one visited site, from the row that shows it.
+   *
+   * Confirmed rather than immediate: a long press is easy to trigger by
+   * accident while scrolling a list, and the row vanishing under the
+   * finger with no way back reads as a bug rather than as an action. The
+   * dialog also answers the question the gesture raises in a wallet, which
+   * is whether this touches the site's connection. It does not.
+   */
+  const handleForgetSite = useCallback((host: string) => {
+    Alert.alert(
+      "Remove from suggestions?",
+      `${host} will stop appearing in the address bar as you type. Your wallet connections are not affected.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: () => BrowserHistoryStore.remove(host),
+        },
+      ],
+    );
+  }, []);
+
   // Open the initial deep-link URL (if any) by mounting the WebView on it.
-  // We set state (not injectJavaScript) so the WebView's `source` loads it
-  // directly — the ref isn't mounted yet while the hub is showing.
   useEffect(() => {
-    const raw = typeof initialUrl === "string" ? initialUrl.trim() : "";
-    if (!raw) return;
-    const formatted = formatUrl(raw);
+    const raw = typeof initialUrl === "string" ? initialUrl : "";
+    const intent = parseOmnibox(raw);
+    if (!intent) return;
     setShowHub(false);
-    setAddressBarText(formatted);
-    setBrowserState((prev) => ({ ...prev, url: formatted, loading: true }));
-  }, [initialUrl, formatUrl]);
+    setBrowserState((prev) => ({
+      ...prev,
+      url: intent.url,
+      title: "",
+      loading: true,
+    }));
+  }, [initialUrl]);
 
   const handleMessage = useCallback(
     (e: WebViewMessageEvent) => {
@@ -332,6 +437,19 @@ export default function DappsBrowser() {
       const type = (parsed as { type?: string }).type;
       if (type === "takumi_diagnostic") {
         console.log("[takumi-diagnostic]", parsed);
+        return;
+      }
+      // The page's own icon, keyed by the host WE are showing rather than
+      // any host the page names: the message only supplies the artwork,
+      // never which site it belongs to.
+      if (type === "takumi_favicon") {
+        const host = displayHost(browserState.url);
+        if (host) {
+          FaviconStore.record({
+            host,
+            url: (parsed as { href?: unknown }).href,
+          });
+        }
         return;
       }
       if (type === "takumi_console") {
@@ -393,8 +511,10 @@ export default function DappsBrowser() {
         } catch (e) {}
       })();
     `;
-    if (adapters.length === 0) return `${disableFullscreen}\ntrue;`;
-    return `${disableFullscreen}\n${adapters.map((a) => a.getInjectedScript(ctxRef.current)).join("\n")}\ntrue;`;
+    if (adapters.length === 0) {
+      return `${disableFullscreen}\n${REPORT_FAVICON}\ntrue;`;
+    }
+    return `${disableFullscreen}\n${adapters.map((a) => a.getInjectedScript(ctxRef.current)).join("\n")}\n${REPORT_FAVICON}\ntrue;`;
     // TWV-2026-015 — `sessionNonce` in the dep list so a fresh nonce
     // (rotated by `handleNavigate`) actually re-renders the script and
     // gets re-injected on the next nav.
@@ -424,10 +544,20 @@ export default function DappsBrowser() {
         canGoBack: navState.canGoBack,
         canGoForward: navState.canGoForward,
         loading: navState.loading,
-        isSecure: navState.url.startsWith("https://"),
       }));
-      setAddressBarText(navState.url);
+      // The draft is deliberately NOT written here. This callback fires on
+      // every redirect and every client-side route change, so pushing the
+      // URL into the input overwrote whatever the user was mid-way through
+      // typing.
       bridge.onNavigate(navState.url, navState.title);
+      // Record only committed loads, so a redirect chain leaves one entry
+      // for the page the user actually landed on.
+      if (!navState.loading) {
+        BrowserHistoryStore.record({
+          url: navState.url,
+          title: navState.title,
+        });
+      }
       // TWV-2026-015 — rotate the session nonce on every top-frame nav.
       const nextNonce = generateSessionNonce();
       setSessionNonce(nextNonce);
@@ -436,12 +566,12 @@ export default function DappsBrowser() {
     [bridge],
   );
 
-  React.useEffect(() => {
-    if (isAddressBarAutoFocus && addressBarRef.current) {
-      addressBarRef.current.focus();
-      setIsAddressBarAutoFocus(false);
-    }
-  }, [isAddressBarAutoFocus]);
+  // No imperative focus here on purpose. The address bar's TextInput mounts
+  // only in edit mode and raises the keyboard via its own `autoFocus`, which
+  // both platforms apply from the window-attach callback. A `ref.focus()`
+  // from this effect runs in the same commit the input mounts, before the
+  // native view is attached, and Android's `showSoftInput()` no-ops on an
+  // unattached view: the caret appeared but the keyboard did not.
 
   // TWV-2026-015 — seed the bridge with the initial nonce on mount so
   // the first page load (before any nav callback fires) is gated too.
@@ -463,112 +593,131 @@ export default function DappsBrowser() {
       <StatusBar barStyle="dark-content" backgroundColor="#f5f6f9" />
       <View className="flex-1 bg-light-main-container">
         <BrowserAddressBar
-          addressBarText={addressBarText}
-          onChangeText={setAddressBarText}
-          onSubmitEditing={() => navigateToUrl(addressBarText)}
-          addressBarRef={addressBarRef}
+          pageUrl={browserState.url}
+          draft={draft}
+          onChangeDraft={setDraft}
+          isEditing={isEditing}
+          onStartEditing={startEditing}
+          onCancelEditing={cancelEditing}
+          onSubmit={() => navigateToUrl(draft)}
           isWalletConnected={isConnected}
           onPressWallet={() => setShowConnections(true)}
         />
-        {showHub ? (
-          <DAppsHub onNavigateToDapp={navigateToUrl} />
-        ) : (
-          <View className="flex-1 mx-2 mb-2- rounded-3xl overflow-hidden border-4 border-light-matte-black bg-light-main-container">
-            <WebView
-              ref={webViewRef}
-              source={{ uri: browserState.url }}
-              onMessage={handleMessage}
-              // UA suffix so dApps that fall back to user-agent sniffing (or
-              // want to branch on "in-app wallet browser") can detect us by
-              // matching /TakumiPay/.
-              applicationNameForUserAgent="TakumiPay/1.0"
-              // Inject BEFORE the page's own scripts run. `injectedJavaScript`
-              // fires after load, which is too late for EIP-6963 — dApps have
-              // already dispatched `eip6963:requestProvider` during startup
-              // and decided nobody answered. Running pre-load guarantees our
-              // `window.ethereum` and 6963 listener are in place when the
-              // dApp's bundle wakes up.
-              injectedJavaScriptBeforeContentLoaded={injectedJavaScript}
-              // TWV-2026-013 — never install the EIP-1193 provider into
-              // cross-origin iframes. CVE-2020-6506-class universal-XSS
-              // makes any sub-frame an attacker-controlled JS context;
-              // restricting injection to the top frame keeps the provider
-              // out of their reach.
-              injectedJavaScriptForMainFrameOnly={true}
-              // Also replay on every DOM load — SPAs with client-side routing
-              // don't re-inject the pre-content script between route changes,
-              // and our provider script is idempotent (guarded by
-              // `window.__takumi_evm_installed`).
-              injectedJavaScript={injectedJavaScript}
-              onLoadStart={() =>
-                setBrowserState((p) => ({ ...p, loading: true }))
+        {/* Everything below the address bar. The suggestion overlay
+            absolutely fills THIS wrapper, so it covers the page and the
+            navigation controls alike. Keeping the controls mounted while
+            editing is deliberate: unmounting them resized the content area,
+            which reflowed the WebView at the exact moment the overlay
+            appeared and read as the whole screen jumping. */}
+        <View className="flex-1">
+          {showHub ? (
+            <DAppsHub onNavigateToDapp={navigateToUrl} />
+          ) : (
+            <View className="flex-1 mx-2 mb-2- rounded-3xl overflow-hidden border-4 border-light-matte-black bg-light-main-container">
+              <WebView
+                ref={webViewRef}
+                source={{ uri: browserState.url }}
+                onMessage={handleMessage}
+                // UA suffix so dApps that fall back to user-agent sniffing (or
+                // want to branch on "in-app wallet browser") can detect us by
+                // matching /TakumiPay/.
+                applicationNameForUserAgent="TakumiPay/1.0"
+                // Inject BEFORE the page's own scripts run. `injectedJavaScript`
+                // fires after load, which is too late for EIP-6963 — dApps have
+                // already dispatched `eip6963:requestProvider` during startup
+                // and decided nobody answered. Running pre-load guarantees our
+                // `window.ethereum` and 6963 listener are in place when the
+                // dApp's bundle wakes up.
+                injectedJavaScriptBeforeContentLoaded={injectedJavaScript}
+                // TWV-2026-013 — never install the EIP-1193 provider into
+                // cross-origin iframes. CVE-2020-6506-class universal-XSS
+                // makes any sub-frame an attacker-controlled JS context;
+                // restricting injection to the top frame keeps the provider
+                // out of their reach.
+                injectedJavaScriptForMainFrameOnly={true}
+                // Also replay on every DOM load — SPAs with client-side routing
+                // don't re-inject the pre-content script between route changes,
+                // and our provider script is idempotent (guarded by
+                // `window.__takumi_evm_installed`).
+                injectedJavaScript={injectedJavaScript}
+                onLoadStart={() =>
+                  setBrowserState((p) => ({ ...p, loading: true }))
+                }
+                onLoadEnd={() => {
+                  setBrowserState((p) => ({ ...p, loading: false }));
+                  // Active re-injection of the full provider + announce +
+                  // diagnostic bundle. `injectedJavaScriptBeforeContentLoaded`
+                  // is racy on Android (evaluateJavascript inside
+                  // onPageStarted); this guarantees every page load gets a
+                  // deterministic injection from the RN side. The provider
+                  // script's `__takumi_evm_installed` guard makes it safe to
+                  // re-run against an already-installed page.
+                  webViewRef.current?.injectJavaScript(
+                    `${injectedJavaScript}\ntrue;`,
+                  );
+                }}
+                onNavigationStateChange={handleNavigate}
+                javaScriptEnabled
+                domStorageEnabled
+                scalesPageToFit
+                allowsInlineMediaPlayback
+                // TWV-2026-064 — video stays inline; dApps cannot take over
+                // the full screen to paint a fake signer prompt. The JS
+                // fullscreen API is also neutralised (see injection above).
+                allowsFullscreenVideo={false}
+                mediaPlaybackRequiresUserAction={false}
+                allowsBackForwardNavigationGestures
+                // TWV-2026-013 — only https. http and file schemes are
+                // banned wholesale; mixed content is never loaded.
+                originWhitelist={["https://*"]}
+                mixedContentMode="never"
+                sharedCookiesEnabled={false}
+                thirdPartyCookiesEnabled={false}
+                androidLayerType="hardware"
+                setSupportMultipleWindows={false}
+                cacheEnabled
+                cacheMode="LOAD_DEFAULT"
+                className="flex-1"
+              />
+              {browserState.loading && (
+                <DappLoadingOverlay host={hostFromUrl(browserState.url)} />
+              )}
+            </View>
+          )}
+          {!showHub && (
+            <BrowserNavigationControls
+              browserState={browserState}
+              onGoBack={() =>
+                browserState.canGoBack && webViewRef.current?.goBack()
               }
-              onLoadEnd={() => {
-                setBrowserState((p) => ({ ...p, loading: false }));
-                // Active re-injection of the full provider + announce +
-                // diagnostic bundle. `injectedJavaScriptBeforeContentLoaded`
-                // is racy on Android (evaluateJavascript inside
-                // onPageStarted); this guarantees every page load gets a
-                // deterministic injection from the RN side. The provider
-                // script's `__takumi_evm_installed` guard makes it safe to
-                // re-run against an already-installed page.
-                webViewRef.current?.injectJavaScript(
-                  `${injectedJavaScript}\ntrue;`,
-                );
+              onGoForward={() =>
+                browserState.canGoForward && webViewRef.current?.goForward()
+              }
+              onSearch={startEditing}
+              onRefresh={() => webViewRef.current?.reload()}
+              onStop={() => webViewRef.current?.stopLoading()}
+              onHome={() => {
+                setShowHub(true);
+                setDraft("");
+                setIsEditing(false);
+                setBrowserState({
+                  url: "",
+                  title: "Web3 Ecosystem Hub",
+                  canGoBack: false,
+                  canGoForward: false,
+                  loading: false,
+                });
               }}
-              onNavigationStateChange={handleNavigate}
-              javaScriptEnabled
-              domStorageEnabled
-              scalesPageToFit
-              allowsInlineMediaPlayback
-              // TWV-2026-064 — video stays inline; dApps cannot take over
-              // the full screen to paint a fake signer prompt. The JS
-              // fullscreen API is also neutralised (see injection above).
-              allowsFullscreenVideo={false}
-              mediaPlaybackRequiresUserAction={false}
-              allowsBackForwardNavigationGestures
-              // TWV-2026-013 — only https. http and file schemes are
-              // banned wholesale; mixed content is never loaded.
-              originWhitelist={["https://*"]}
-              mixedContentMode="never"
-              sharedCookiesEnabled={false}
-              thirdPartyCookiesEnabled={false}
-              androidLayerType="hardware"
-              setSupportMultipleWindows={false}
-              cacheEnabled
-              cacheMode="LOAD_DEFAULT"
-              className="flex-1"
             />
-            {browserState.loading && (
-              <DappLoadingOverlay host={hostFromUrl(browserState.url)} />
-            )}
-          </View>
-        )}
-        {!showHub && (
-          <BrowserNavigationControls
-            browserState={browserState}
-            onGoBack={() =>
-              browserState.canGoBack && webViewRef.current?.goBack()
-            }
-            onGoForward={() =>
-              browserState.canGoForward && webViewRef.current?.goForward()
-            }
-            onSearch={() => setIsAddressBarAutoFocus(true)}
-            onRefresh={() => webViewRef.current?.reload()}
-            onHome={() => {
-              setShowHub(true);
-              setAddressBarText("");
-              setBrowserState({
-                url: "",
-                title: "Web3 Ecosystem Hub",
-                canGoBack: false,
-                canGoForward: false,
-                loading: false,
-                isSecure: true,
-              });
-            }}
-          />
-        )}
+          )}
+          {isEditing && (
+            <BrowserSuggestions
+              items={suggestions}
+              onSelect={handleSelectSuggestion}
+              onRemove={handleForgetSite}
+            />
+          )}
+        </View>
       </View>
       <ApprovalHost />
       <ConnectionManagerSheet

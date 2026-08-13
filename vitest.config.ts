@@ -153,6 +153,18 @@ export default defineConfig({
       // Receipt amounts: exact rendering on detail screens, and the
       // float-truncation bug that showed 0.29 as 0.28.
       "utils/tokenAmount.test.ts",
+      // dApps-browser address bar: what the user types decides the origin
+      // the bridge grants permissions against, so the scheme allowlist and
+      // the userinfo/zero-width stripping are covered here rather than
+      // trusted to RN's regex-shim `URL`.
+      "services/dappsBrowser/omnibox.test.ts",
+      "services/dappsBrowser/suggest.test.ts",
+      // Hub directory: the chart order the rank numbers label, and the
+      // one-host-one-chip rule the "Jump back in" strip depends on.
+      "services/dappsBrowser/directory.test.ts",
+      // Site-icon cache: the rule that a visit reporting no icon must
+      // never erase the one already on screen.
+      "services/dappsBrowser/faviconStore.test.ts",
       // Encrypted seed backup (docs/encrypted-seed-backup-spec.md)
       "services/backup/seedBackupCrypto.test.ts",
       "services/backup/bytes.test.ts",

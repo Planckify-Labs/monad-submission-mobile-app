@@ -1,4 +1,4 @@
-import { Animated, LayoutChangeEvent, TextInput } from "react-native";
+import { Animated, LayoutChangeEvent } from "react-native";
 import type { TDapp } from "@/api/types/dapp";
 import { TWallet } from "@/constants/types/walletTypes";
 
@@ -9,13 +9,24 @@ export interface TDAppNavigationProps {
 export interface BrowserState {
   canGoBack: boolean;
   canGoForward: boolean;
+  /** Turns the navigation bar's reload button into a stop button. */
+  loading: boolean;
 }
 
 export interface TBrowserAddressBarProps {
-  addressBarText: string;
-  onChangeText: (text: string) => void;
-  onSubmitEditing: () => void;
-  addressBarRef: React.RefObject<TextInput | null>;
+  /** The URL the WebView has actually committed to; "" on the hub. */
+  pageUrl: string;
+  /**
+   * What the user is typing. Only rendered while editing, so page
+   * navigation events can never overwrite an in-progress edit.
+   */
+  draft: string;
+  onChangeDraft: (text: string) => void;
+  isEditing: boolean;
+  onStartEditing: () => void;
+  /** Leaves edit mode without navigating. */
+  onCancelEditing: () => void;
+  onSubmit: () => void;
   isWalletConnected?: boolean;
   /** Opens the wallet connection manager sheet. */
   onPressWallet?: () => void;
@@ -27,6 +38,8 @@ export interface TBrowserNavigationControlsProps {
   onGoForward: () => void;
   onSearch: () => void;
   onRefresh: () => void;
+  /** Same button as refresh, while a load is in flight. */
+  onStop: () => void;
   onHome: () => void;
 }
 

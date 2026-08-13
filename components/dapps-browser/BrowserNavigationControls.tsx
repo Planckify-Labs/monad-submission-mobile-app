@@ -4,6 +4,7 @@ import {
   Home,
   RotateCcw,
   Search,
+  X,
 } from "lucide-react-native";
 import React, { memo, useCallback } from "react";
 import { TouchableOpacity, View } from "react-native";
@@ -19,6 +20,7 @@ const BrowserNavigationControls = memo<TBrowserNavigationControlsProps>(
     onGoForward,
     onSearch,
     onRefresh,
+    onStop,
     onHome,
   }: TBrowserNavigationControlsProps) {
     const { bottom } = useSafeAreaInsets();
@@ -66,16 +68,31 @@ const BrowserNavigationControls = memo<TBrowserNavigationControlsProps>(
           />
         </TouchableOpacity>
 
+        {/* One control, two jobs: reload when idle, stop mid-load. That
+            mirrors every phone browser and keeps the address bar free of a
+            duplicate of this button. */}
         <TouchableOpacity
-          onPress={onRefresh}
+          onPress={browserState.loading ? onStop : onRefresh}
           activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={
+            browserState.loading ? "Stop loading" : "Reload page"
+          }
           className={getButtonStyle(true, "secondary")}
         >
-          <RotateCcw
-            size={ICON_SIZES.MEDIUM}
-            color={COLORS.PRIMARY_RED}
-            strokeWidth={2}
-          />
+          {browserState.loading ? (
+            <X
+              size={ICON_SIZES.MEDIUM}
+              color={COLORS.PRIMARY_RED}
+              strokeWidth={2.5}
+            />
+          ) : (
+            <RotateCcw
+              size={ICON_SIZES.MEDIUM}
+              color={COLORS.PRIMARY_RED}
+              strokeWidth={2}
+            />
+          )}
         </TouchableOpacity>
 
         <TouchableOpacity
