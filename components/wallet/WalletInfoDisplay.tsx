@@ -3,6 +3,7 @@ import React, { memo } from "react";
 import { Pressable, Text, View } from "react-native";
 import { TWallet } from "@/constants/types/walletTypes";
 import { useScreenshotGuard } from "@/services/security/screenshotGuard";
+import { revealWalletSecret } from "@/services/walletService";
 
 type WalletInfoDisplayProps = {
   wallet: TWallet;
@@ -67,6 +68,14 @@ export default memo(function WalletInfoDisplay({
 
   if (!wallet || !wallet.type) return null;
 
+  // TWV-2026-057 Tier 1 — `wallet` comes from app state and carries no
+  // key material. This screen is one of the two surfaces that
+  // legitimately needs the plaintext, so it asks the wallet service
+  // explicitly, and only while the user is actively revealing it. The
+  // mask below renders from a null secret, so nothing is resolved while
+  // the value is hidden.
+  const revealed = isSecretRevealed ? revealWalletSecret(wallet) : null;
+
   const renderSecretSection = (
     label: string,
     secret: string | undefined,
@@ -114,14 +123,14 @@ export default memo(function WalletInfoDisplay({
     case "SeedPhrase":
       return renderSecretSection(
         "Seed Phrase",
-        wallet.seedPhrase,
+        revealed?.seedPhrase,
         "Seed Phrase",
       );
 
     case "PrivateKey":
       return renderSecretSection(
         "Private Key",
-        wallet.privateKey,
+        revealed?.privateKey,
         "Private Key",
       );
 

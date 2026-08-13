@@ -43,6 +43,7 @@ import {
   clearBackupTimestamp,
   getLocalBackupTimestamp,
 } from "@/services/backup/seedBackup";
+import { revealWalletSecret } from "@/services/walletService";
 
 const CARD_WIDTH = 160;
 
@@ -99,9 +100,23 @@ export default function Wallet() {
   // reads "Backed up".
   const backupSiblings = useMemo(() => {
     if (!activeWallet?.address) return [];
-    const seed = activeWallet.seedPhrase;
-    return seed ? wallets.filter((w) => w.seedPhrase === seed) : [activeWallet];
+    const group = activeWallet.seedGroupId;
+    return group
+      ? wallets.filter((w) => w.seedGroupId === group)
+      : [activeWallet];
   }, [activeWallet, wallets]);
+
+  // TWV-2026-057 Tier 1 — the mnemonic is resolved from the wallet
+  // service only while the backup sheet is actually open, so the
+  // plaintext exists in the React tree for the duration of that
+  // user-initiated flow rather than for the whole session.
+  const backupSeedPhrase = useMemo(
+    () =>
+      backupSheetVisible && activeWallet?.address
+        ? revealWalletSecret(activeWallet).seedPhrase
+        : undefined,
+    [backupSheetVisible, activeWallet],
+  );
 
   const lastBackupAt = useMemo(() => {
     void backupTick;
@@ -658,7 +673,7 @@ export default function Wallet() {
           visible={backupSheetVisible}
           onClose={() => setBackupSheetVisible(false)}
           onBackedUp={handleBackedUp}
-          seedPhrase={activeWallet?.seedPhrase}
+          seedPhrase={backupSeedPhrase}
           walletAddress={activeWallet?.address ?? ""}
           email={linkedGoogleAccount?.email}
           lastBackupAt={lastBackupAt}

@@ -846,9 +846,16 @@ export function useWallet() {
   // We also dropped the `clearAccountCache()` cleanup — it fired on
   // every hook unmount / re-render-with-new-queryClient, which would
   // occasionally wipe the BIP-32 / Ed25519 caches right as a downstream
-  // render was about to read them. `clearAccountCache` now only runs
-  // from `LockScreen.attempt` (before reloading wallets) and on
-  // explicit logout, which is correct behavior.
+  // render was about to read them. `clearAccountCache` now runs from
+  // `LockScreen.attempt` (before reloading wallets), which is correct
+  // behavior.
+  //
+  // TWV-2026-057 Tier 1: that call site is real as of this change. Until
+  // then this comment described an intent nothing implemented —
+  // `clearAccountCache` had NO live caller, so the derived signers (viem
+  // accounts close over the private key; the Sui / Stellar keypairs hold
+  // the raw secret) survived every lock. If you are adding another lock
+  // or logout path, call it there too.
 
   // Phantom-style account backfill: for every mnemonic that already
   // owns at least one wallet, ensure a wallet exists on every
@@ -881,22 +888,32 @@ export function useWallet() {
 
     const task = InteractionManager.runAfterInteractions(async () => {
       try {
+        // TWV-2026-057 Tier 1 — group on the non-secret `seedGroupId`;
+        // the plaintext mnemonic comes from the wallet service's vault,
+        // and only for groups that are actually missing a namespace.
         const bySeed = new Map<string, Set<Namespace>>();
+        const seedForGroup = new Map<string, string>();
         for (const w of wallets) {
-          const seed = w.seedPhrase;
-          if (typeof seed !== "string" || seed.length === 0) continue;
-          const set = bySeed.get(seed) ?? new Set<Namespace>();
+          const groupId = w.seedGroupId;
+          if (typeof groupId !== "string" || groupId.length === 0) continue;
+          const set = bySeed.get(groupId) ?? new Set<Namespace>();
           set.add(w.namespace);
-          bySeed.set(seed, set);
+          bySeed.set(groupId, set);
+          if (!seedForGroup.has(groupId)) {
+            const seed = walletService.getSeedPhraseForWallet(w);
+            if (seed) seedForGroup.set(groupId, seed);
+          }
         }
         if (bySeed.size === 0) return;
         const registered = walletKitRegistry
           .getAll()
           .map((kit) => kit.namespace);
         const derived: TWallet[] = [];
-        for (const [seed, have] of bySeed) {
+        for (const [groupId, have] of bySeed) {
           const missing = registered.filter((ns) => !have.has(ns));
           if (missing.length === 0) continue;
+          const seed = seedForGroup.get(groupId);
+          if (!seed) continue;
           const minted = await deriveWalletsFromMnemonic(seed, missing);
           derived.push(...minted);
         }

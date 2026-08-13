@@ -24,13 +24,19 @@ function wallet(
 // namespace, so every other namespace is genuinely absent.
 const evmOnly = [wallet({ address: "0xEVM", namespace: "eip155" })];
 
-// A seed-phrase account: one row per namespace, all sharing a mnemonic,
-// so `groupWalletsIntoAccounts` collapses them into a single account.
-const SEED = "test test test test test test test test test test test junk";
+// A seed-phrase account: one row per namespace, all sharing a
+// `seedGroupId`, so `groupWalletsIntoAccounts` collapses them into a
+// single account.
+//
+// TWV-2026-057 Tier 1 — grouping keys on the non-secret `seedGroupId`
+// assigned by the wallet service, NOT on the mnemonic. Wallets that
+// reach this code come from app state and carry no key material, so a
+// fixture built with `seedPhrase` would no longer group.
+const SEED_GROUP = "seedgroup-test-0001";
 const seedAccount = [
-  wallet({ address: "0xSEED", namespace: "eip155", seedPhrase: SEED }),
-  wallet({ address: "SolSEED", namespace: "solana", seedPhrase: SEED }),
-  wallet({ address: "SuiSEED", namespace: "sui", seedPhrase: SEED }),
+  wallet({ address: "0xSEED", namespace: "eip155", seedGroupId: SEED_GROUP }),
+  wallet({ address: "SolSEED", namespace: "solana", seedGroupId: SEED_GROUP }),
+  wallet({ address: "SuiSEED", namespace: "sui", seedGroupId: SEED_GROUP }),
 ];
 
 describe("hasWalletForNamespace", () => {

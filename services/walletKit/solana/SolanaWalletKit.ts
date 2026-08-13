@@ -47,6 +47,7 @@ import {
 } from "../../chains/solana/transferService.ts";
 import {
   generateWalletMnemonic,
+  getPrivateKeyForWallet,
   getSolanaSignerForWallet,
 } from "../../walletService.ts";
 import type {
@@ -403,10 +404,14 @@ export function createSolanaWalletKit(): WalletKitAdapter {
       const messageV0 = message.compileToV0Message(args.addressLookupTables);
       const tx = new VersionedTransaction(messageV0);
 
-      if (!args.wallet.privateKey) {
+      // TWV-2026-057 Tier 1 — `args.wallet` comes from app state and no
+      // longer carries key material; resolve it from the wallet
+      // service's vault instead of reading the field directly.
+      const walletPrivateKey = getPrivateKeyForWallet(args.wallet);
+      if (!walletPrivateKey) {
         throw new Error("Could not retrieve wallet private key");
       }
-      const seed = parseSolanaPrivateKey(args.wallet.privateKey);
+      const seed = parseSolanaPrivateKey(walletPrivateKey);
       const keypair = Keypair.fromSecretKey(
         new Uint8Array([...seed, ...payerKey.toBytes()]),
       );

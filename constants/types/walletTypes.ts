@@ -69,6 +69,26 @@ export interface TWallet {
    */
   privateKey?: string;
   seedPhrase?: string;
+  /**
+   * TWV-2026-057 Tier 1 — non-secret discriminator shared by every row
+   * derived from the same BIP-39 mnemonic (one EVM + one Solana + one
+   * Sui + one Stellar row). A salted keyed hash of the mnemonic,
+   * assigned by `services/walletService.ts`. Group rows into accounts
+   * with this; never compare `seedPhrase`.
+   *
+   * Absent on private-key imports and social wallets, which each form a
+   * single-row account keyed by address.
+   *
+   * NOTE: `privateKey` / `seedPhrase` above are NOT present on wallets
+   * that come from app state. The wallet service strips both on the way
+   * out of storage and keeps them in a module-private vault; signer
+   * dwell sites resolve them by address. They stay declared because
+   * fresh imports and freshly derived rows carry them until first
+   * persisted, and the reveal/backup screens read them back through
+   * `revealWalletSecret`. Do not read either field off a wallet from
+   * `useWallet()`, a React Query entry, or a dApp `ApprovalIntent`.
+   */
+  seedGroupId?: string;
   socialAccount?: {
     provider: string;
     email: string;

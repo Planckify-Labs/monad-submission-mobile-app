@@ -53,7 +53,9 @@ import type { Namespace } from "@/services/chains/types";
 import { deriveWalletsFromMnemonic } from "@/services/walletKit/deriveAll";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import {
+  clearAccountCache,
   clearWalletCache,
+  getSeedPhraseForWallet,
   loadWalletsFromStorage,
   saveWalletsToStorage,
 } from "@/services/walletService";
@@ -107,7 +109,15 @@ export default function LockScreen({ onUnlocked }: Props) {
       // `requireAuthentication: true` flag may still trigger ONE final
       // OS prompt at the keystore level; the next save rewrites them
       // without that flag so this is a one-time upgrade cost.
+      // TWV-2026-057 Tier 1 — drop BOTH in-memory homes of key material
+      // before reloading. `clearWalletCache` wipes the wallet cache and
+      // the secret vault; `clearAccountCache` wipes the DERIVED signers,
+      // which independently hold key material (viem accounts close over
+      // the private key, and the Sui / Stellar keypairs hold the raw
+      // secret). Until this change `clearAccountCache` had no live
+      // caller at all, so those signers survived every lock.
       clearWalletCache();
+      clearAccountCache();
       let wallets = await loadWalletsFromStorage();
       if (wallets.length === 0) return;
 
@@ -145,21 +155,33 @@ export default function LockScreen({ onUnlocked }: Props) {
       // render thread right after dismiss. Running it here keeps the
       // wait on the "Syncing chains…" screen the user already expects.
       try {
+        // TWV-2026-057 Tier 1 — `wallets` is stripped, so the mnemonic
+        // comes from the wallet service's vault. Grouping still keys on
+        // the non-secret `seedGroupId`; the plaintext is fetched once
+        // per group, only for the groups that actually need deriving.
         const bySeed = new Map<string, Set<Namespace>>();
+        const seedForGroup = new Map<string, string>();
         for (const w of wallets) {
-          const seed = w.seedPhrase;
-          if (typeof seed !== "string" || seed.length === 0) continue;
-          const set = bySeed.get(seed) ?? new Set<Namespace>();
+          const groupId = w.seedGroupId;
+          if (typeof groupId !== "string" || groupId.length === 0) continue;
+          const set = bySeed.get(groupId) ?? new Set<Namespace>();
           set.add(w.namespace);
-          bySeed.set(seed, set);
+          bySeed.set(groupId, set);
+          if (!seedForGroup.has(groupId)) {
+            const seed = getSeedPhraseForWallet(w);
+            if (seed) seedForGroup.set(groupId, seed);
+          }
         }
         const registered = walletKitRegistry
           .getAll()
           .map((kit) => kit.namespace);
         const toDerive: Array<{ seed: string; missing: Namespace[] }> = [];
-        for (const [seed, have] of bySeed) {
+        for (const [groupId, have] of bySeed) {
           const missing = registered.filter((ns) => !have.has(ns));
-          if (missing.length > 0) toDerive.push({ seed, missing });
+          if (missing.length === 0) continue;
+          const seed = seedForGroup.get(groupId);
+          if (!seed) continue;
+          toDerive.push({ seed, missing });
         }
         if (toDerive.length > 0) {
           setStatusLabel("Syncing chains…");

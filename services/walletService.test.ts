@@ -27,7 +27,12 @@ import {
 } from "../utils/walletUtils.ts";
 import {
   clearAccountCache,
+  clearWalletCache,
+  getCachedWalletsSync,
   getSolanaSignerForWallet,
+  revealWalletSecret,
+  saveWalletsToStorage,
+  walletHasSeedPhrase,
 } from "./walletService.ts";
 
 const src = readFileSync(
@@ -339,5 +344,173 @@ describe("getSolanaSignerForWallet — TWV-2026-070 behavioural", () => {
     );
     // The re-built signer still addresses the same wallet.
     assert.equal(sig3.address, wallet.address);
+  });
+});
+
+// TWV-2026-057 Tier 1 — secret/meta split.
+//
+// The suites above are mostly source-regex assertions. These are
+// behavioural: they prove that stripping key material out of the public
+// wallet shape did not break signing, grouping, or persistence.
+//
+// `expo-secure-store` is a no-op stub under this harness, so the writes
+// resolve without persisting. That is fine — every invariant here is
+// about the in-memory vault and the shape handed to callers, which is
+// exactly the surface the refactor changed.
+describe("walletService — TWV-2026-057 Tier 1 secret vault", () => {
+  it("hands out wallets with no key material after a save", async () => {
+    clearWalletCache();
+    clearAccountCache();
+    const wallet = (await createSolanaWalletFromMnemonic(
+      TEST_MNEMONIC,
+    )) as TWallet;
+    assert.ok(wallet.privateKey, "fixture must start out carrying a secret");
+
+    await saveWalletsToStorage([wallet]);
+
+    const cached = getCachedWalletsSync();
+    assert.ok(cached && cached.length === 1);
+    assert.equal(
+      cached[0].privateKey,
+      undefined,
+      "privateKey must be stripped",
+    );
+    assert.equal(
+      cached[0].seedPhrase,
+      undefined,
+      "seedPhrase must be stripped",
+    );
+    // Public metadata must survive the strip — this is what the UI renders.
+    assert.equal(cached[0].address, wallet.address);
+    assert.equal(cached[0].namespace, "solana");
+  });
+
+  it("still signs from a STRIPPED wallet (vault resolution)", async () => {
+    clearWalletCache();
+    clearAccountCache();
+    const wallet = (await createSolanaWalletFromMnemonic(
+      TEST_MNEMONIC,
+    )) as TWallet;
+    await saveWalletsToStorage([wallet]);
+
+    const stripped = getCachedWalletsSync()?.[0] as TWallet;
+    assert.equal(stripped.privateKey, undefined);
+
+    // This is the core of the refactor: a wallet carrying no key
+    // material still resolves a working signer, by address, via the vault.
+    clearAccountCache();
+    const signer = await getSolanaSignerForWallet(stripped);
+    assert.ok(signer, "stripped wallet must still produce a signer");
+    assert.equal(signer.address, EXPECTED_SOLANA_ADDRESS);
+  });
+
+  it("re-attaches secrets on the way to disk (no seed destruction)", async () => {
+    clearWalletCache();
+    clearAccountCache();
+    const wallet = (await createSolanaWalletFromMnemonic(
+      TEST_MNEMONIC,
+    )) as TWallet;
+    const originalKey = wallet.privateKey;
+    await saveWalletsToStorage([wallet]);
+
+    // Simulate the real second save: the caller re-saves what it read
+    // out of app state, which is stripped (e.g. a rename). The secret
+    // must survive, or the user's funds are gone.
+    const stripped = getCachedWalletsSync()?.[0] as TWallet;
+    const renamed = { ...stripped, name: "Renamed" };
+    const ok = await saveWalletsToStorage([renamed]);
+    assert.equal(ok, true, "a normal re-save must succeed");
+
+    const after = getCachedWalletsSync()?.[0] as TWallet;
+    assert.equal(after.name, "Renamed");
+    assert.equal(after.privateKey, undefined, "still stripped for callers");
+    assert.equal(
+      revealWalletSecret(after).privateKey,
+      originalKey,
+      "the vault must still hold the original key after a stripped re-save",
+    );
+  });
+
+  it("refuses to persist when the vault holds nothing (tripwire)", async () => {
+    clearWalletCache();
+    clearAccountCache();
+    const wallet = (await createSolanaWalletFromMnemonic(
+      TEST_MNEMONIC,
+    )) as TWallet;
+    await saveWalletsToStorage([wallet]);
+    const stripped = getCachedWalletsSync()?.[0] as TWallet;
+
+    // Vault gone (a cleared cache / failed unlock), caller still holds a
+    // stripped array. Persisting it would overwrite the stored bundle
+    // with secret-less records.
+    clearWalletCache();
+    const ok = await saveWalletsToStorage([stripped]);
+    assert.equal(ok, false, "must refuse rather than destroy the seed");
+  });
+
+  it("assigns one shared seedGroupId per mnemonic, and none without one", async () => {
+    clearWalletCache();
+    clearAccountCache();
+    const solana = (await createSolanaWalletFromMnemonic(
+      TEST_MNEMONIC,
+    )) as TWallet;
+    const evm = createWalletFromMnemonic(TEST_MNEMONIC) as TWallet;
+    await saveWalletsToStorage([evm, solana]);
+
+    const cached = getCachedWalletsSync() as TWallet[];
+    assert.equal(cached.length, 2);
+    assert.ok(cached[0].seedGroupId, "mnemonic rows must get a group id");
+    assert.equal(
+      cached[0].seedGroupId,
+      cached[1].seedGroupId,
+      "rows from ONE mnemonic must share a group id (this is what collapses them into a single account in the UI)",
+    );
+    // The group id must not be the mnemonic, nor contain it.
+    assert.notEqual(cached[0].seedGroupId, TEST_MNEMONIC);
+    assert.equal(
+      cached[0].seedGroupId?.includes(TEST_MNEMONIC.split(" ")[0]),
+      false,
+    );
+    assert.equal(walletHasSeedPhrase(cached[0]), true);
+  });
+
+  it("gives different mnemonics different seedGroupIds", async () => {
+    clearWalletCache();
+    clearAccountCache();
+    const a = createWalletFromMnemonic(TEST_MNEMONIC) as TWallet;
+    const b = createWalletFromMnemonic(EVM_TEST_MNEMONIC) as TWallet;
+    await saveWalletsToStorage([a, b]);
+
+    const cached = getCachedWalletsSync() as TWallet[];
+    assert.equal(cached.length, 2);
+    assert.notEqual(
+      cached[0].seedGroupId,
+      cached[1].seedGroupId,
+      "distinct mnemonics must not collapse into one account",
+    );
+  });
+
+  it("prunes the vault when a wallet is removed", async () => {
+    clearWalletCache();
+    clearAccountCache();
+    const a = createWalletFromMnemonic(TEST_MNEMONIC) as TWallet;
+    const b = createWalletFromMnemonic(EVM_TEST_MNEMONIC) as TWallet;
+    await saveWalletsToStorage([a, b]);
+
+    const cached = getCachedWalletsSync() as TWallet[];
+    const kept = cached[0];
+    const removed = cached[1];
+
+    await saveWalletsToStorage([kept]);
+
+    assert.ok(
+      revealWalletSecret(kept).seedPhrase,
+      "the surviving wallet keeps its secret",
+    );
+    assert.equal(
+      revealWalletSecret(removed).seedPhrase,
+      undefined,
+      "the removed wallet's secret must be dropped from memory",
+    );
   });
 });

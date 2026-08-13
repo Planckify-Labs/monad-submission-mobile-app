@@ -98,9 +98,14 @@ function canonicalAccountName(name: string): string {
 
 /**
  * Groups a flat wallet list into accounts. Wallets sharing a
- * `seedPhrase` collapse into one account; non-seeded wallets (private-
+ * `seedGroupId` collapse into one account; non-seeded wallets (private-
  * key imports) each form a single-row account keyed by their address.
  * Input order is preserved.
+ *
+ * TWV-2026-057 Tier 1 — this used to key the map by the raw mnemonic
+ * (`w.seedPhrase`), which is the reason the plaintext seed had to live
+ * in React state at all. `seedGroupId` is a salted keyed hash assigned
+ * by the wallet service and carries no key material.
  */
 export function groupWalletsIntoAccounts(wallets: TWallet[]): WalletAccount[] {
   const accountsBySeed = new Map<string, WalletAccount>();
@@ -109,8 +114,8 @@ export function groupWalletsIntoAccounts(wallets: TWallet[]): WalletAccount[] {
 
   for (const w of wallets) {
     const seed =
-      typeof w.seedPhrase === "string" && w.seedPhrase.length > 0
-        ? w.seedPhrase
+      typeof w.seedGroupId === "string" && w.seedGroupId.length > 0
+        ? w.seedGroupId
         : null;
     if (seed) {
       const existing = accountsBySeed.get(seed);

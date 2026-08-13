@@ -99,15 +99,17 @@ export default function RecievePaymentModal({
     useState(false);
 
   // The Receive modal is account-scoped, not chain-scoped: if the
-  // active wallet shares a `seedPhrase` with other rows (EVM + Solana
+  // active wallet shares a `seedGroupId` with other rows (EVM + Solana
   // pair) we surface all of them as tabs so the user can flip the QR
   // without leaving the sheet. Imported private-key rows collapse to a
   // single tab since they live on one chain only.
   const { wallets } = useWallet();
   const pairedWallets = useMemo<TWallet[]>(() => {
-    const seed = activeWallet.seedPhrase;
-    if (typeof seed !== "string" || seed.length === 0) return [activeWallet];
-    const group = wallets.filter((w) => w.seedPhrase === seed);
+    const seedGroup = activeWallet.seedGroupId;
+    if (typeof seedGroup !== "string" || seedGroup.length === 0) {
+      return [activeWallet];
+    }
+    const group = wallets.filter((w) => w.seedGroupId === seedGroup);
     return group.length > 0 ? group : [activeWallet];
   }, [activeWallet, wallets]);
 

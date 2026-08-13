@@ -146,12 +146,33 @@ keeps the migration tractable.
 
 Active today, documented so they do not regress:
 
+- **Tier 1 secret/meta split (shipped).** `services/walletService.ts`
+  keeps decrypted key material in a module-private `secretVault` and
+  hands out STRIPPED `TWallet` records. React Query, `useWallet()`
+  consumers, dApp `ApprovalIntent`s and every component therefore hold
+  wallet metadata with no `privateKey` / `seedPhrase`. Signer dwell
+  sites resolve secrets by address via `resolveWalletSecret`; the two
+  surfaces that legitimately need plaintext (seed reveal, encrypted
+  backup) call `revealWalletSecret` explicitly. Account grouping keys
+  on the non-secret `seedGroupId`, not on the mnemonic. See the
+  secret-vault header comment in that file for the four invariants.
+  - The most destructive failure mode in the file is the save path
+    persisting stripped records over the stored bundle. `withVaultSecrets`
+    on the way to disk is the guard, plus a tripwire that refuses the
+    write when no row resolves key material at all.
 - Signing call sites pass the account to the Viem signer immediately
   and drop their reference at function exit. Do not stash an account
   on a component or hook for "later" signing.
-- `clearAccountCache()` (`services/walletService.ts:138`) is called on
-  lock / logout / wallet removal. Verify each new lock trigger path
-  calls it.
+- `clearAccountCache()` is called from `LockScreen.attempt`, alongside
+  `clearWalletCache()` (which also clears the vault). Verify each new
+  lock trigger path calls **both** — the derived signers hold key
+  material independently of the vault (viem accounts close over the
+  private key; the Sui / Stellar keypairs hold the raw secret).
+  - Historical note: before Tier 1 this bullet described an intent
+    nothing implemented. `clearAccountCache` had **no live caller**, so
+    the derived signers survived every lock. If you are auditing a
+    similar "is called on X" claim elsewhere in this document, grep for
+    the caller before trusting it.
 - Agent-session bearer tokens are rotated on a short cadence; a
   long-lived token in the JS heap is a finding. The session TTL is
   enforced in `services/agentSession`; any PR extending the TTL must

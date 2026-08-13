@@ -76,9 +76,11 @@ export default function WalletDetails({
   // when seedPhrase is absent (imported private-key row).
   const pairedWallets = useMemo(() => {
     if (!wallet) return [] as TWallet[];
-    const seed = wallet.seedPhrase;
-    if (typeof seed !== "string" || seed.length === 0) return [wallet];
-    const group = wallets.filter((w) => w.seedPhrase === seed);
+    const seedGroup = wallet.seedGroupId;
+    if (typeof seedGroup !== "string" || seedGroup.length === 0) {
+      return [wallet];
+    }
+    const group = wallets.filter((w) => w.seedGroupId === seedGroup);
     return group.length > 0 ? group : [wallet];
   }, [wallet, wallets]);
 
@@ -305,8 +307,10 @@ export default function WalletDetails({
         </Suspense>
 
         {/* Backup sits right by the seed phrase — same recovery concern. Only
-            for wallets that actually have a mnemonic to encrypt. */}
-        {wallet.seedPhrase && onBackup ? (
+            for wallets that actually have a mnemonic to encrypt.
+            `seedGroupId` is the non-secret presence signal: it is assigned
+            only to mnemonic-derived rows (TWV-2026-057 Tier 1). */}
+        {wallet.seedGroupId && onBackup ? (
           <TouchableOpacity
             activeOpacity={0.7}
             onPress={onBackup}

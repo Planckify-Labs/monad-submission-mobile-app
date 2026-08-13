@@ -43,9 +43,34 @@ function debounce<T extends (...args: any[]) => void>(fn: T, delay: number): T {
   }) as T;
 }
 
+// TWV-2026-057 Tier 1 — last-resort guard against writing key material
+// to disk. `EXCLUDED_QUERY_KEYS` above is a DENYLIST: it protects the
+// query keys we knew about when we wrote it, and silently fails open for
+// any future query that happens to carry a wallet object. MMKV is not
+// encrypted, so failing open means a plaintext seed on disk.
+//
+// The wallet service now strips key material before it ever reaches
+// React Query, so this should never fire. It is here so that if that
+// invariant is ever broken upstream, the failure is a dropped cache
+// write and a dev warning rather than a seed leak. Cost is one substring
+// scan of a string we already had to build.
+const SECRET_MARKERS = ['"privateKey"', '"seedPhrase"', '"mnemonic"'];
+
 const writeToMMKV = (client: PersistedClient) => {
   try {
-    queryCache.set(CACHE_KEY, JSON.stringify(client));
+    const serialized = JSON.stringify(client);
+    const leaked = SECRET_MARKERS.find((m) => serialized.includes(m));
+    if (leaked) {
+      if (__DEV__) {
+        console.error(
+          `[queryPersister] refusing to persist: payload contains ${leaked}. ` +
+            "Wallet key material must never reach the query cache — see the " +
+            "secret-vault note in services/walletService.ts.",
+        );
+      }
+      return;
+    }
+    queryCache.set(CACHE_KEY, serialized);
   } catch {
     // Silently ignore serialization failures (e.g. circular refs)
   }

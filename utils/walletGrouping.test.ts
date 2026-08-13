@@ -20,8 +20,12 @@ import {
   groupWalletSections,
 } from "@/utils/walletGrouping";
 
-// Minimal wallet-row factory. Rows sharing a `seedPhrase` collapse into
-// one account (see `groupWalletsIntoAccounts`).
+// Minimal wallet-row factory. Rows sharing a `seedGroupId` collapse
+// into one account (see `groupWalletsIntoAccounts`).
+//
+// TWV-2026-057 Tier 1 — grouping keys on the non-secret `seedGroupId`
+// assigned by the wallet service, never on the mnemonic. Wallets that
+// reach this code come from app state and carry no key material.
 function row(
   overrides: Partial<TWallet> & Pick<TWallet, "address" | "namespace">,
 ): TWallet {
@@ -47,21 +51,21 @@ function twoGoogleAccounts(): TWallet[] {
       address: addrs[0],
       namespace: "eip155",
       name: "Satria · ETH",
-      seedPhrase: seed,
+      seedGroupId: seed,
       socialAccount: { provider: "google", email, name: "Satria Ali" },
     }),
     row({
       address: addrs[1],
       namespace: "solana",
       name: "Satria · SOL",
-      seedPhrase: seed,
+      seedGroupId: seed,
       socialAccount: { provider: "google", email, name: "Satria Ali" },
     }),
     row({
       address: addrs[2],
       namespace: "sui",
       name: "Satria · SUI",
-      seedPhrase: seed,
+      seedGroupId: seed,
       socialAccount: { provider: "google", email, name: "Satria Ali" },
     }),
   ];
@@ -100,7 +104,7 @@ describe("buildWalletAccountGroups", () => {
         name: "Trading · ETH",
         type: "SeedPhrase",
         source: "Created",
-        seedPhrase: "solo seed phrase",
+        seedGroupId: "solo seed phrase",
       }),
       row({
         address: "0xseed2",
@@ -108,7 +112,7 @@ describe("buildWalletAccountGroups", () => {
         name: "Trading · SOL",
         type: "SeedPhrase",
         source: "Created",
-        seedPhrase: "solo seed phrase",
+        seedGroupId: "solo seed phrase",
       }),
     ]);
     assert.equal(groups.length, 1);
