@@ -41,14 +41,38 @@ const SECURITY_ICON_COLOR: Record<SecurityLevel, string> = {
   insecure: COLORS.PRIMARY_RED,
 };
 
-function SecurityIcon({ level }: { level: SecurityLevel }) {
-  const color = SECURITY_ICON_COLOR[level];
+function SecurityIcon({
+  level,
+  isPageLoaded,
+}: {
+  level: SecurityLevel;
+  isPageLoaded: boolean;
+}) {
   const size = ICON_SIZES.SMALL + 2;
   if (level === "none")
-    return <Search size={size} color={color} strokeWidth={2} />;
+    return (
+      <Search size={size} color={SECURITY_ICON_COLOR.none} strokeWidth={2} />
+    );
   if (level === "secure")
-    return <Shield size={size} color={color} strokeWidth={2.5} />;
-  return <TriangleAlert size={size} color={color} strokeWidth={2.5} />;
+    return (
+      <Shield
+        size={size}
+        // Grey while the page is still coming in, emerald once it has
+        // settled. The claim the shield makes ("this loaded over TLS and it
+        // is done") is only true at the end, so it stays neutral until then
+        // rather than promising something mid-flight. A caution or insecure
+        // host never turns green: its warning colour outranks load state.
+        color={isPageLoaded ? COLORS.EMERALD : SECURITY_ICON_COLOR.secure}
+        strokeWidth={2.5}
+      />
+    );
+  return (
+    <TriangleAlert
+      size={size}
+      color={SECURITY_ICON_COLOR[level]}
+      strokeWidth={2.5}
+    />
+  );
 }
 
 /**
@@ -77,10 +101,15 @@ const BrowserAddressBar = memo<TBrowserAddressBarProps>(
     onSubmit,
     isWalletConnected = true,
     onPressWallet,
+    isPageLoaded = false,
+    isBlocked = false,
   }) {
     const { top } = useSafeAreaInsets();
 
-    const level = useMemo(() => securityLevel(pageUrl), [pageUrl]);
+    const level = useMemo(
+      () => (isBlocked ? "insecure" : securityLevel(pageUrl)),
+      [pageUrl, isBlocked],
+    );
     const host = useMemo(() => displayHost(pageUrl), [pageUrl]);
 
     // Drives the whole idle-to-editing transition off one value, so the
@@ -113,7 +142,7 @@ const BrowserAddressBar = memo<TBrowserAddressBarProps>(
         style={{ paddingTop: top > 0 ? top : 0 }}
       >
         <View className="flex-1 bg-light rounded-full flex-row items-center px-4 py-1 min-h-[44px]">
-          <SecurityIcon level={level} />
+          <SecurityIcon level={level} isPageLoaded={isPageLoaded} />
 
           {isEditing ? (
             <>

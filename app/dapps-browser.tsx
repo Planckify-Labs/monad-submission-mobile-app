@@ -9,7 +9,13 @@ import React, {
 import { Alert, Keyboard, StatusBar, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
+import BrowserBlockedSite from "@/components/dapps-browser/BrowserBlockedSite";
+import BrowserPageError from "@/components/dapps-browser/BrowserPageError";
 import DappLoadingOverlay from "@/components/dapps-browser/DappLoadingOverlay";
+import {
+  type PageLoadErrorInput,
+  shouldIgnorePageLoadError,
+} from "@/services/dappsBrowser/pageError";
 
 // TWV-2026-015 — generate a per-session nonce from the OS CSPRNG via
 // the polyfill installed in `pollyfills.ts`. 16 random bytes → 32 hex
@@ -149,6 +155,7 @@ import { FaviconStore } from "@/services/dappsBrowser/faviconStore";
 import { BrowserHistoryStore } from "@/services/dappsBrowser/historyStore";
 import { displayHost, parseOmnibox } from "@/services/dappsBrowser/omnibox";
 import type { Suggestion } from "@/services/dappsBrowser/suggest";
+import { isFlaggedHost } from "@/services/security/scamDomainFeed";
 import { getAccountForWallet } from "@/services/walletService";
 
 interface TBrowserState {
@@ -194,6 +201,23 @@ export default function DappsBrowser() {
     canGoForward: false,
     loading: false,
   });
+  // Last failed page load, or null when the page is fine. Set from the
+  // WebView's `onError`, cleared the moment a new load starts, so it is
+  // always in step with the WebView's own internal ERROR state.
+  const [pageError, setPageError] = useState<PageLoadErrorInput | null>(null);
+  // A real page finished loading. Set only from the success-only `onLoad`
+  // callback, so the emerald shield is proof of a completed load rather
+  // than the absence of a failure we may not have heard about yet.
+  const [pageLoaded, setPageLoaded] = useState(false);
+  // TWV-2026-051 — URL the scam-domain feed refused, or null. Held apart
+  // from `browserState.url`: the WebView is parked on about:blank while
+  // this is set, but the address bar keeps showing the blocked host,
+  // because a warning that hides which site it is about teaches nothing.
+  const [blockedUrl, setBlockedUrl] = useState<string | null>(null);
+  // Hosts the user chose to open anyway. A ref, never persisted: the
+  // warning comes back the next time the browser is opened, and a bypass
+  // can never outlive the session that granted it.
+  const bypassedHosts = useRef<Set<string>>(new Set());
 
   // TWV-2026-015 — per-session nonce. Rotated on every top-frame nav
   // (see `handleNavigate` below). Stamped into the injected provider's
@@ -339,25 +363,61 @@ export default function DappsBrowser() {
    * single-quoted string with no escaping, so a URL containing an
    * apostrophe executed arbitrary script inside the currently open dApp.
    */
-  const navigateToUrl = useCallback((input: string) => {
-    const intent = parseOmnibox(input);
-    // Empty or whitespace-only input: stay put rather than navigating to
-    // an empty search.
-    if (!intent) return;
+  // True when the scam-domain feed flags this URL and the user has not
+  // already accepted the risk for that host in this session.
+  const isBlockedSite = useCallback((url: string) => {
+    const host = displayHost(url);
+    if (host && bypassedHosts.current.has(host)) return false;
+    return isFlaggedHost(url);
+  }, []);
 
-    setIsEditing(false);
+  const navigateToUrl = useCallback(
+    (input: string) => {
+      const intent = parseOmnibox(input);
+      // Empty or whitespace-only input: stay put rather than navigating to
+      // an empty search.
+      if (!intent) return;
+
+      setIsEditing(false);
+      setDraft("");
+      setShowHub(false);
+      setPageError(null);
+      setPageLoaded(false);
+      // TWV-2026-051 — first of the two block points. This one catches the
+      // address bar, the hub, suggestions and deep links; the WebView's
+      // `onShouldStartLoadWithRequest` catches redirects and in-page links
+      // that never come through here.
+      setBlockedUrl(isBlockedSite(intent.url) ? intent.url : null);
+      setBrowserState((prev) => ({
+        ...prev,
+        url: intent.url,
+        // Drop the previous page's title immediately; it is attached to
+        // every bridge message as `origin.title` and shown in the connection
+        // manager, so carrying it across a navigation mislabels the new site.
+        title: "",
+        loading: true,
+      }));
+      Keyboard.dismiss();
+    },
+    [isBlockedSite],
+  );
+
+  // Leaves the open dApp and returns to the hub. Shared by the navigation
+  // bar's home button and the error page's escape hatch.
+  const goHome = useCallback(() => {
+    setShowHub(true);
     setDraft("");
-    setShowHub(false);
-    setBrowserState((prev) => ({
-      ...prev,
-      url: intent.url,
-      // Drop the previous page's title immediately; it is attached to
-      // every bridge message as `origin.title` and shown in the connection
-      // manager, so carrying it across a navigation mislabels the new site.
-      title: "",
-      loading: true,
-    }));
-    Keyboard.dismiss();
+    setIsEditing(false);
+    setPageError(null);
+    setPageLoaded(false);
+    setBlockedUrl(null);
+    setBrowserState({
+      url: "",
+      title: "Web3 Ecosystem Hub",
+      canGoBack: false,
+      canGoForward: false,
+      loading: false,
+    });
   }, []);
 
   const startEditing = useCallback(() => {
@@ -593,7 +653,9 @@ export default function DappsBrowser() {
       <StatusBar barStyle="dark-content" backgroundColor="#f5f6f9" />
       <View className="flex-1 bg-light-main-container">
         <BrowserAddressBar
-          pageUrl={browserState.url}
+          // While an interstitial is up the WebView is parked on
+          // about:blank, so the bar reads from the blocked URL instead.
+          pageUrl={blockedUrl ?? browserState.url}
           draft={draft}
           onChangeDraft={setDraft}
           isEditing={isEditing}
@@ -602,6 +664,13 @@ export default function DappsBrowser() {
           onSubmit={() => navigateToUrl(draft)}
           isWalletConnected={isConnected}
           onPressWallet={() => setShowConnections(true)}
+          // Emerald shield only once the load has actually landed. `loading`
+          // clears on the WebView's `onLoadEnd`, which is the document-
+          // complete signal both platforms give us; a failed load clears it
+          // too, so the error state has to be excluded explicitly or the
+          // shield would go green over an error page.
+          isPageLoaded={!showHub && pageLoaded && !pageError && !blockedUrl}
+          isBlocked={blockedUrl !== null}
         />
         {/* Everything below the address bar. The suggestion overlay
             absolutely fills THIS wrapper, so it covers the page and the
@@ -616,7 +685,11 @@ export default function DappsBrowser() {
             <View className="flex-1 mx-2 mb-2- rounded-3xl overflow-hidden border-4 border-light-matte-black bg-light-main-container">
               <WebView
                 ref={webViewRef}
-                source={{ uri: browserState.url }}
+                // A blocked site is never fetched. Parking on about:blank
+                // rather than just covering the page with the interstitial
+                // also tears down whatever was loaded before, so no dApp
+                // keeps a live provider session behind the warning.
+                source={{ uri: blockedUrl ? "about:blank" : browserState.url }}
                 onMessage={handleMessage}
                 // UA suffix so dApps that fall back to user-agent sniffing (or
                 // want to branch on "in-app wallet browser") can detect us by
@@ -640,9 +713,95 @@ export default function DappsBrowser() {
                 // and our provider script is idempotent (guarded by
                 // `window.__takumi_evm_installed`).
                 injectedJavaScript={injectedJavaScript}
-                onLoadStart={() =>
-                  setBrowserState((p) => ({ ...p, loading: true }))
-                }
+                onLoadStart={() => {
+                  // Deliberately does NOT clear `pageError`. When a load
+                  // fails, Android's WebView renders its own "Web page not
+                  // available" document and commits it to history, and
+                  // `RNCWebViewClient.doUpdateVisitedHistory` dispatches a
+                  // TopLoadingStartEvent for it — a start event for a page
+                  // the user never asked for, arriving milliseconds after
+                  // the failure. Clearing here wiped the error state we had
+                  // just set, which left the native Android page visible
+                  // and turned the address-bar shield green over it.
+                  setPageLoaded(false);
+                  setBrowserState((p) => ({ ...p, loading: true }));
+                }}
+                // Success only: `onLoadingFinish` skips this when the load
+                // failed (the Android client gates it on `mLastLoadFailed`),
+                // so this is the one callback that means "a real page is up".
+                // The shield turns emerald from this signal alone, never
+                // from "no error seen yet", so a failure state it has not
+                // heard about cannot be painted as a healthy page.
+                onLoad={() => {
+                  setPageError(null);
+                  setPageLoaded(true);
+                }}
+                // TWV-2026-051 — second block point, and the one that
+                // matters: drainers arrive by redirect off an ad or a
+                // Discord link, not by someone typing the domain. Every
+                // top-frame navigation the page initiates passes through
+                // here, so a flagged host is refused before a single
+                // request goes out.
+                onShouldStartLoadWithRequest={(request) => {
+                  if (!isBlockedSite(request.url)) return true;
+                  setBlockedUrl(request.url);
+                  return false;
+                }}
+                // Replaces react-native-webview's `defaultRenderError`,
+                // which paints the raw platform triple ("Domain: undefined
+                // / Error Code: -2 / Description:
+                // net::ERR_INTERNET_DISCONNECTED") straight at the user.
+                // `preventDefault()` keeps the WebView out of its ERROR
+                // state for loads that were merely cancelled or superseded,
+                // the way a real browser stays silent about those.
+                onError={(event) => {
+                  const { code, description, domain } = event.nativeEvent;
+                  if (__DEV__) {
+                    console.warn("[dapps-browser] page load failed", {
+                      code,
+                      description,
+                      domain,
+                      url: browserState.url,
+                    });
+                  }
+                  if (
+                    shouldIgnorePageLoadError({ code, description, domain })
+                  ) {
+                    event.preventDefault();
+                    return;
+                  }
+                  setPageError({ code, description, domain });
+                  setPageLoaded(false);
+                  // The page that asked for an approval no longer exists,
+                  // so any sheet still on screen for it is signing into a
+                  // void. `bridge.onNavigate` only clears intents from a
+                  // DIFFERENT origin, which is exactly the case a failed
+                  // same-origin load is not.
+                  bridge.onPageUnavailable(browserState.url);
+                }}
+                // Rendered from the arguments the WebView hands us, NOT from
+                // our own `pageError` state. RN calls this only while its
+                // internal viewState is ERROR and always passes the real
+                // failure, so there is no window where the two disagree.
+                // Reading state here meant that Android's post-failure
+                // history commit (see `onLoadStart`) could blank it a beat
+                // later, and the fallback branch rendered a transparent
+                // View — through which the WebView's own green-robot "Web
+                // page not available" document was perfectly visible. This
+                // must always return a real, opaque page.
+                renderError={(domain, code, description) => (
+                  <BrowserPageError
+                    error={{ domain, code, description }}
+                    host={hostFromUrl(browserState.url)}
+                    canGoBack={browserState.canGoBack}
+                    onRetry={() => {
+                      setPageError(null);
+                      webViewRef.current?.reload();
+                    }}
+                    onGoBack={() => webViewRef.current?.goBack()}
+                    onGoHome={goHome}
+                  />
+                )}
                 onLoadEnd={() => {
                   setBrowserState((p) => ({ ...p, loading: false }));
                   // Active re-injection of the full provider + announce +
@@ -679,8 +838,24 @@ export default function DappsBrowser() {
                 cacheMode="LOAD_DEFAULT"
                 className="flex-1"
               />
-              {browserState.loading && (
+              {browserState.loading && !pageError && !blockedUrl && (
                 <DappLoadingOverlay host={hostFromUrl(browserState.url)} />
+              )}
+              {/* Sits outside the WebView's own `renderError` because
+                  nothing was ever loaded to fail: we refused the request,
+                  so the WebView is idle on about:blank underneath. */}
+              {blockedUrl && (
+                <BrowserBlockedSite
+                  host={hostFromUrl(blockedUrl) ?? blockedUrl}
+                  onLeave={goHome}
+                  onProceed={() => {
+                    const host = hostFromUrl(blockedUrl);
+                    if (host) bypassedHosts.current.add(host);
+                    const target = blockedUrl;
+                    setBlockedUrl(null);
+                    navigateToUrl(target);
+                  }}
+                />
               )}
             </View>
           )}
@@ -696,18 +871,7 @@ export default function DappsBrowser() {
               onSearch={startEditing}
               onRefresh={() => webViewRef.current?.reload()}
               onStop={() => webViewRef.current?.stopLoading()}
-              onHome={() => {
-                setShowHub(true);
-                setDraft("");
-                setIsEditing(false);
-                setBrowserState({
-                  url: "",
-                  title: "Web3 Ecosystem Hub",
-                  canGoBack: false,
-                  canGoForward: false,
-                  loading: false,
-                });
-              }}
+              onHome={goHome}
             />
           )}
           {isEditing && (

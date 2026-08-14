@@ -36,6 +36,10 @@ export const COLORS = {
   // Address-bar caution state: a hostname carrying non-ASCII or punycode
   // labels, which may not read the way it renders.
   AMBER: "#b45309",
+  // Address-bar shield once the page has finished loading over a good
+  // connection. Same emerald as the wallet button's connected border, so
+  // the two healthy signals in the bar read as one colour.
+  EMERALD: "#047857",
 } as const;
 
 export const ANIMATION = {

@@ -30,6 +30,18 @@ export interface TBrowserAddressBarProps {
   isWalletConnected?: boolean;
   /** Opens the wallet connection manager sheet. */
   onPressWallet?: () => void;
+  /**
+   * The page finished loading and did not fail. Turns the security shield
+   * from neutral grey to emerald. False while a load is in flight, on the
+   * hub, and on an error page.
+   */
+  isPageLoaded?: boolean;
+  /**
+   * The scam-domain feed refused this URL. Forces the danger icon, so the
+   * bar agrees with the interstitial instead of showing a calm shield next
+   * to a red warning page.
+   */
+  isBlocked?: boolean;
 }
 
 export interface TBrowserNavigationControlsProps {

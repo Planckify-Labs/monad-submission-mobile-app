@@ -168,6 +168,9 @@ export default defineConfig({
       // Site-icon cache: the rule that a visit reporting no icon must
       // never erase the one already on screen.
       "services/dappsBrowser/faviconStore.test.ts",
+      // Page-load failures: the two platforms report them differently and
+      // the raw codes must never reach the screen.
+      "services/dappsBrowser/pageError.test.ts",
       // Encrypted seed backup (docs/encrypted-seed-backup-spec.md)
       "services/backup/seedBackupCrypto.test.ts",
       "services/backup/bytes.test.ts",
