@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { storage } from "@/lib/storage/mmkv";
 import {
   chainRpcUrl,
   isProxyUrl,
@@ -8,16 +9,37 @@ import {
   registerProxyOrigin,
   rpcFetchOptions,
 } from "./proxyAuth";
+import { __resetProxyTokensForTest, ensureProxyToken } from "./proxyToken";
 
-const KEY = "rpcp_testkey";
+const KEY = "rpcd_testtoken";
 const PROXY = "http://192.168.1.173:8787/evm/42161";
+const PROXY_ORIGIN = "http://192.168.1.173:8787";
 const ALCHEMY = "https://arb-mainnet.g.alchemy.com/v2/abc123";
 
+/** Stands in for `POST {origin}/token`. */
+function mockMint(token = KEY, expiresIn = 604800) {
+  const fetchMock = vi.fn(
+    async () =>
+      new Response(JSON.stringify({ token, expiresIn }), { status: 200 }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 describe("proxyAuth", () => {
-  beforeEach(() => {
-    process.env.EXPO_PUBLIC_RPC_PROXY_API_KEY = KEY;
-    // The backend feed is what tells us which origin is ours.
+  beforeEach(async () => {
+    __resetProxyTokensForTest();
+    storage.clearAll();
+    mockMint();
+    // The backend feed is what tells us which origin is ours. Registering also
+    // kicks off the mint, so awaiting it here mirrors the steady state the app
+    // reaches a moment after boot.
     registerProxyOrigin(PROXY);
+    await ensureProxyToken(PROXY_ORIGIN);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("recognises the origin the backend handed us, by origin not full URL", () => {
@@ -28,7 +50,7 @@ describe("proxyAuth", () => {
     expect(isProxyUrl("http://192.168.1.173:9999/evm/1")).toBe(false);
   });
 
-  it("attaches the bearer to the proxy", () => {
+  it("attaches the minted token to the proxy", () => {
     expect(proxyAuthHeaders(PROXY)).toEqual({ Authorization: `Bearer ${KEY}` });
   });
 
@@ -40,10 +62,55 @@ describe("proxyAuth", () => {
     expect(rpcFetchOptions(ALCHEMY)).toBeUndefined();
   });
 
-  it("adds nothing when no key is configured (proxy auth disabled)", () => {
-    delete process.env.EXPO_PUBLIC_RPC_PROXY_API_KEY;
+  it("adds nothing before a token has been minted", () => {
+    // The window on a fresh install between learning the origin and the mint
+    // landing. Requests go out unauthenticated and the proxy answers 401,
+    // which is recoverable; attaching a stale or invented bearer would not be.
+    __resetProxyTokensForTest();
+    storage.clearAll();
     expect(proxyAuthHeaders(PROXY)).toEqual({});
     expect(rpcFetchOptions(PROXY)).toBeUndefined();
+  });
+
+  it("stops presenting a token once it has expired", async () => {
+    __resetProxyTokensForTest();
+    storage.clearAll();
+    mockMint("rpcd_expired", -1);
+    await ensureProxyToken(PROXY_ORIGIN);
+    expect(proxyAuthHeaders(PROXY)).toEqual({});
+  });
+
+  it("survives a restart by rehydrating the token from storage", async () => {
+    // Only the in-memory map is cleared, as on a cold start. Rehydration has
+    // to be synchronous: `proxyAuthHeaders` is called from transport
+    // constructors that cannot await, so an async-only cache would hand out
+    // empty headers for the first RPC calls of every launch.
+    __resetProxyTokensForTest();
+    expect(proxyAuthHeaders(PROXY)).toEqual({ Authorization: `Bearer ${KEY}` });
+  });
+
+  it("mints once when several chains register the same origin at boot", async () => {
+    __resetProxyTokensForTest();
+    storage.clearAll();
+    const fetchMock = mockMint();
+    // EVM, Solana and Sui all resolve from the same `/blockchains` feed.
+    await Promise.all([
+      ensureProxyToken(PROXY_ORIGIN),
+      ensureProxyToken(PROXY_ORIGIN),
+      ensureProxyToken(PROXY_ORIGIN),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not throw when minting fails", async () => {
+    __resetProxyTokensForTest();
+    storage.clearAll();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("upstream exploded", { status: 500 })),
+    );
+    await expect(ensureProxyToken(PROXY_ORIGIN)).resolves.toBeUndefined();
+    expect(proxyAuthHeaders(PROXY)).toEqual({});
   });
 
   it("tolerates junk and missing urls", () => {

@@ -51,6 +51,24 @@ Once the native modules ship:
 - [ ] Threshold configurable via `services/transferThresholdStore.ts`
       (already present).
 
+## Second consumer: rpc-proxy device tokens
+
+Signing-above-threshold is not the only caller that needs this. The
+rpc-proxy device credential (`docs/rpc-proxy-device-credential.md`)
+mints an unattested token today, which means anyone can obtain one and
+a banned device can mint a fresh identity. Attesting the mint is what
+closes that.
+
+Do the two together. The expensive parts — the native modules and the
+backend verifier — are shared; only the call sites differ. The seams on
+the RPC side already exist (`MintRequest.attestation`,
+`mintDeviceToken()`), so it is additive there.
+
+One difference worth carrying into the design: the RPC mint runs about
+once per token TTL, not per request, which keeps it inside Play
+Integrity's standard-request quota. Do not let attestation drift onto a
+per-RPC-call path.
+
 ## Review gate
 
 Any PR that adds a signing path MUST cite TWV-2026-058 and confirm
