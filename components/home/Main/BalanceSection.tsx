@@ -26,6 +26,7 @@ import { useBlockchains } from "@/hooks/queries/useBlockchains";
 import { usePointBalance } from "@/hooks/queries/usePoints";
 import { usePaymentFeatured } from "@/hooks/queries/useProducts";
 import { useTokens } from "@/hooks/queries/useTokens";
+import { useGoToAuth } from "@/hooks/useGoToAuth";
 import { useQRPrefetch } from "@/hooks/useQRPrefetch";
 import { useWallet } from "@/hooks/useWallet";
 import { useWalletBalance } from "@/hooks/useWalletBalance";
@@ -144,6 +145,7 @@ const BalanceSection = forwardRef<BalanceSectionRef>((props, ref) => {
     isLoading: isAuthLoading,
     hadPreviousSession,
   } = useIsAuthenticated();
+  const { navigatingToAuth, goToAuth } = useGoToAuth();
   const {
     data: pointBalance,
     isFetching: isPointsFetching,
@@ -280,15 +282,30 @@ const BalanceSection = forwardRef<BalanceSectionRef>((props, ref) => {
                   <Text className="text-light-primary-red font-bold text-4xl">
                     {isFetching ? "..." : balance}
                   </Text>
-                  <Text className="text-light-matte-black text-md font-light">
-                    {isAuthenticated
-                      ? isPointsFetching
+                  {isAuthenticated ? (
+                    <Text className="text-light-matte-black text-md font-light">
+                      {isPointsFetching
                         ? "..."
-                        : `${parseInt(pointBalance?.balance ?? "0").toLocaleString()} points`
-                      : isAuthLoading || hadPreviousSession
-                        ? "..."
-                        : "Sign in to view points"}
-                  </Text>
+                        : `${parseInt(pointBalance?.balance ?? "0").toLocaleString()} points`}
+                    </Text>
+                  ) : isAuthLoading || hadPreviousSession ? (
+                    <Text className="text-light-matte-black text-md font-light">
+                      ...
+                    </Text>
+                  ) : (
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      onPress={goToAuth}
+                      disabled={navigatingToAuth}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Text className="text-light-primary-red text-md font-medium underline">
+                        {navigatingToAuth
+                          ? "Opening sign-in…"
+                          : "Sign in to view points"}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               ) : (
                 <View className="flex-row items-center gap-2 py-2">

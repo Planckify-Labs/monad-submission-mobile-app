@@ -13,6 +13,7 @@ import {
   walletSecureGet,
   walletSecureSet,
 } from "@/services/security/walletSecureStore";
+import * as walletService from "@/services/walletService";
 
 interface TNonceResponse {
   nonce: string;
@@ -142,9 +143,45 @@ export const getRefreshTokenForWallet = async (
 
 export const clearTokens = async (): Promise<void> => {
   try {
-    await walletSecureDelete(ACCESS_TOKEN_KEY);
-    await walletSecureDelete(REFRESH_TOKEN_KEY);
-    await walletSecureDelete(AUTH_WALLET_ADDRESS_KEY);
+    // Resolve every wallet address whose per-wallet token slot might be
+    // stale. The lazy migration below (checkAuthentication) copies
+    // tokens into `accessKeyFor(address)`/`refreshKeyFor(address)` as
+    // soon as a wallet is used — after that point those per-wallet
+    // slots (not the legacy ACCESS_TOKEN_KEY/REFRESH_TOKEN_KEY below)
+    // are what `beforeRequest` and `checkAuthentication` actually read.
+    // Deleting only the legacy slot left the real, invalid token
+    // sitting in the per-wallet slot: every 401 wiped nothing that
+    // mattered, `useIsAuthenticated` kept finding a "valid" token and
+    // reporting `isAuthenticated: true`, and every screen kept firing
+    // authenticated requests that 401'd again — an infinite loop with
+    // no inline sign-in CTA ever appearing. Wiping app data was the
+    // only way out because that's the only thing that removed these
+    // per-wallet keys.
+    const addressesToClear = new Set<string>();
+    const legacyAuthedAddress = await walletSecureGet(AUTH_WALLET_ADDRESS_KEY);
+    if (legacyAuthedAddress) {
+      addressesToClear.add(legacyAuthedAddress.toLowerCase());
+    }
+    try {
+      const indexStr = storage.getString("active_wallet_index");
+      const idx = indexStr ? parseInt(indexStr, 10) : 0;
+      const wallets = await walletService.loadWalletsFromStorage();
+      const activeAddr = wallets?.[idx]?.address;
+      if (activeAddr) addressesToClear.add(activeAddr.toLowerCase());
+    } catch {
+      // Best-effort — the legacy-address clear above still covers the
+      // common case where a token was ever minted for this device.
+    }
+
+    await Promise.all([
+      walletSecureDelete(ACCESS_TOKEN_KEY),
+      walletSecureDelete(REFRESH_TOKEN_KEY),
+      walletSecureDelete(AUTH_WALLET_ADDRESS_KEY),
+      ...Array.from(addressesToClear).flatMap((address) => [
+        walletSecureDelete(accessKeyFor(address)),
+        walletSecureDelete(refreshKeyFor(address)),
+      ]),
+    ]);
     // The per-wallet auth-state cache holds the previous `isAuthenticated:
     // true` — wipe it so the next `useIsAuthenticated` run doesn't flash
     // an authenticated state for a wallet that just lost its tokens.
