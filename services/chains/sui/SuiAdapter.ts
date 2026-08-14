@@ -313,8 +313,11 @@ class SuiAdapter implements ChainAdapter {
     req: ChainRequest,
     _ctx: AdapterContext,
   ): Promise<ChainResult> {
+    // Scoped to `namespace: "sui"` — an unscoped revoke would also wipe
+    // this origin's EVM/Solana/Stellar grants (see the Solana adapter's
+    // `handleDisconnect` for the incident this pattern caused).
     void _ctx;
-    await PermissionStore.revoke({ origin: req.origin.url });
+    await PermissionStore.revoke({ origin: req.origin.url, namespace: "sui" });
     return { status: "resolved", value: null };
   }
 

@@ -262,10 +262,16 @@ class SolanaAdapter implements ChainAdapter {
   ): Promise<ChainResult> {
     // Revoke every Solana grant for this origin so subsequent silent
     // connects (`standard:connect({silent:true})`) are denied. We purge
-    // origin-wide rather than per-wallet because all Solana grants for
-    // this origin should clear on explicit disconnect.
+    // every Solana grant rather than per-wallet because all Solana grants
+    // for this origin should clear on explicit disconnect — but scoped to
+    // `namespace: "solana"` so a Solana disconnect never touches this
+    // origin's EVM/Sui/Stellar grants (a dApp resetting a rejected Solana
+    // connect must not silently disconnect an already-approved EVM wallet).
     void ctx;
-    await PermissionStore.revoke({ origin: req.origin.url });
+    await PermissionStore.revoke({
+      origin: req.origin.url,
+      namespace: "solana",
+    });
     return { status: "resolved", value: null };
   }
 

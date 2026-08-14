@@ -705,7 +705,14 @@ export class EvmAdapter implements ChainAdapter {
           return resolved(PermissionStore.asEip2255(req.origin.url));
         }
         case "wallet_revokePermissions": {
-          await PermissionStore.revoke({ origin: req.origin.url });
+          // Scoped to `namespace: "eip155"` — an unscoped revoke would
+          // also wipe this origin's Solana/Sui/Stellar grants (see the
+          // Solana adapter's `handleDisconnect` for the incident this
+          // pattern caused).
+          await PermissionStore.revoke({
+            origin: req.origin.url,
+            namespace: "eip155",
+          });
           return resolved(null);
         }
 

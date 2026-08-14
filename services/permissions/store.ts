@@ -162,15 +162,35 @@ export const PermissionStore = {
     await persist();
   },
 
+  /**
+   * `namespace` omitted ⇒ origin-wide (every namespace this origin holds
+   * a grant on). Only the UI-driven "disconnect this site" / "disconnect
+   * this wallet" actions (`DappBridge.revokeConnection`) should omit it —
+   * those are the one place an origin-wide wipe is the user's actual
+   * intent. A wallet-standard/EIP-2255 protocol handler reacting to a
+   * single namespace's `disconnect`/`wallet_revokePermissions` call MUST
+   * pass its own `namespace`, or it silently revokes every OTHER
+   * namespace's grant for the same origin too — that cross-namespace
+   * wipe is what let a rejected/reset Solana `standard:connect` erase an
+   * already-approved EVM grant on multi-namespace dApps (e.g. Uniswap
+   * requesting EVM + Solana at once).
+   */
   async revoke(args: {
     origin: string;
     walletAddress?: string;
+    namespace?: Namespace;
   }): Promise<void> {
     const key = originKey(args.origin);
     const before = cache.grants.length;
     cache = {
       grants: cache.grants.filter((g) => {
         if (g.origin !== key) return true;
+        if (
+          args.namespace &&
+          namespaceForChainKey(g.chainId) !== args.namespace
+        ) {
+          return true;
+        }
         if (!args.walletAddress) return false;
         return !addressesEqual(
           namespaceForChainKey(g.chainId),
