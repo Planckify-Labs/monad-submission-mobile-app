@@ -1,5 +1,5 @@
 import { Image } from "expo-image";
-import { Lock, Search, TriangleAlert, X } from "lucide-react-native";
+import { Search, Shield, TriangleAlert, X } from "lucide-react-native";
 import React, { memo, useEffect, useMemo } from "react";
 import {
   Platform,
@@ -47,7 +47,7 @@ function SecurityIcon({ level }: { level: SecurityLevel }) {
   if (level === "none")
     return <Search size={size} color={color} strokeWidth={2} />;
   if (level === "secure")
-    return <Lock size={size} color={color} strokeWidth={2.5} />;
+    return <Shield size={size} color={color} strokeWidth={2.5} />;
   return <TriangleAlert size={size} color={color} strokeWidth={2.5} />;
 }
 
