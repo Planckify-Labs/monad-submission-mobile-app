@@ -30,6 +30,30 @@ describe("isFlaggedHost — fallback list", () => {
 
   it("returns false for malformed URLs", () => {
     assert.equal(isFlaggedHost("not-a-url"), false);
+    assert.equal(isFlaggedHost(""), false);
+    assert.equal(isFlaggedHost("   "), false);
+    assert.equal(isFlaggedHost("/just/a/path"), false);
+  });
+
+  it("flags a bare host, not just a full URL", () => {
+    // Callers pass permission-store origin keys and history rows, which
+    // are hosts rather than URLs. The old `new URL(host)` lookup returned
+    // an empty hostname for these, so the blocklist silently missed them.
+    assert.equal(isFlaggedHost("uniswap-claim.io"), true);
+    assert.equal(isFlaggedHost("drop.uniswap-claim.io"), true);
+  });
+
+  it("is case-insensitive on the host", () => {
+    assert.equal(isFlaggedHost("https://UNISWAP-CLAIM.IO/promo"), true);
+    assert.equal(isFlaggedHost("Uniswap-Claim.io"), true);
+  });
+
+  it("does not flag a host that merely contains a flagged one", () => {
+    // Suffix matching has to be label-aware: `notuniswap-claim.io` is a
+    // different registrable domain, and flagging it would be a false
+    // positive that trains people to tap through the interstitial.
+    assert.equal(isFlaggedHost("https://notuniswap-claim.io/"), false);
+    assert.equal(isFlaggedHost("https://uniswap-claim.io.evil.test/"), false);
   });
 });
 

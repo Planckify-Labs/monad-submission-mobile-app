@@ -164,3 +164,76 @@ describe("DappBridge — TWV-2026-007 hard-reject eth_sign", () => {
     );
   });
 });
+
+describe("DappBridge — TWV-2026-051 flagged-origin gates", () => {
+  it("blocks signature-producing methods in dispatch(), before the adapter", () => {
+    const dispatchBlock = src.match(
+      /async dispatch\(rawMessage: unknown\)[\s\S]*?^  \}/m,
+    );
+    assert.ok(dispatchBlock, "dispatch() body not found");
+    const body = dispatchBlock[0];
+    const gateIdx = body.indexOf("SIGNATURE_PRODUCING_METHODS.has(method)");
+    const adapterIdx = body.indexOf("adapter.handleRequest");
+    assert.ok(gateIdx > 0, "no flagged-origin signature gate in dispatch()");
+    assert.ok(
+      gateIdx < adapterIdx,
+      "the flagged-origin gate must run before adapter.handleRequest",
+    );
+    assert.match(
+      body.slice(gateIdx, gateIdx + 400),
+      /isFlaggedHost\(origin\.url\)[\s\S]*?this\.postError/,
+    );
+  });
+
+  it("blocks every approval intent in enqueue(), not just the EVM method names", () => {
+    // `SIGNATURE_PRODUCING_METHODS` is an EVM list. Without a gate at the
+    // namespace-agnostic choke point, a flagged origin could still reach a
+    // Solana / Sui / Stellar signing sheet.
+    const enqueueBlock = src.match(
+      /async enqueue\(intent: ApprovalIntent\)[\s\S]*?^  \}/m,
+    );
+    assert.ok(enqueueBlock, "enqueue() body not found");
+    const body = enqueueBlock[0];
+    const gateIdx = body.indexOf("isFlaggedHost(intent.origin.url)");
+    const pushIdx = body.indexOf("pendingIntentsStore.push");
+    assert.ok(gateIdx > 0, "no flagged-origin gate in enqueue()");
+    assert.ok(
+      gateIdx < pushIdx,
+      "the flagged-origin gate must run before the intent is queued",
+    );
+  });
+
+  it("keeps the block terminal — no bypass flag reaches the bridge", () => {
+    // The browser lets a user click past the interstitial; signing must
+    // not inherit that decision. If a bypass ever gets plumbed into the
+    // bridge, this is the test that should stop it. Comments are stripped
+    // first: the code is allowed to explain why the bypass stops at the
+    // browser, it just is not allowed to read one.
+    const code = src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    assert.doesNotMatch(code, /bypass/i);
+  });
+});
+
+describe("DappBridge — approvals do not outlive their page", () => {
+  it("exposes onPageUnavailable and rejects same-origin intents with 4900", () => {
+    const block = src.match(/onPageUnavailable\(url: string\)[\s\S]*?^  \}/m);
+    assert.ok(block, "onPageUnavailable() not found");
+    const body = block[0];
+    assert.match(body, /pendingIntentsStore\.remove\(intent\.id\)/);
+    assert.match(body, /this\.postError\(intent\.id, 4900/);
+    // Same-origin only: a live page's approvals must survive another
+    // page's failure.
+    assert.match(body, /originKey\(intent\.origin\.url\) !== deadHost/);
+  });
+
+  it("clears the per-origin pending lock so the origin is not wedged", () => {
+    // `pendingByOrigin` gates one approval per origin. Dropping the intent
+    // without clearing it would make every later request from that origin
+    // fail with -32002 until the screen remounts.
+    const block = src.match(/onPageUnavailable\(url: string\)[\s\S]*?^  \}/m);
+    assert.ok(block);
+    assert.match(block[0], /this\.pendingByOrigin\.delete\(deadHost\)/);
+  });
+});

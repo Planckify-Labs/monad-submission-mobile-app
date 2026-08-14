@@ -13,6 +13,8 @@
 // Privacy invariant: feed lookups MUST NOT include the user's wallet
 // address. Hash the domain only.
 
+import { parseUrl } from "@/services/dappsBrowser/omnibox";
+
 let cachedFlagged: Set<string> | null = null;
 let cachedAt = 0;
 
@@ -37,13 +39,33 @@ export function setFlaggedHosts(hosts: Iterable<string>): void {
   cachedAt = Date.now();
 }
 
+/**
+ * Bare hostname for a lookup, lowercased. Accepts either a full URL or a
+ * naked host.
+ *
+ * This used to be `try { new URL(raw).hostname } catch { return false }`.
+ * On device that catch is unreachable: React Native's `URL` is a regex
+ * shim that never throws and returns `""` for a hostname it cannot match
+ * (see the note at the top of `omnibox.ts`). A blocklist that silently
+ * looks up the empty string is a blocklist that never fires, and the
+ * failure is invisible because the Node test runner has a real WHATWG
+ * `URL` and passes. `parseUrl` is the repo's own parser and behaves the
+ * same in both places.
+ */
+function hostForLookup(raw: string): string | null {
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return null;
+  const parsed = parseUrl(trimmed);
+  if (parsed) return parsed.host;
+  // Callers also pass bare hosts (a permission-store origin key, a
+  // suggestion row). Accept those, but only if they look like a hostname
+  // rather than a path or free text.
+  return /^[a-z0-9.-]+\.[a-z]{2,}$/.test(trimmed) ? trimmed : null;
+}
+
 export function isFlaggedHost(rawUrl: string): boolean {
-  let host: string;
-  try {
-    host = new URL(rawUrl).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
+  const host = hostForLookup(rawUrl);
+  if (!host) return false;
   // Spec rule: when feed is stale, fall back to fallback list — DO NOT
   // soft-fail open for known-flagged cached entries.
   const live =

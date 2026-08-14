@@ -12,6 +12,10 @@ import {
   namespaceForChainKey,
   PermissionStore,
 } from "@/services/permissions/store";
+import {
+  isFlaggedHost,
+  SIGNATURE_PRODUCING_METHODS,
+} from "@/services/security/scamDomainFeed";
 import type { ApprovalDecision, ApprovalIntent } from "./approval";
 import { bridgeEventBus } from "./events";
 import { runPipeline, runSingleInspector } from "./inspector";
@@ -198,6 +202,25 @@ export class DappBridge {
       return;
     }
 
+    // TWV-2026-051 — signatures are never produced for a flagged origin.
+    //
+    // The browser lets a user click past the phishing interstitial (feeds
+    // do false-positive, and a wallet that traps you on a warning screen
+    // just teaches you to use a different wallet). Signing does NOT get
+    // the same escape hatch: browsing a drainer costs nothing, signing its
+    // Permit2 payload costs the wallet. So the block here is terminal and
+    // deliberately not wired to the browser's session bypass.
+    if (SIGNATURE_PRODUCING_METHODS.has(method) && isFlaggedHost(origin.url)) {
+      if (__DEV__) {
+        console.warn("[bridge] signature blocked: flagged origin", {
+          method,
+          origin: origin.url,
+        });
+      }
+      this.postError(id, 4001, "Request blocked by wallet policy");
+      return;
+    }
+
     // TWV-2026-013 — origin pinning. Reject any request whose declared
     // origin host disagrees with the tracked top-frame host. Sub-frame
     // messages (CVE-2020-6506-class XSS) cannot impersonate the top
@@ -245,6 +268,23 @@ export class DappBridge {
 
   async enqueue(intent: ApprovalIntent): Promise<void> {
     const originHost = originKey(intent.origin.url);
+
+    // TWV-2026-051 — namespace-agnostic twin of the method gate in
+    // `dispatch`. `SIGNATURE_PRODUCING_METHODS` lists EVM method names, so
+    // on its own it would leave Solana / Sui / Stellar signing open on a
+    // flagged origin. Every approval on every chain funnels through here,
+    // so blocking at this choke point covers all of them, including any
+    // future namespace that docks later.
+    if (isFlaggedHost(intent.origin.url)) {
+      if (__DEV__) {
+        console.warn("[bridge] approval blocked: flagged origin", {
+          namespace: intent.namespace,
+          origin: intent.origin.url,
+        });
+      }
+      this.postError(intent.id, 4001, "Request blocked by wallet policy");
+      return;
+    }
     const existing = this.pendingByOrigin.get(originHost);
     if (existing && existing !== intent.id) {
       this.postError(
@@ -314,6 +354,40 @@ export class DappBridge {
       const intentHost = originKey(intent.origin.url);
       if (intentHost !== newHost) {
         this.resolve(intent.id, { id: intent.id, outcome: "reject" });
+      }
+    }
+  }
+
+  /**
+   * Called by the screen when a page load fails, i.e. the page an approval
+   * belongs to is gone.
+   *
+   * `onNavigate` only clears intents whose origin differs from the new top
+   * frame, so a same-origin death (offline, DNS gone, server dropped, a
+   * reload that never lands) used to leave the sheet on screen. Approving
+   * it would sign a payload no page is waiting for: the JS context that
+   * issued the request has been torn down, so the response goes nowhere,
+   * and on EVM the transaction is broadcast regardless. The user reads
+   * that as "I approved it and nothing happened".
+   *
+   * Rejected with 4900 (Disconnected) rather than 4001 (user rejected),
+   * because the user did not reject anything. If the page comes back it
+   * can re-request. Message strings on this path are part of the EIP-1193
+   * contract with the dApp, not user-facing copy.
+   */
+  onPageUnavailable(url: string): void {
+    const deadHost = originKey(url);
+    if (!deadHost) return;
+    for (const intent of pendingIntentsStore.snapshot) {
+      if (originKey(intent.origin.url) !== deadHost) continue;
+      pendingIntentsStore.remove(intent.id);
+      this.pendingByOrigin.delete(deadHost);
+      this.postError(intent.id, 4900, "Disconnected — the page is gone");
+      if (__DEV__) {
+        console.warn("[bridge] dropped approval for a dead page", {
+          id: intent.id,
+          origin: intent.origin.url,
+        });
       }
     }
   }
