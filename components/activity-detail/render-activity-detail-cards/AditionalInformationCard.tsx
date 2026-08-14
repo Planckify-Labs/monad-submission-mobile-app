@@ -1,6 +1,7 @@
 import React from "react";
 import { Text, View } from "react-native";
 import { TPurchaseResponse } from "@/api/types/purchase";
+import { isPLNVoucher } from "@/utils/vcGamerUtils";
 import PLNCard from "./PLNCard";
 
 export default function AditionalInformationCard({
@@ -17,8 +18,8 @@ export default function AditionalInformationCard({
       </View>
 
       <View>
-        {(purchase?.voucherCode?.includes("kWh") ||
-          purchase?.voucherCode?.includes("KWH")) &&
+        {purchase?.voucherCode &&
+          isPLNVoucher(purchase.voucherCode) &&
           purchase.booking.customerInfo.length > 0 && (
             <PLNCard
               plnCustomerInfo={{

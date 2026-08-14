@@ -153,6 +153,9 @@ export default defineConfig({
       // Receipt amounts: exact rendering on detail screens, and the
       // float-truncation bug that showed 0.29 as 0.28.
       "utils/tokenAmount.test.ts",
+      // vcGamer PLN voucher_code parsing: unit-suffix-less / comma-decimal
+      // variants are what silently hid the Token Code card on real orders.
+      "utils/vcGamerUtils.test.ts",
       // dApps-browser address bar: what the user types decides the origin
       // the bridge grants permissions against, so the scheme allowlist and
       // the userinfo/zero-width stripping are covered here rather than

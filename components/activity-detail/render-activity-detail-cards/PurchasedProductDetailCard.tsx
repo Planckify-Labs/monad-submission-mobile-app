@@ -17,6 +17,7 @@ import type { TRedemptionDetail } from "@/api/types/redeem";
 import { formatCurrency } from "@/utils/currencyUtils";
 import { formatDate } from "@/utils/dateUtils";
 import { copyToClipboard } from "@/utils/helperUtils";
+import { isPLNVoucher } from "@/utils/vcGamerUtils";
 import { truncateAddress } from "@/utils/walletUtils";
 import AditionalInformationCard from "./AditionalInformationCard";
 import PLNCard from "./PLNCard";
@@ -179,9 +180,7 @@ function RedemptionDetailCard({
 
         {redemption.voucherCode &&
           (() => {
-            const isPLN =
-              redemption.voucherCode.includes("kWh") ||
-              redemption.voucherCode.includes("KWH");
+            const isPLN = isPLNVoucher(redemption.voucherCode);
 
             if (isPLN) {
               const customerInfo = redemption.customerInfo;
