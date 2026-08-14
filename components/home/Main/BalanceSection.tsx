@@ -299,7 +299,7 @@ const BalanceSection = forwardRef<BalanceSectionRef>((props, ref) => {
                       disabled={navigatingToAuth}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                     >
-                      <Text className="text-light-primary-red text-md font-medium underline">
+                      <Text className="text-light-matte-black text-md font-medium underline">
                         {navigatingToAuth
                           ? "Opening sign-in…"
                           : "Sign in to view points"}
