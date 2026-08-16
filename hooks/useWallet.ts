@@ -201,7 +201,13 @@ export function useWallet() {
     mutationFn: async (updatedWallets: TWallet[]) => {
       const success = await walletService.saveWalletsToStorage(updatedWallets);
       if (!success) throw new Error("Failed to save wallets");
-      return updatedWallets;
+      // `saveWalletsToStorage` backfills `seedGroupId` (and other
+      // ingestion side effects) internally but returns only a boolean.
+      // Re-read the ingested cache instead of echoing back the
+      // pre-ingestion input, otherwise freshly created wallets land in
+      // query state without `seedGroupId` and `groupWalletsIntoAccounts`
+      // renders each namespace as its own single-row account.
+      return walletService.getCachedWalletsSync() ?? updatedWallets;
     },
     onSuccess: (data) => {
       queryClient.setQueryData([QKEY_Wallets.wallets], data);

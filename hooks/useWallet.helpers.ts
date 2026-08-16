@@ -91,7 +91,9 @@ export type WalletAccount = {
 // original name when no known suffix is present.
 function canonicalAccountName(name: string): string {
   return (
-    name.replace(/\s*[·•|-]\s*(ETH|SOL|SOLANA|ETHEREUM)\s*$/i, "").trim() ||
+    name
+      .replace(/\s*[·•|-]\s*(ETH|SOL|SOLANA|ETHEREUM|SUI|STELLAR)\s*$/i, "")
+      .trim() ||
     name
   );
 }
