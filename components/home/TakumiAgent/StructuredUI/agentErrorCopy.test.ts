@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { agentErrorAction, agentErrorCopy } from "./agentErrorCopy";
+import { defiErrorCopy } from "@/services/defi/errors/defiErrors";
+import {
+  agentErrorAction,
+  agentErrorCopy,
+  agentErrorTitle,
+} from "./agentErrorCopy";
 
 describe("agentErrorCopy", () => {
   it("prefers the granular reason over the coarse code", () => {
@@ -56,6 +61,39 @@ describe("agentErrorCopy", () => {
         /couldn't find a swap route/i,
       );
     });
+  });
+});
+
+describe("DeFi failures in chat", () => {
+  // The DeFi executors set `reason` to a `DefiErrorCode`. Every one of those
+  // has reviewed copy that the Strategies screen shows; before this, chat
+  // ignored it and rendered the generic line for all of them.
+  it("uses the DeFi copy the Strategies screen already shows", () => {
+    expect(agentErrorCopy("unknown_error", "strategy_paused")).toBe(
+      defiErrorCopy.strategy_paused.body,
+    );
+    // Where chat already has its own wording it keeps it — the DeFi table is
+    // the filler for the codes chat never had an answer for.
+    expect(agentErrorCopy("insufficient_funds", "insufficient_funds")).toMatch(
+      /don't have enough balance/i,
+    );
+  });
+
+  it("gives every DeFi code a real sentence, never the generic fallback", () => {
+    for (const code of Object.keys(defiErrorCopy)) {
+      const copy = agentErrorCopy("unknown_error", code);
+      expect(copy).not.toMatch(/couldn't complete that right now/i);
+      // And never the code itself (CLAUDE.md user-facing-errors).
+      expect(copy).not.toContain(code);
+    }
+  });
+
+  it("titles the card with the problem, not with 'Transaction'", () => {
+    expect(agentErrorTitle("insufficient_funds")).toBe(
+      defiErrorCopy.insufficient_funds.title,
+    );
+    expect(agentErrorTitle("quote_stale")).toBeNull();
+    expect(agentErrorTitle(undefined)).toBeNull();
   });
 });
 

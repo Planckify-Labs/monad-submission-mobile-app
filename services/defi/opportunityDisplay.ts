@@ -145,3 +145,81 @@ export function groupOpportunities(rows: RawOpportunity[]): OpportunityGroup[] {
   });
   return result;
 }
+
+/**
+ * Protocol slug -> the venue name a person recognises. DeFiLlama slugs are
+ * machine keys (`aave-v3`, `morpho-blue`, `yearn-finance`) and several of them
+ * carry a chain suffix that means nothing to a user.
+ *
+ * Lives here rather than in the card because the approval surfaces need the
+ * same name: a user who picked "Aave V3" from the list must be asked to
+ * approve "Aave V3", not "aave-v3".
+ */
+const PROTOCOL_DISPLAY_NAMES: Record<string, string> = {
+  "aave-v3": "Aave V3",
+  "aave-v2": "Aave V2",
+  aave: "Aave",
+  "fluid-lending": "Fluid",
+  fluid: "Fluid",
+  "centrifuge-protocol": "Centrifuge",
+  centrifuge: "Centrifuge",
+  maple: "Maple",
+  "morpho-vault": "Morpho",
+  "morpho-blue": "Morpho",
+  morpho: "Morpho",
+  "compound-v3": "Compound V3",
+  "compound-v2": "Compound V2",
+  spark: "Spark",
+  "sky-lending": "Sky",
+  sky: "Sky",
+  "ethena-usde": "Ethena",
+  ethena: "Ethena",
+  lido: "Lido",
+  "jito-solana": "Jito",
+  jito: "Jito",
+  "yearn-finance": "Yearn",
+  "yearn-v3": "Yearn",
+  yearn: "Yearn",
+  "curve-dex": "Curve",
+  curve: "Curve",
+  scallop: "Scallop",
+  navi: "Navi",
+};
+
+const CHAIN_SUFFIXES = [
+  "-base-sepolia",
+  "-arbitrum-sepolia",
+  "-optimism-sepolia",
+  "-ethereum-sepolia",
+  "-sepolia",
+  "-base",
+  "-arbitrum",
+  "-optimism",
+  "-polygon",
+  "-ethereum",
+  "-mainnet",
+];
+
+export function prettyProtocol(slug: string): string {
+  const lower = slug.trim().toLowerCase();
+  if (PROTOCOL_DISPLAY_NAMES[lower]) return PROTOCOL_DISPLAY_NAMES[lower];
+  let base = lower;
+  for (const suffix of CHAIN_SUFFIXES) {
+    if (base.endsWith(suffix)) {
+      base = base.slice(0, -suffix.length);
+      break;
+    }
+  }
+  if (PROTOCOL_DISPLAY_NAMES[base]) return PROTOCOL_DISPLAY_NAMES[base];
+  return (
+    base
+      .split(/[-_]/)
+      .filter(Boolean)
+      .map((word) =>
+        /^v\d+$/i.test(word)
+          ? word.toUpperCase()
+          : word.charAt(0).toUpperCase() + word.slice(1),
+      )
+      .join(" ") || slug
+  );
+}

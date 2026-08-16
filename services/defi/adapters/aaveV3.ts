@@ -122,6 +122,18 @@ function createAaveV3Adapter(
         target?.kind === "aave-v3"
           ? target.asset
           : resolveUnderlying(deployment, asset);
+      // Defence in depth, as in the Comet/4626 adapters: the resolved target is
+      // the trusted source, so an explicit asset that disagrees with it means
+      // the caller and the server disagree about what is being deposited.
+      if (
+        asset.contract &&
+        asset.contract.toLowerCase() !== underlying.toLowerCase()
+      ) {
+        throw new DefiError(
+          "unsupported_asset",
+          "aave-v3: asset does not match the reserve's underlying",
+        );
+      }
       return {
         kind: "evm-call",
         to: pool,

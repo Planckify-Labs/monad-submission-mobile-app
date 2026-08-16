@@ -4,13 +4,16 @@ import {
   type TCreateStrategyPayload,
   type TOpportunitySearchParams,
 } from "@/api/endpoints/strategies";
+import type { TBlockchain } from "@/api/types/blockchain";
 import type {
   RiskTier,
   TOpportunity,
   TStrategyPosition,
   TUserStrategy,
 } from "@/api/types/strategy";
+import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
 import { storage } from "@/lib/storage/mmkv";
+import { enrichPositionLive } from "@/services/defi/positions/enrich";
 
 const QKEY = {
   strategy: ["strategy"] as const,
@@ -108,16 +111,72 @@ export const useUserStrategy = (enabled = true) => {
   });
 };
 
-export const useStrategyPositions = (enabled = true) => {
+function chainConfigForPosition(
+  blockchains: TBlockchain[] | undefined,
+  chainId: number,
+) {
+  const blockchain = blockchains?.find((b) => b.chainId === chainId);
+  return blockchain ? buildChainConfigFromBlockchain(blockchain) : undefined;
+}
+
+/**
+ * `walletAddress`/`blockchains` drive the same live on-chain-read + USD
+ * price enrichment `defi_list_positions` does in chat
+ * (`services/agent-executors/defi/reads.ts`) — both go through
+ * `services/defi/positions/enrich.ts` so the Strategies tab and the chat
+ * card never diverge. Omit them (or leave `blockchains` empty) and this
+ * degrades gracefully to the DB snapshot, same as a failed on-chain read.
+ */
+export const useStrategyPositions = (
+  enabled = true,
+  walletAddress?: string,
+  blockchains?: TBlockchain[],
+) => {
   return useQuery<TStrategyPosition[]>({
-    queryKey: QKEY.positions,
+    queryKey: [...QKEY.positions, walletAddress],
     initialData: () => readJson<TStrategyPosition[]>(KEY.positions),
     initialDataUpdatedAt: () => readTs(KEY.positionsTs),
     queryFn: async () => {
       try {
         const fresh = await strategiesApi.getPositions();
-        writeJson(KEY.positions, KEY.positionsTs, fresh);
-        return fresh;
+        const enriched = walletAddress
+          ? await Promise.all(
+              fresh.map(async (position) => {
+                const live = await enrichPositionLive(
+                  {
+                    protocolSlug: position.protocolSlug,
+                    chainId: position.chainId,
+                    poolId: position.poolId,
+                    assetSymbol: position.assetSymbol,
+                    assetContract: position.assetContract,
+                    amountAtDeposit: position.amountAtDeposit,
+                    amountAtDepositUsd:
+                      Number(position.amountAtDepositUsd) || 0,
+                    status: position.status,
+                  },
+                  walletAddress,
+                  chainConfigForPosition(blockchains, position.chainId),
+                );
+                if (live.currentAmountRaw === null) return position;
+                strategiesApi
+                  .refreshPosition(position.id, {
+                    currentAmountRaw: live.currentAmountRaw,
+                    currentAmountUsd: live.currentAmountUsd ?? undefined,
+                  })
+                  .catch(() => undefined);
+                return {
+                  ...position,
+                  currentAmountRaw: live.currentAmountRaw,
+                  currentAmountUsd:
+                    live.currentAmountUsd !== null
+                      ? String(live.currentAmountUsd)
+                      : position.currentAmountUsd,
+                };
+              }),
+            )
+          : fresh;
+        writeJson(KEY.positions, KEY.positionsTs, enriched);
+        return enriched;
       } catch (err) {
         const cached = readJson<TStrategyPosition[]>(KEY.positions);
         if (

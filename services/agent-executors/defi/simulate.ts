@@ -17,7 +17,7 @@ import {
   getDefiAdapterForTarget,
   listDefiAdapters,
 } from "@/services/defi/registry";
-import type { DepositTarget } from "@/services/defi/types";
+import { approvalsOf, type DepositTarget } from "@/services/defi/types";
 import { resolveChainClients } from "../chainRouter";
 import {
   ExecutorError,
@@ -148,14 +148,11 @@ export const simulateDeposit: MobileToolExecutor = (input, context) =>
           kind: unsignedCall.kind,
           to: (unsignedCall as { to?: string }).to,
           dataLen: (unsignedCall as { data?: string }).data?.length,
-          needsApproval:
-            unsignedCall.kind === "evm-call" && unsignedCall.needsApproval
-              ? {
-                  token: unsignedCall.needsApproval.token,
-                  spender: unsignedCall.needsApproval.spender,
-                  amount: unsignedCall.needsApproval.amount.toString(),
-                }
-              : false,
+          needsApproval: approvalsOf(unsignedCall).map((a) => ({
+            token: a.token,
+            spender: a.spender,
+            amount: a.amount.toString(),
+          })),
         });
       }
 
@@ -194,7 +191,7 @@ export const simulateDeposit: MobileToolExecutor = (input, context) =>
             "[defi/simulate] estimateGas failed (often approval gap)",
             {
               to: unsignedCall.to,
-              needsApproval: !!unsignedCall.needsApproval,
+              needsApproval: approvalsOf(unsignedCall).length > 0,
               error: err,
             },
           );
@@ -242,7 +239,7 @@ export const simulateDeposit: MobileToolExecutor = (input, context) =>
           protocol_slug: protocolSlug,
           chain_id: chainId,
           estimated_gas: estimatedGas !== null ? estimatedGas.toString() : null,
-          needs_approval: !!unsignedCall.needsApproval,
+          needs_approval: approvalsOf(unsignedCall).length > 0,
           apy_drift_pct: apyDriftPct,
           safety_score: adapter.staticSafetyScore ?? null,
         },

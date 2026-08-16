@@ -17,6 +17,9 @@
  */
 
 import {
+  defiEvmFamilyEnabled,
+  FEATURE_DEFI_EVM_TIER2,
+  FEATURE_DEFI_EVM_TIER3,
   FEATURE_DEFI_PHASE_2,
   FEATURE_DEFI_PHASE_3,
   FEATURE_DEFI_SUI_ADAPTERS,
@@ -31,7 +34,10 @@ import {
   AaveV3EthereumAdapter,
   AaveV3EthereumSepoliaAdapter,
 } from "./adapters/aaveV3";
+import { CometV3Adapter } from "./adapters/cometV3";
+import { CompoundV2Adapter } from "./adapters/compoundV2";
 import { Curve3poolAdapter } from "./adapters/curve3pool";
+import { CurveLpAdapter } from "./adapters/curveLp";
 import {
   EigenLayerEthereumAdapter,
   EigenLayerHoleskyAdapter,
@@ -41,6 +47,7 @@ import { Erc4626Adapter } from "./adapters/erc4626";
 import { EthenaEthereumAdapter } from "./adapters/ethena";
 import { GmxV2ArbitrumAdapter } from "./adapters/gmxV2";
 import { LidoHoleskyAdapter, LidoMainnetAdapter } from "./adapters/lido";
+import { LstStakeAdapter } from "./adapters/lstStake";
 import {
   MapleSyrupUsdcBaseAdapter,
   MapleSyrupUsdcEthereumAdapter,
@@ -50,9 +57,12 @@ import {
   MorphoSteakhouseUsdcEthAdapter,
   MorphoVaultAdapter,
 } from "./adapters/morpho";
+import { MorphoBlueAdapter } from "./adapters/morphoBlue";
 import { NaviSuiAdapter } from "./adapters/naviSui";
+import { RouterCallAdapter } from "./adapters/routerCall";
 import { ScallopSuiAdapter } from "./adapters/scallopSui";
 import { SolanaJitoAdapter } from "./adapters/solanaJito";
+import { SolidlyLpAdapter } from "./adapters/solidlyLp";
 import { SuiLstAdapter } from "./adapters/suiLst";
 // SuilendSuiAdapter is implemented but NOT registered — Suilend's deposit AND
 // withdraw both assert a fresh reserve price (abort code 1), needing a Pyth
@@ -63,11 +73,16 @@ import {
   YearnV3UsdcEthereumAdapter,
 } from "./adapters/yearnV3";
 import { registerDefiAdapter } from "./registry";
+import { bootDefiSafety } from "./safety/bootstrap";
 
 let booted = false;
 
 export function bootDefi(): void {
   if (booted) return;
+  // Safety first, literally: the pipeline must be able to answer before any
+  // adapter can build a call, or a deposit could run with zero checks
+  // registered and look exactly like one that passed them all.
+  bootDefiSafety();
   if (walletKitRegistry.getAll().length === 0) {
     // The DeFi registry has no signing capability of its own — every
     // adapter dispatches submission through `WalletKitAdapter`. Boot
@@ -106,6 +121,54 @@ export function bootDefi(): void {
     registerDefiAdapter(EigenLayerEthereumAdapter);
     registerDefiAdapter(EthenaEthereumAdapter);
     registerDefiAdapter(GmxV2ArbitrumAdapter);
+  }
+
+  // ── EVM protocol expansion (docs/defi-evm-protocol-expansion-spec.md) ──
+  // Tier 1 registers NOTHING here on purpose: Family A routes to the
+  // `Erc4626Adapter` already registered above and Family B to the Aave
+  // adapters, so widening those funnels is backend-resolver-only.
+  //
+  // Every registration below is gated by the SAME flag name the backend uses
+  // for its resolver, so a family can never be live on one side only — that
+  // would badge "Deposit in-app" for a target nothing can build (§8.6).
+  if (FEATURE_DEFI_EVM_TIER2) {
+    // Compound III — one adapter, every Comet market on every chain.
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER2, "compound-v3")) {
+      registerDefiAdapter(CometV3Adapter);
+    }
+    // Compound-v2 cToken forks — Venus, Benqi, Sonne and the rest of the
+    // lineage behind one `mint`/`redeem` shape.
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER2, "compound-v2")) {
+      registerDefiAdapter(CompoundV2Adapter);
+    }
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER2, "morpho-blue")) {
+      registerDefiAdapter(MorphoBlueAdapter);
+    }
+    // Generalises the single-market Curve3pool adapter to any Curve pool.
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER2, "curve-lp")) {
+      registerDefiAdapter(CurveLpAdapter);
+    }
+  }
+
+  if (FEATURE_DEFI_EVM_TIER3) {
+    // Router-calldata (Pendle). Every quote round-trips through the backend
+    // proxy and is re-checked here against the device's pinned allowlist.
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "router-call")) {
+      registerDefiAdapter(RouterCallAdapter);
+    }
+    // Solidly forks (Aerodrome / Velodrome).
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "solidly-lp")) {
+      registerDefiAdapter(SolidlyLpAdapter);
+    }
+    // Liquid staking / restaking. Queue-exit venues ship deposit-only until
+    // the Tier-4 request/claim machinery lands (§12 Q2).
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "lst-stake")) {
+      registerDefiAdapter(LstStakeAdapter);
+    }
+    // BalancerLpAdapter is NOT registered — its single-asset join needs a
+    // reviewed `BalancerQueries` deployment to price `minimumBPT`, and §12 Q4
+    // forbids a zero minimum. Unlike a wrong ABI (which reverts), a zero
+    // minimum is a silent sandwich. Pin the queries contract, then register.
   }
 
   // ── Sui adapters (Intent Engine) ────────────────────────────────

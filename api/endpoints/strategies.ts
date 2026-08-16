@@ -6,6 +6,7 @@ import type {
   TCrossChainQuoteRequest,
   TCrossChainStatusResponse,
   TOpportunity,
+  TRouterQuote,
   TStrategyPosition,
   TUserStrategy,
 } from "../types/strategy";
@@ -100,6 +101,40 @@ export const strategiesApi = {
     return api.get("strategies/positions").json<TStrategyPosition[]>();
   },
 
+  /**
+   * Batch USD spot-price lookup, proxied through the backend to Alchemy's
+   * Prices API (`POST /strategies/asset-prices`) — the only place that
+   * vendor is called from; this client never holds the Alchemy key.
+   * A price Alchemy can't resolve (or a chain with no Alchemy mapping)
+   * comes back `usd: null`, never thrown.
+   */
+  getAssetPrices: async (
+    queries: {
+      chainId: number;
+      assetSymbol: string;
+      assetContract?: string;
+    }[],
+  ) => {
+    return api
+      .post("strategies/asset-prices", {
+        json: {
+          queries: queries.map((q) => ({
+            chain_id: q.chainId,
+            asset_symbol: q.assetSymbol,
+            asset_contract: q.assetContract,
+          })),
+        },
+      })
+      .json<
+        {
+          chain_id: number;
+          asset_symbol: string;
+          asset_contract: string | null;
+          usd: number | null;
+        }[]
+      >();
+  },
+
   createPosition: async (payload: {
     protocolSlug: string;
     chainId: number;
@@ -125,10 +160,48 @@ export const strategiesApi = {
       .json<TStrategyPosition>();
   },
 
-  refreshPosition: async (id: string) => {
+  /**
+   * Report a freshly-observed on-chain value back to the backend so
+   * consumers that don't do a live read (auto-compound watcher, push
+   * notifications) aren't stuck on a permanently-null snapshot. Mobile is
+   * the trust anchor for the on-chain read — this just persists it.
+   */
+  refreshPosition: async (
+    id: string,
+    observed?: { currentAmountRaw?: string; currentAmountUsd?: number },
+  ) => {
     return api
-      .post(`strategies/positions/${encodeURIComponent(id)}/refresh`)
+      .post(`strategies/positions/${encodeURIComponent(id)}/refresh`, {
+        json: observed
+          ? {
+              current_amount_raw: observed.currentAmountRaw,
+              current_amount_usd: observed.currentAmountUsd,
+            }
+          : {},
+      })
       .json<TStrategyPosition>();
+  },
+
+  /**
+   * Router-calldata quote proxy (EVM expansion spec §6). Pendle/Uniswap LP have
+   * no on-chain deposit ABI we encode, so the backend fetches the protocol's
+   * calldata, enforces the slippage ceiling and verifies the returned `to`
+   * against the pinned router allowlist before answering. The device never
+   * calls the protocol's API itself, and it re-checks the same allowlist
+   * against its OWN pinned copy (§11.1 — two independent trust anchors).
+   *
+   * The receiver is taken from the JWT server-side; there is deliberately no
+   * way to ask for a quote made out to someone else.
+   */
+  getRouterQuote: async (payload: {
+    poolId: string;
+    amountRaw: string;
+    slippageBps: number;
+    action?: "deposit" | "withdraw";
+  }) => {
+    return api
+      .post("strategies/router-quote", { json: payload })
+      .json<TRouterQuote>();
   },
 
   getCrossChainQuote: async (payload: TCrossChainQuoteRequest) => {

@@ -77,6 +77,11 @@ export interface TStrategyPosition {
   closedAt: string | null;
   goal: string | null;
   targetDate: string | null;
+  /** Live APY off the position's `OpportunityCache` row, joined at read
+   *  time (never persisted — APY drifts). `null` when the pool has aged out
+   *  of the cache or the position predates pool-level routing and has no
+   *  match. */
+  currentApy: number | null;
 }
 
 export type AssetPreference = "stable" | "eth_lst" | "multi";
@@ -148,4 +153,27 @@ export interface TCrossChainQuote {
 export interface TCrossChainStatusResponse {
   status: string;
   substatus?: string;
+}
+
+/**
+ * A verified router-calldata quote (EVM expansion spec §6, §12 Q8).
+ *
+ * Produced by the backend proxy, which has already enforced the slippage
+ * ceiling and checked `to` against the pinned router allowlist. The device
+ * re-checks `to` against its own pinned copy and asserts `tokenIn`/`amountIn`
+ * match what it asked for, so a compromised backend still cannot get a call
+ * signed that the user did not approve (§11.1).
+ */
+export interface TRouterQuote {
+  to: string;
+  data: string;
+  value: string;
+  /** Protocol-reported expected output, when it reports one. */
+  expectedOut: string | null;
+  /** Unix seconds. Past this the quote MUST be re-fetched, never signed. */
+  expiresAt: number;
+  /** Echoed inputs, for the caller's decoded-intent assertion. */
+  tokenIn: string;
+  amountIn: string;
+  chainId: number;
 }

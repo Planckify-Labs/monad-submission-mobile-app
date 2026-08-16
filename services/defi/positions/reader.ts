@@ -23,6 +23,7 @@ import {
   mainnet,
   sepolia,
 } from "viem/chains";
+import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { AaveV3Deployments, readAaveV3Position } from "../adapters/aaveV3";
 import { getDefiAdapter } from "../registry";
 import type { DefiPosition, PositionReadContext } from "../types";
@@ -41,6 +42,14 @@ export interface PositionReadInput {
    * reserve/vault to read — the LLM/UI still only ever sees the opaque id (§8).
    */
   poolId?: string;
+  /**
+   * Chain config for the position's chain, built from the backend blockchain
+   * row. Required by the kind-routed EVM family adapters, which have no fixed
+   * deployment to derive an RPC client from. Optional so existing callers are
+   * unaffected — an adapter that needs it and doesn't get it returns null and
+   * the position falls back to the DB snapshot.
+   */
+  chain?: ChainConfig;
 }
 
 /**
@@ -94,6 +103,7 @@ export async function readPosition(
     assetContract: input.assetContract,
     assetSymbol: input.assetSymbol,
     assetDecimals: input.assetDecimals,
+    chain: input.chain,
   };
   if (input.poolId && adapter.targetKinds?.length) {
     try {

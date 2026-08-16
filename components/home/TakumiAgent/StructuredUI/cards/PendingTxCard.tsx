@@ -30,8 +30,11 @@ import {
 } from "@/services/pendingTxStore";
 import { buildExplorerUrl } from "../../PendingTxCard/explorerUrl";
 import PendingTxCardLegacy from "../../PendingTxCard/PendingTxCard";
-import { agentErrorCopy } from "../agentErrorCopy";
-import { factsFirstSummary } from "../approvalSummary";
+import { agentErrorCopy, agentErrorTitle } from "../agentErrorCopy";
+import {
+  approvalSummaryFromToolInput,
+  factsFirstSummary,
+} from "../approvalSummary";
 import type { ToolComponentProps } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 import { AddWalletErrorAction } from "./AddWalletErrorAction";
@@ -67,13 +70,23 @@ function truncateHash(hash: string): string {
 
 // Facts-first (prompt-injection defense): the real `to` arg wins over the
 // model-authored `human_summary` — see ../approvalSummary.ts.
+//
+// This card serves every EVM write, including the DeFi ones, whose facts are a
+// pool and an asset rather than a recipient. `approvalSummaryFromToolInput`
+// knows both shapes, so defer to it whenever there is no plain `to`: a deposit
+// card that says "Deposit 100 USDC into Aave V3 on Base" is the difference
+// between a user who knows what they approved and one who saw "Transaction".
 function describe(input: WriteToolInput): string {
-  return factsFirstSummary(
-    {
-      action: "Transaction",
-      to: typeof input.to === "string" ? input.to : undefined,
-    },
-    input,
+  if (typeof input.to === "string" && input.to.trim().length > 0) {
+    return factsFirstSummary(
+      { action: "Transaction", to: input.to },
+      input,
+      "Transaction",
+    );
+  }
+  return approvalSummaryFromToolInput(
+    input as Record<string, unknown>,
+    typeof input.human_summary === "string" ? input.human_summary : undefined,
     "Transaction",
   );
 }
@@ -158,8 +171,11 @@ function HistoricalReceipt({
             Failed
           </Text>
         </View>
+        {/* Name the problem, not the machinery: "Not enough balance" tells the
+            user what happened; "Transaction" tells them nothing. Falls back to
+            the action description when the failure has no headline of its own. */}
         <Text className="text-sm text-light-matte-black/80 mt-1.5">
-          {description}
+          {agentErrorTitle(output.reason) ?? description}
         </Text>
         {/* Friendly copy only — the raw code went to the dev log above. */}
         <Text

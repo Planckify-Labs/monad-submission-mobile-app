@@ -105,3 +105,70 @@ describe("approvalSummaryFromToolInput — non-bridge writes", () => {
     ).toBe("Run the saved plan");
   });
 });
+
+describe("approvalSummaryFromToolInput — DeFi", () => {
+  const deposit = {
+    protocol_slug: "aave-v3",
+    chain_id: 8453,
+    asset_symbol: "CBBTC",
+    amount_raw: "200000000",
+    pool_id: "89bc7c4c-d71c-435c-ab28-56c803d51320",
+  };
+
+  /**
+   * The user picked "Aave V3" off the opportunities card, so that is the name
+   * they must be asked to approve — not the DeFiLlama slug, and not the word
+   * "Transaction", which was all this surface said before.
+   */
+  it("names the venue and chain a person recognises", () => {
+    const summary = approvalSummaryFromToolInput(deposit, undefined);
+    expect(summary).toContain("Deposit");
+    expect(summary).toContain("CBBTC");
+    expect(summary).toContain("Aave V3");
+    expect(summary).toContain("Base");
+    expect(summary).not.toContain("aave-v3");
+    expect(summary).not.toBe("This action");
+  });
+
+  it("states the real amount once the token's decimals are known", () => {
+    const summary = approvalSummaryFromToolInput(
+      deposit,
+      undefined,
+      undefined,
+      {
+        symbol: "cbBTC",
+        decimals: 8,
+      },
+    );
+    expect(summary).toContain("2 cbBTC");
+  });
+
+  it("omits an amount it cannot scale rather than showing smallest units", () => {
+    // "200000000" on an approval screen reads as a completely different
+    // deposit from the 2 the user asked for.
+    expect(approvalSummaryFromToolInput(deposit, undefined)).not.toContain(
+      "200000000",
+    );
+  });
+
+  it("ignores model prose when the input carries facts", () => {
+    const summary = approvalSummaryFromToolInput(
+      deposit,
+      "A harmless test transaction",
+    );
+    expect(summary).not.toContain("harmless");
+  });
+
+  it("calls a rebalance a move, from the same facts", () => {
+    const summary = approvalSummaryFromToolInput(
+      {
+        protocol_slug: "morpho-blue",
+        from_asset_symbol: "USDC",
+        amount_raw: "1000000",
+      },
+      undefined,
+    );
+    expect(summary).toContain("Move");
+    expect(summary).toContain("Morpho");
+  });
+});

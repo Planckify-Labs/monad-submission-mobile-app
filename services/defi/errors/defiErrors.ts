@@ -45,6 +45,43 @@ export type DefiErrorCode =
   | "no_wallet_on_destination_chain"
   | "network_error"
   | "user_cancelled"
+  // ── EVM protocol expansion (docs/defi-evm-protocol-expansion-spec.md §11.2)
+  // Each maps to one safety layer, so a blocked deposit can be explained
+  // without ever showing the user the machine reason.
+  /** L1: the resolved destination is an EOA or undeployed. */
+  | "target_not_a_contract"
+  /** L1: the destination is not in the pinned address-book / router allowlist. */
+  | "target_not_allowlisted"
+  /** L1: keccak256(abi.encode(params)) != marketId (Morpho Blue). */
+  | "market_id_mismatch"
+  /** L1: the market's oracle/IRM is not on the reviewed allowlist. */
+  | "oracle_not_allowlisted"
+  /** L2: the vault/market cannot accept this much right now. */
+  | "deposit_cap_exceeded"
+  /** L2/L4: the slippage budget was exceeded or a minimum could not be set. */
+  | "slippage_too_high"
+  /** L4: the router quote aged out before signing. */
+  | "quote_expired"
+  /** L5: the protocol's own emergency state is engaged. */
+  | "protocol_paused"
+  /** L4: the decoded call does not match what the user approved. */
+  | "decoded_intent_mismatch"
+  /** L3: this would put too much of the user's funds in one protocol. */
+  | "exposure_cap_exceeded"
+  /** L3: ops disabled the family (rollout flag or kill-switch). */
+  | "family_disabled"
+  /** L2/L4: the amount was scaled with the wrong decimals. */
+  | "decimals_mismatch"
+  /** L3: the counterparty is on a sanctions/deny list. */
+  | "counterparty_blocked"
+  /** L5: mined, but not yet past the chain's finality depth. Pending, not failed. */
+  | "awaiting_finality"
+  /** L4: an identical intent is already in flight. */
+  | "duplicate_submission"
+  /** L3: too many deposits in the rolling window. */
+  | "velocity_exceeded"
+  /** L1/L3: the pool's APY/TVL is statistically implausible. */
+  | "pool_anomaly_flagged"
   | "unknown";
 
 const PASSTHROUGH_CODES = new Set<DefiErrorCode>([
@@ -76,6 +113,23 @@ const PASSTHROUGH_CODES = new Set<DefiErrorCode>([
   "no_wallet_on_destination_chain",
   "network_error",
   "user_cancelled",
+  "target_not_a_contract",
+  "target_not_allowlisted",
+  "market_id_mismatch",
+  "oracle_not_allowlisted",
+  "deposit_cap_exceeded",
+  "slippage_too_high",
+  "quote_expired",
+  "protocol_paused",
+  "decoded_intent_mismatch",
+  "exposure_cap_exceeded",
+  "family_disabled",
+  "decimals_mismatch",
+  "counterparty_blocked",
+  "awaiting_finality",
+  "duplicate_submission",
+  "velocity_exceeded",
+  "pool_anomaly_flagged",
   "unknown",
 ]);
 
@@ -373,6 +427,94 @@ export const defiErrorCopy: Record<DefiErrorCode, DefiErrorCopy> = {
   user_cancelled: {
     title: "Cancelled",
     body: "You cancelled this action. No funds were moved.",
+  },
+  // ── EVM protocol expansion (§11.2) ──────────────────────────────────────
+  // Copy stays hand-written and layer-agnostic: the user needs to know what to
+  // do, not which check fired. The machine reason goes to __DEV__ logs only.
+  target_not_a_contract: {
+    title: "Couldn't verify this pool",
+    body: "We couldn't confirm this pool's contract on-chain, so we stopped before moving any funds. Try another option.",
+    cta: "review",
+  },
+  target_not_allowlisted: {
+    title: "Pool not approved",
+    body: "This pool isn't on our reviewed list yet, so we can't deposit into it in-app. You can still open it on the protocol's own site.",
+    cta: "review",
+  },
+  market_id_mismatch: {
+    title: "Couldn't verify this market",
+    body: "This market's details didn't line up when we checked them on-chain. We stopped before moving any funds.",
+    cta: "review",
+  },
+  oracle_not_allowlisted: {
+    title: "Market not approved",
+    body: "This market uses a price feed we haven't reviewed, so we don't route deposits into it. Please pick another option.",
+    cta: "review",
+  },
+  deposit_cap_exceeded: {
+    title: "Pool is at capacity",
+    body: "This pool can't take the full amount right now. Try a smaller amount, or pick another option.",
+    cta: "review",
+  },
+  slippage_too_high: {
+    title: "Price moved too much",
+    body: "The rate moved more than we allow while preparing this deposit. Nothing was sent. Please try again.",
+    cta: "retry",
+  },
+  quote_expired: {
+    title: "Quote expired",
+    body: "The price we prepared is no longer current. Please try again to get a fresh one.",
+    cta: "retry",
+  },
+  protocol_paused: {
+    title: "Protocol is paused",
+    body: "This protocol has paused deposits on its side. Please try again later or choose another option.",
+    cta: "wait",
+  },
+  decoded_intent_mismatch: {
+    title: "Something didn't match",
+    body: "The transaction didn't match what you approved, so we cancelled it. No funds were moved.",
+    cta: "review",
+  },
+  exposure_cap_exceeded: {
+    title: "Too much in one protocol",
+    body: "This would put more of your funds in a single protocol than your settings allow. Spread it out, or raise the limit in Strategies, Settings.",
+    cta: "configure",
+  },
+  family_disabled: {
+    title: "Temporarily unavailable",
+    body: "Deposits into this type of pool are turned off right now. Please try another option.",
+    cta: "review",
+  },
+  decimals_mismatch: {
+    title: "Amount didn't check out",
+    body: "We couldn't confirm the amount matched the token's units, so we stopped. No funds were moved.",
+    cta: "retry",
+  },
+  counterparty_blocked: {
+    title: "Can't continue",
+    body: "We're not able to process this one. Please choose another option or contact support.",
+    cta: "review",
+  },
+  awaiting_finality: {
+    title: "Confirming",
+    body: "Your transaction is on-chain and we're waiting for it to settle. We'll update your position shortly.",
+    cta: "wait",
+  },
+  duplicate_submission: {
+    title: "Already in progress",
+    body: "This deposit is already being processed. Check your activity feed before trying again.",
+    cta: "review",
+  },
+  velocity_exceeded: {
+    title: "Too many deposits",
+    body: "You've hit the limit for how many deposits can be made in a short window. Please try again later.",
+    cta: "wait",
+  },
+  pool_anomaly_flagged: {
+    title: "Pool under review",
+    body: "This pool's numbers look unusual, so we've paused in-app deposits into it while we check. Please pick another option.",
+    cta: "review",
   },
   unknown: {
     title: "Something went wrong",

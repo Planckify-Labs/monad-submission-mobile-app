@@ -14,7 +14,9 @@
 
 import { strategiesApi } from "@/api/endpoints/strategies";
 import type { TOpportunity, TStrategyPosition } from "@/api/types/strategy";
-import { readPosition } from "@/services/defi/positions/reader";
+import type { ChainConfig } from "@/constants/configs/chainConfig";
+import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
+import { enrichPositionLive } from "@/services/defi/positions/enrich";
 import { getDefiAdapter } from "@/services/defi/registry";
 import {
   type MobileToolExecutor,
@@ -23,6 +25,26 @@ import {
   type ToolInput,
 } from "../types";
 import { classifyPointsError, sanitizeApiResponse } from "../utils";
+
+/**
+ * The chain config for a position row, built from the API's blockchain list.
+ *
+ * Chain support is data-driven: a chain the backend has not published simply
+ * yields `undefined`, and the adapter falls back to the DB snapshot instead of
+ * reading against a chain we cannot reach.
+ */
+function chainConfigForRow(
+  context: { blockchains: { chainId?: number | null }[] },
+  chainId: number | string | undefined,
+): ChainConfig | undefined {
+  if (typeof chainId !== "number") return undefined;
+  const blockchain = context.blockchains.find((b) => b.chainId === chainId);
+  return blockchain
+    ? buildChainConfigFromBlockchain(
+        blockchain as Parameters<typeof buildChainConfigFromBlockchain>[0],
+      )
+    : undefined;
+}
 
 function optionalInt(input: ToolInput, key: string): number | undefined {
   const value = input[key];
@@ -89,6 +111,12 @@ function shapePosition(p: TStrategyPosition) {
     amount_at_deposit_usd: p.amountAtDepositUsd,
     current_amount_raw: p.currentAmountRaw,
     current_amount_usd: p.currentAmountUsd,
+    /** Live APY off the position's opportunity row, joined server-side at
+     *  read time (never persisted — APY drifts). Null when the pool has
+     *  aged out of the cache. */
+    current_apy: p.currentApy,
+    pnl_usd: null as number | null,
+    pnl_pct: null as number | null,
     status: p.status,
     open_tx_hash: p.openTxHash,
     close_tx_hash: p.closeTxHash,
@@ -332,41 +360,43 @@ export const listPositions: MobileToolExecutor = (_input, context) =>
       const walletAddress = context.wallet.address;
       const enriched = await Promise.all(
         baseRows.map(async (row) => {
-          // Closed positions never need a live read — the close tx is
-          // the terminal state, and reading would just return 0 (or
-          // dust) which is more misleading than the historical exit
-          // value already on the row.
-          if (row.status === "closed") return row;
-          try {
-            const live = await readPosition({
+          // Lets pool-level (Sui) adapters re-resolve their on-chain target
+          // and gives the kind-routed EVM family adapters (Comet, cToken,
+          // Morpho Blue, Curve...) the chain config they need — sourced from
+          // the API's blockchain rows, not a bundled per-chain constant.
+          const live = await enrichPositionLive(
+            {
               protocolSlug: row.protocol_slug ?? "",
               chainId: row.chain_id,
-              walletAddress,
-              assetSymbol: row.asset_symbol,
-              assetContract: row.asset_contract ?? undefined,
-              // Lets pool-level (Sui) adapters re-resolve their on-chain target
-              // and return a LIVE balance instead of the frozen DB snapshot.
-              poolId: row.pool_id ?? undefined,
-            });
-            if (live) {
-              return {
-                ...row,
-                current_amount_raw: live.currentAmount.toString(),
-              };
-            }
-          } catch (readErr) {
-            if (__DEV__) {
-              console.warn(
-                "[defi/listPositions] on-chain read failed (falling back to DB)",
-                {
-                  id: row.id,
-                  protocolSlug: row.protocol_slug,
-                  error: readErr,
-                },
-              );
-            }
-          }
-          return row;
+              poolId: row.pool_id,
+              assetSymbol: row.asset_symbol ?? "",
+              assetContract: row.asset_contract,
+              amountAtDeposit: row.amount_at_deposit,
+              amountAtDepositUsd: Number(row.amount_at_deposit_usd) || 0,
+              status: row.status,
+            },
+            walletAddress,
+            chainConfigForRow(context, row.chain_id),
+          );
+          if (live.currentAmountRaw === null) return row;
+          // Best-effort, fire-and-forget: persist the freshly-observed value
+          // so consumers that don't do a live read (auto-compound watcher,
+          // push notifications) aren't stuck on the permanently-null
+          // snapshot this endpoint used to leave behind. Never blocks or
+          // fails the response the user is looking at.
+          strategiesApi
+            .refreshPosition(row.id, {
+              currentAmountRaw: live.currentAmountRaw,
+              currentAmountUsd: live.currentAmountUsd ?? undefined,
+            })
+            .catch(() => undefined);
+          return {
+            ...row,
+            current_amount_raw: live.currentAmountRaw,
+            current_amount_usd: live.currentAmountUsd ?? row.current_amount_usd,
+            pnl_usd: live.pnlUsd,
+            pnl_pct: live.pnlPct,
+          };
         }),
       );
 

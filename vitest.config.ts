@@ -119,6 +119,26 @@ export default defineConfig({
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",
       "services/defi/errors/defiErrors.test.ts",
+      // EVM protocol expansion (docs/defi-evm-protocol-expansion-spec.md).
+      // The union-parity test is the §8.7 CI guard: the two DepositTarget
+      // declarations carry a "keep in sync" comment, and this is what
+      // enforces it.
+      "services/defi/unionParity.test.ts",
+      "services/defi/addressBookParity.test.ts",
+      // Fork tests (§11.3). Skipped unless FORK_TESTS=1 and FORK_RPC_URL_<id>
+      // are set, so listing them here is safe: without a fork they report their
+      // own gate and nothing else.
+      "services/defi/__fork__/*.fork.test.ts",
+      "services/defi/slippage.test.ts",
+      "services/defi/safety/safetyPipeline.test.ts",
+      // The executor's half of the pipeline: what it PUTS in the safety
+      // context. The checks passing on a hand-built context is not evidence
+      // the deposit path fills one correctly.
+      "services/agent-executors/defi/depositSafetyContext.test.ts",
+      "services/defi/adapters/evmFamilyAdapters.test.ts",
+      // Live position enrichment (on-chain read + Alchemy spot price +
+      // computePnl) — the pipeline that used to be entirely dead code.
+      "services/defi/positions/enrich.test.ts",
       // Stellar chain support (docs/stellar-chain-support-spec.md)
       "services/chains/stellar/amount.test.ts",
       "services/chains/stellar/derivation.test.ts",

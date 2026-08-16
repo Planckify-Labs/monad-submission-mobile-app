@@ -22,6 +22,10 @@
  */
 
 import type { Namespace } from "@/services/chains/types";
+import {
+  type DefiErrorCode,
+  defiErrorCopy,
+} from "@/services/defi/errors/defiErrors";
 
 const COPY: Record<string, string> = {
   // --- coarse ExecutorErrorCode taxonomy --------------------------------
@@ -130,8 +134,24 @@ export function agentErrorCopy(
     if (ROUTE_REASON_PREFIXES.some((p) => reason.startsWith(p))) {
       return ROUTE_REASON_COPY;
     }
+    // The DeFi executors set `reason` to a `DefiErrorCode`, and every one of
+    // those already has hand-written copy that the Strategies screen shows.
+    // Reuse it instead of dropping the user onto the generic line: "This pool
+    // is paused right now" beats "I couldn't complete that right now", and it
+    // keeps the two surfaces saying the same thing about the same failure.
+    const defi = defiErrorCopy[reason as DefiErrorCode];
+    if (defi) return defi.body;
   }
   return (error && COPY[error]) || FALLBACK;
+}
+
+/**
+ * The short headline for a failure, when the surface has room for one.
+ * Cards that show only a line of text ignore this.
+ */
+export function agentErrorTitle(reason?: string | undefined): string | null {
+  if (!reason) return null;
+  return defiErrorCopy[reason as DefiErrorCode]?.title ?? null;
 }
 
 /**

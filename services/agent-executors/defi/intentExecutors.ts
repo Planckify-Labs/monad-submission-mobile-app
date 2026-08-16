@@ -42,6 +42,7 @@ import {
   safeExecute,
 } from "../types";
 import { recordTransferHistory } from "../wallet/recordTransferHistory";
+import { toExecutorErrorCode } from "./defiErrorMapping";
 
 const SUI_NS = "sui" as const;
 const SUI_NATIVE_COIN_TYPE = "0x2::sui::SUI";
@@ -125,27 +126,10 @@ function mapCompileError(err: unknown): ExecutorError {
     // more-specific detail.
     const reason =
       err.message && err.message !== err.code ? err.message : err.code;
-    switch (err.code) {
-      case "unsupported_chain":
-        return new ExecutorError(ExecutorErrorCode.UnsupportedChain, reason);
-      case "insufficient_funds":
-      case "no_onchain_balance":
-        // Terminal "not enough / nothing to act on" — the agent tells the user
-        // plainly and stops. Never `invalid_input` ("I couldn't read that
-        // request"), which is what a raw build failure used to collapse to.
-        return new ExecutorError(ExecutorErrorCode.InsufficientFunds, reason);
-      case "network_error":
-        return new ExecutorError(ExecutorErrorCode.NetworkError, reason);
-      case "deposit_failed":
-      case "withdraw_failed":
-        // A genuine build/execution failure (not bad params) — generic
-        // retryable, not `invalid_input`.
-        return new ExecutorError(ExecutorErrorCode.Unknown, reason);
-      case "unsupported_asset":
-        return new ExecutorError(ExecutorErrorCode.InvalidInput, reason);
-      default:
-        return new ExecutorError(ExecutorErrorCode.InvalidInput, reason);
-    }
+    // The coarse class comes from the shared table so the Sui and EVM write
+    // paths cannot drift on what "not enough funds" or "the build failed"
+    // means to the agent.
+    return new ExecutorError(toExecutorErrorCode(err.code), reason);
   }
   if (err instanceof SuiSwapError) {
     return err.code === "network_error"

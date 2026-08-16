@@ -17,6 +17,9 @@ interface ApiError {
   message?: string;
   // Structured error code from the API (see jwt.strategy.ts / auth.service.ts)
   code?: string;
+  // The strategies/DeFi endpoints answer `{ error: "defi_<code>" }` instead
+  // (api/src/strategies/errors/defi-error.ts) — a curated code, never raw text.
+  error?: string;
 }
 
 /**
@@ -307,7 +310,15 @@ const handleApiResponse = async (
     } else if (response.status === 409) {
       throw new ApiConflictError();
     } else {
-      console.error("API error:", error.message);
+      // Log something that identifies the failure. Not every API shapes its
+      // body as `{ message }` — the strategies endpoints answer
+      // `{ error: "defi_<code>" }` — and printing only `.message` turned every
+      // one of those into "API error: undefined", which names neither the
+      // endpoint nor the reason. Dev-only; the user still sees fixed copy.
+      console.error(
+        `API error ${response.status} for ${request.url}:`,
+        error.message ?? error.code ?? error.error ?? "(no code in body)",
+      );
       throw new ApiHttpError(
         response.status,
         error,

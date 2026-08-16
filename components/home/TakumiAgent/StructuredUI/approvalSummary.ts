@@ -17,6 +17,8 @@
  * it is cosmetic rather than authoritative.
  */
 
+import { prettyProtocol } from "@/services/defi/opportunityDisplay";
+
 export function truncateAddress(addr: string): string {
   if (addr.length <= 12) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
@@ -228,6 +230,37 @@ export function approvalSummaryFromToolInput(
       },
       {},
       `Bridge ${route}`,
+    );
+  }
+
+  // DeFi writes (`defi_deposit`, `defi_rebalance`). None of their facts live in
+  // the fields probed above — the amount is `amount_raw`, the asset is
+  // `asset_symbol`, the counterparty is a POOL rather than an address — so this
+  // input used to carry no facts at all. That had two costs: the approval line
+  // fell through to the model's own prose (exactly what this module exists to
+  // prevent), and the card read "Transaction", which tells a user nothing about
+  // the thing they are being asked to approve.
+  const protocolSlug = str("protocol_slug");
+  const depositSymbol = str("asset_symbol");
+  const moveSymbol = str("from_asset_symbol");
+  if (protocolSlug && (depositSymbol || moveSymbol)) {
+    const venue = prettyProtocol(protocolSlug);
+    const chainId = input.chain_id;
+    const chain =
+      typeof chainId === "number" ? chainName(`eip155:${chainId}`) : undefined;
+    const where = chain ? `into ${venue} on ${chain}` : `into ${venue}`;
+    return factsFirstSummary(
+      {
+        action: moveSymbol ? "Move" : "Deposit",
+        // Smallest units without decimals stays omitted rather than printed
+        // raw — "200000000" would read as a wildly different deposit than the
+        // 2 the user asked for.
+        amount: formatSmallestUnits(str("amount_raw"), assetMeta?.decimals),
+        asset: assetMeta?.symbol ?? moveSymbol ?? depositSymbol,
+        suffix: where,
+      },
+      {},
+      `Deposit ${where}`,
     );
   }
 

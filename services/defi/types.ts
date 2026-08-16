@@ -21,12 +21,98 @@ export type RiskTier = "conservative" | "balanced" | "aggressive";
  * This is the MOBILE twin of the backend `DepositTarget` in
  * `api/src/strategies/targets/types.ts` — keep the two in sync.
  */
+export interface MorphoMarketParams {
+  /** The asset a lender supplies (== the pool's underlying). */
+  loanToken: Address;
+  collateralToken: Address;
+  oracle: Address;
+  irm: Address;
+  /** uint256, 1e18-scaled, as a decimal string (JSON-safe). */
+  lltv: string;
+}
+
+/**
+ * Sentinel for "the chain's native coin" in an EVM `asset` field (spec §12 Q5).
+ * Native deposits set `value: amount` on the built call and omit
+ * `needsApproval` — there is no ERC-20 `approve` for ETH, and emitting one
+ * would be a no-op that masks a mis-build.
+ */
+export const NATIVE_ASSET_SENTINEL =
+  "0x0000000000000000000000000000000000000000" as Address;
+
 export type DepositTarget =
   | { kind: "erc4626"; vault: Address; asset: Address }
   | { kind: "aave-v3"; pool: Address; asset: Address }
-  | { kind: "morpho-blue"; marketId: Hex }
+  // Morpho Blue isolated market on the singleton `Morpho` contract. `marketId`
+  // is identity/validation only; `params` is what `supply`/`withdraw` actually
+  // take, and `asset` (== params.loanToken) is the deposited token (§3.1).
+  | {
+      kind: "morpho-blue";
+      marketId: Hex;
+      params: MorphoMarketParams;
+      asset: Address;
+    }
   | { kind: "compound-v3"; comet: Address; asset: Address }
-  | { kind: "curve-lp"; pool: Address; asset: Address; index: number }
+  // Compound-v2 cToken forks (Venus vToken, Benqi qiToken, Sonne…). `mint`/
+  // `redeem`/`redeemUnderlying` with exchange-rate shares (§5.4). Prefer a
+  // protocol's ERC-4626 wrapper (Family A) when one exists — §12 Q3.
+  | { kind: "compound-v2"; cToken: Address; asset: Address }
+  // Curve LP. `index` is the coin's slot in the pool's `coins[]`; `nCoins` +
+  // `isNg` are carried so the adapter picks the right `add_liquidity` arity
+  // and index type without an on-chain probe per build (§3.3).
+  | {
+      kind: "curve-lp";
+      pool: Address;
+      asset: Address;
+      index: number;
+      nCoins: 2 | 3 | 4;
+      isNg: boolean;
+    }
+  // Solidly-fork LP (Aerodrome on Base, Velodrome on OP). Deposits go through
+  // the Router's `addLiquidity`; `stable` picks the invariant (§6.1).
+  | {
+      kind: "solidly-lp";
+      router: Address;
+      pool: Address;
+      token0: Address;
+      token1: Address;
+      stable: boolean;
+    }
+  // Balancer v3 / Beets. `poolId` is the Vault registration id; `asset` is the
+  // single token joined with (§6.2).
+  | { kind: "balancer-lp"; vault: Address; poolId: Hex; asset: Address }
+  // Liquid staking / restaking (§6.4). `venue` selects the pinned entry
+  // contract + stake shape from the address-book; `receipt` is the
+  // rate-appreciating token; `exit` records how a withdraw is serviced so the
+  // UI never promises an instant exit it can't honour (§12 Q2).
+  // `asset` is `NATIVE_ASSET_SENTINEL` for native-ETH stakes.
+  | {
+      kind: "lst-stake";
+      venue: string;
+      receipt: Address;
+      asset: Address;
+      exit: "queue" | "dex" | "instant";
+    }
+  // Router-calldata families (Pendle, Uniswap LP) — no stable on-chain deposit
+  // ABI we encode; the protocol's hosted API returns the calldata at execute
+  // time. The target models IDENTITY only (§3.4, §6).
+  | {
+      kind: "router-call";
+      protocol: "pendle" | "uniswap-v3" | "uniswap-v4";
+      market: Address;
+      chainId: number;
+      tokenIn: Address;
+    }
+  // ERC-7540 asynchronous vault (request → fulfil → claim). Tier 4: the kind
+  // exists so the union is complete and the validator can reject a
+  // non-conforming vault, but NO resolver emits it until the two-phase
+  // adapter interface ships (§7) — async pools stay Manual until then.
+  | {
+      kind: "async-vault";
+      vault: Address;
+      asset: Address;
+      flavor: "7540-deposit" | "7540-redeem" | "7540-both";
+    }
   | { kind: "scallop-market"; market: string; coinType: string }
   // Ember Vaults (Sui, Bluefin-incubated) — the closest thing to an ERC-4626
   // vault on Sui: `ember_vaults::gateway::deposit_asset_v2<T,R>` where T is the
@@ -65,6 +151,69 @@ export type DepositTarget =
   | { kind: "solana-reserve"; program: string; reserve: string; mint: string };
 
 export type DepositTargetKind = DepositTarget["kind"];
+
+/**
+ * The asset a resolved target actually takes in, per kind — the one answer to
+ * "what is being deposited?" that no model ever touched, since the target
+ * itself is resolved server-side and re-fetched by pool id before signing (§6).
+ *
+ * This is what the safety pipeline anchors `underlyingExpected` on. The tool's
+ * `asset_contract` must NOT be used for that: it is an optional model-supplied
+ * hint, absent on almost every call, and adapters already cross-check it
+ * against the resolved target instead of trusting it.
+ *
+ * `null` ⇒ the kind does not name its input asset (a Sui LST stakes native
+ * SUI), so the caller falls back rather than asserting against a placeholder.
+ */
+export function targetUnderlying(target: DepositTarget): string | null {
+  if ("asset" in target) return target.asset;
+  switch (target.kind) {
+    // Both legs are deposited; token0 is the leg the identity read reports.
+    case "solidly-lp":
+      return target.token0;
+    case "router-call":
+      return target.tokenIn;
+    case "scallop-market":
+    case "ember-vault":
+    case "navi-pool":
+    case "suilend-market":
+      return target.coinType;
+    case "solana-reserve":
+      return target.mint;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The EVM subset of `DepositTargetKind`. Every entry MUST have an explicit
+ * on-chain validator — `validateTarget`'s `default: return true` passthrough
+ * is removed for these (spec §8.1), so a new EVM kind that forgets its
+ * validator is rejected rather than silently trusted. Non-EVM kinds keep
+ * resolver-internal validation.
+ */
+export const EVM_TARGET_KINDS = [
+  "erc4626",
+  "aave-v3",
+  "morpho-blue",
+  "compound-v3",
+  "compound-v2",
+  "curve-lp",
+  "solidly-lp",
+  "balancer-lp",
+  "lst-stake",
+  "router-call",
+  "async-vault",
+] as const satisfies readonly DepositTargetKind[];
+
+export type EvmTargetKind = (typeof EVM_TARGET_KINDS)[number];
+
+export function isEvmTargetKind(
+  kind: DepositTargetKind,
+): kind is EvmTargetKind {
+  return (EVM_TARGET_KINDS as readonly string[]).includes(kind);
+}
+
 export type StrategyKind =
   | "stablecoin_lending"
   | "liquid_staking"
@@ -120,6 +269,17 @@ export interface PositionReadContext {
   assetContract?: string;
   assetSymbol?: string;
   assetDecimals?: number;
+  /**
+   * The chain the position lives on, built from the backend `Blockchain` row.
+   *
+   * The EVM family adapters (`compound-v3`, `compound-v2`, `morpho-blue`,
+   * `curve-lp`, …) are routed by `DepositTarget.kind`, not by chainId, so they
+   * have NO fixed deployment to derive an RPC client from — they need the chain
+   * passed in. Sourced from the API's blockchain list rather than a bundled
+   * per-chain constant, so a newly-onboarded chain works without a code change.
+   * Optional (space-docking): adapters that ignore it are unaffected.
+   */
+  chain?: ChainConfig;
 }
 
 export interface BuildDepositArgs {
@@ -135,6 +295,22 @@ export interface BuildDepositArgs {
    * address/market from here instead of a hardcoded per-deployment constant.
    */
   target?: DepositTarget;
+  /**
+   * The DeFiLlama pool id this deposit is for.
+   *
+   * Only the router-calldata family needs it: its calldata does not exist until
+   * execute time and is fetched through OUR backend proxy, which re-resolves
+   * the target by `poolId` server-side rather than trusting anything the device
+   * sends (§6, §8). Optional and presence-checked — every other adapter builds
+   * entirely from `target`.
+   */
+  poolId?: string;
+  /**
+   * The user's risk tier, for the slippage policy (§12 Q4): conservative users
+   * get a tighter budget. Optional; the policy defaults to `balanced` when the
+   * caller has not resolved a strategy.
+   */
+  tier?: RiskTier;
 }
 
 export interface BuildWithdrawArgs extends Omit<BuildDepositArgs, "amount"> {
@@ -272,6 +448,51 @@ export interface DefiProtocolAdapter {
    * verify. Optional (presence-checked); absent ⇒ the dry-run is authoritative.
    */
   isDryRunUnreliable?(target?: DepositTarget): Promise<boolean>;
+
+  // ── Tier 4: asynchronous (ERC-7540) vaults ────────────────────────────────
+  // docs/defi-evm-protocol-expansion-spec.md §7.
+  //
+  // An async vault cannot settle in one transaction: deposit and redeem are
+  // `request → (off-chain fulfil) → claim`. That breaks `buildDeposit`'s
+  // one-shot contract outright, so rather than overload `amount` with a
+  // two-phase meaning, the phases dock in as OPTIONAL methods
+  // (presence-checked, never namespace- or kind-checked — the same
+  // space-docking rule as every other capability here).
+  //
+  // An adapter that implements these is async; one that doesn't is
+  // synchronous, and shared code asks by presence instead of knowing which is
+  // which. Until an `async-vault` resolver ships (§7 forbids registering one
+  // before this interface is proven end to end), nothing calls them.
+
+  /** Phase 1 of a deposit: `requestDeposit(assets, controller, owner)`. */
+  buildRequestDeposit?(args: BuildDepositArgs): Promise<UnsignedCall>;
+  /** Phase 2: `deposit`/`mint` once `claimableDepositRequest` is non-zero. */
+  buildClaimDeposit?(args: BuildDepositArgs): Promise<UnsignedCall>;
+  /** Phase 1 of an exit: `requestRedeem(shares, controller, owner)`. */
+  buildRequestRedeem?(args: BuildWithdrawArgs): Promise<UnsignedCall>;
+  /** Phase 2: `withdraw`/`redeem` once `claimableRedeemRequest` is non-zero. */
+  buildClaimRedeem?(args: BuildWithdrawArgs): Promise<UnsignedCall>;
+  /**
+   * Readiness of an outstanding request, for the pending-claims tracker and
+   * the "pending settlement" position state. Returns `null` when the adapter
+   * cannot read it — treated as "still pending", never as "ready".
+   */
+  readAsyncRequest?(
+    walletAddress: string,
+    ctx: PositionReadContext,
+  ): Promise<AsyncRequestState | null>;
+}
+
+/**
+ * Where an ERC-7540 request stands. `pending` and `claimable` are in the
+ * vault's own units (assets for a deposit request, shares for a redeem), and
+ * both can be non-zero at once while a request is partially fulfilled.
+ */
+export interface AsyncRequestState {
+  phase: "deposit" | "redeem";
+  requestId: string;
+  pending: bigint;
+  claimable: bigint;
 }
 
 /**
@@ -290,17 +511,32 @@ export interface DefiProtocolAdapter {
  * (`services/walletKit/types.ts:189-218`), so we can route either
  * branch through it.
  */
+
+/**
+ * One ERC-20 approve preamble. Always scoped to the EXACT amount and the exact
+ * spender — never infinite (§8.4, §11 Layer-4 "approval scoping").
+ */
+export interface ApprovalRequirement {
+  token: `0x${string}`;
+  spender: `0x${string}`;
+  amount: bigint;
+}
+
 export type UnsignedCall =
   | {
       kind: "evm-call";
       to: `0x${string}`;
       data: `0x${string}`;
       value?: bigint;
-      needsApproval?: {
-        token: `0x${string}`;
-        spender: `0x${string}`;
-        amount: bigint;
-      };
+      /**
+       * One approve, or several. Two-sided LP adds (Solidly `addLiquidity`)
+       * pull BOTH tokens in a single call, so one approval is not enough to
+       * describe what the transaction needs. Kept as a union rather than
+       * changing the field to an array so every existing adapter and consumer
+       * is untouched — normalise with `approvalsOf()` instead of reading it
+       * directly.
+       */
+      needsApproval?: ApprovalRequirement | readonly ApprovalRequirement[];
     }
   | {
       kind: "solana-ix";
@@ -311,3 +547,18 @@ export type UnsignedCall =
       kind: "sui-ptb";
       transactionBlockBase64: string;
     };
+
+/**
+ * Every approve a built call needs, as a list. The single-approval shape is by
+ * far the common case, so `needsApproval` stays a bare object there; callers
+ * that must actually submit the preambles go through here so a two-sided LP add
+ * cannot silently drop its second approve.
+ */
+export function approvalsOf(
+  call: UnsignedCall,
+): readonly ApprovalRequirement[] {
+  if (call.kind !== "evm-call" || !call.needsApproval) return [];
+  return Array.isArray(call.needsApproval)
+    ? call.needsApproval
+    : [call.needsApproval as ApprovalRequirement];
+}

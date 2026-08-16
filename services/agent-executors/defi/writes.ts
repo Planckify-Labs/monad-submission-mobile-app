@@ -18,12 +18,12 @@
  */
 
 import { type Address, erc20Abi, formatUnits, parseAbi } from "viem";
-import { exchangeRateApi } from "@/api/endpoints/exchange-rates";
 import { strategiesApi } from "@/api/endpoints/strategies";
 import type { TOpportunity, TUserStrategy } from "@/api/types/strategy";
 import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
 import { toChainTag } from "@/services/analytics/chainTag";
 import { track } from "@/services/analytics/posthog";
+import { decimalsForSymbol } from "@/services/defi/assetDecimals";
 import {
   classifyDefiError,
   DefiError,
@@ -34,7 +34,19 @@ import {
   getDefiAdapterForTarget,
   listDefiAdapters,
 } from "@/services/defi/registry";
-import type { DepositTarget } from "@/services/defi/types";
+import { releaseSubmission } from "@/services/defi/safety/checks/layer4-execution";
+import { setEvmChainResolver } from "@/services/defi/safety/providers/eip155";
+import {
+  assertSafetyResult,
+  runSafetyPipeline,
+} from "@/services/defi/safety/registry";
+import type { SafetyContext } from "@/services/defi/safety/types";
+import {
+  approvalsOf,
+  type DepositTarget,
+  NATIVE_ASSET_SENTINEL,
+  targetUnderlying,
+} from "@/services/defi/types";
 import { getDefaultTokens } from "@/services/tokens/tokenList";
 import { resolveChainClients } from "../chainRouter";
 import {
@@ -47,6 +59,7 @@ import {
   safeExecute,
   type ToolInput,
 } from "../types";
+import { toExecutorErrorCode } from "./defiErrorMapping";
 import { submitEvmCall } from "./submitTx";
 
 const APY_DRIFT_TOLERANCE_PCT = 5;
@@ -62,23 +75,6 @@ type TierKey = keyof typeof TIER_RANK;
 export function toTierKey(tier: string | undefined): TierKey {
   if (tier === "balanced" || tier === "aggressive") return tier;
   return "conservative";
-}
-
-function decimalsForSymbol(symbol: string): number {
-  // Minimal decimal map — matches what the token registry would
-  // resolve. The executor uses this as a fallback; production
-  // deposits already carry `asset_contract` and the adapter's own
-  // decimals discovery if it needs more precision.
-  switch (symbol.toUpperCase()) {
-    case "USDC":
-    case "USDT":
-    case "USDC.E":
-      return 6;
-    case "WBTC":
-      return 8;
-    default:
-      return 18;
-  }
 }
 
 // Address-bearing DepositTarget fields the LLM must NEVER supply (spec §8:
@@ -117,6 +113,26 @@ function assertNoLlmSuppliedTarget(input: ToolInput): void {
       );
     }
   }
+}
+
+/**
+ * Point the eip155 safety provider at the chains the backend has published.
+ *
+ * Chains are data (the API's blockchain rows), not a bundled constant, so the
+ * provider is handed a resolver rather than looking one up. Rebinding per
+ * invocation keeps it in step with a chain list that can change under us.
+ */
+function bindSafetyChainResolver(context: {
+  blockchains: { chainId?: number | null }[];
+}): void {
+  setEvmChainResolver((chainId) => {
+    const blockchain = context.blockchains.find((b) => b.chainId === chainId);
+    return blockchain
+      ? buildChainConfigFromBlockchain(
+          blockchain as Parameters<typeof buildChainConfigFromBlockchain>[0],
+        )
+      : null;
+  });
 }
 
 /**
@@ -317,7 +333,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
       // cheapest rejections. When `poolId` is present this ALSO re-fetches the
       // authoritative `depositTarget` from the exact pool row server-side
       // (§6): the model never handed us an address.
-      const { opportunity } = await resolveAndGuard({
+      const { opportunity, strategy } = await resolveAndGuard({
         protocolSlug,
         poolId,
         expectedApy,
@@ -381,15 +397,87 @@ export const deposit: MobileToolExecutor = (input, context) =>
       const chainConfig = buildChainConfigFromBlockchain(blockchain);
       const decimals = decimalsForSymbol(assetSymbol);
 
+      // ── Safety pipeline, anchor 1 of 2 (§11.1, §11.4) ──────────────────
+      // Layers 0-3 and the identity half of Layer 1 run BEFORE anything is
+      // built: input provenance, target identity, policy, economics. This is
+      // the cheap half, and a failure here means nothing was ever encoded.
+      bindSafetyChainResolver(context);
+      // What the pipeline holds the built call to. It comes from the
+      // SERVER-RESOLVED target, never from `asset_contract`: that field is an
+      // optional model-supplied hint the agent omits on almost every call, so
+      // anchoring on it left the expected underlying at the zero address and
+      // Layer 1 compared a real `asset()`/reserve read against 0x0 — every
+      // ERC-20 pool deposit failed `underlying-matches`. The catalogue row is
+      // the fallback for kinds that do not name their input asset.
+      const underlyingExpected =
+        (depositTarget ? targetUnderlying(depositTarget) : null) ??
+        opportunity?.assetContract ??
+        assetContract ??
+        NATIVE_ASSET_SENTINEL;
+      const safetyBase: SafetyContext = {
+        namespace: adapter.namespace,
+        target: depositTarget ?? {
+          // A slug-routed legacy deposit has no resolved target. Represent it
+          // honestly rather than inventing one: the kind-scoped checks skip it
+          // and the universal ones still run.
+          kind: "erc4626",
+          vault: "0x0000000000000000000000000000000000000000",
+          asset: underlyingExpected as `0x${string}`,
+        },
+        chainId,
+        wallet: context.wallet.address,
+        requestedAmount: amountRaw,
+        underlyingExpected,
+        previewOut: null,
+        tvlUsdSnapshot: opportunity ? Number(opportunity.tvlUsd) : null,
+        sim: null,
+        feeEstimate: null,
+        stage: "presign",
+        toolInput: input,
+        poolId,
+        protocolSlug,
+        family: depositTarget?.kind,
+        assetDecimals: decimals,
+        expectedApy,
+        cachedApy: opportunity ? Number.parseFloat(opportunity.apy) : undefined,
+        policy: {
+          tier: strategy ? toTierKey(strategy.tier) : undefined,
+          protocolWhitelist: strategy?.protocolWhitelist ?? undefined,
+          allowAllInTier: !!strategy?.allowAllInTier,
+          paused: !!strategy?.pausedAt,
+        },
+        submissionKey: `${context.wallet.address}:${poolId ?? protocolSlug}:${amountRaw}`,
+      };
+      // Only enforced when the pool actually resolved a target — a legacy
+      // slug-routed deposit predates the pipeline and must not start failing.
+      if (depositTarget) {
+        assertSafetyResult(await runSafetyPipeline(safetyBase));
+      }
+
+      // ERC-7540 vaults cannot settle in one transaction: the deposit is a
+      // REQUEST that an off-chain fulfilment later makes claimable (§7). Ask
+      // the adapter by capability, never by kind — an adapter exposing
+      // `buildRequestDeposit` is async, and everything downstream (the result
+      // the agent reports, the position phase) follows from that one fact.
+      const isAsyncDeposit = typeof adapter.buildRequestDeposit === "function";
+
       let unsignedCall;
       try {
-        unsignedCall = await adapter.buildDeposit({
+        const buildArgs = {
           wallet: context.wallet,
           chain: chainConfig,
           asset: { symbol: assetSymbol, contract: assetContract, decimals },
           amount: amountRaw,
           target: depositTarget,
-        });
+          // Router-calldata families round-trip to the backend proxy by
+          // pool id; the tier drives the slippage budget (§12 Q4).
+          poolId,
+          tier: strategy ? toTierKey(strategy.tier) : undefined,
+        };
+        unsignedCall = isAsyncDeposit
+          ? // biome-ignore lint/style/noNonNullAssertion: guarded by isAsyncDeposit
+            await adapter.buildRequestDeposit!(buildArgs)
+          : await adapter.buildDeposit(buildArgs);
       } catch (buildErr) {
         if (__DEV__) {
           console.error("[defi/deposit] adapter.buildDeposit threw", {
@@ -408,14 +496,11 @@ export const deposit: MobileToolExecutor = (input, context) =>
           to: (unsignedCall as { to?: string }).to,
           dataLen: (unsignedCall as { data?: string }).data?.length,
           value: (unsignedCall as { value?: bigint }).value?.toString(),
-          needsApproval:
-            unsignedCall.kind === "evm-call" && unsignedCall.needsApproval
-              ? {
-                  token: unsignedCall.needsApproval.token,
-                  spender: unsignedCall.needsApproval.spender,
-                  amount: unsignedCall.needsApproval.amount.toString(),
-                }
-              : false,
+          needsApproval: approvalsOf(unsignedCall).map((a) => ({
+            token: a.token,
+            spender: a.spender,
+            amount: a.amount.toString(),
+          })),
         });
       }
 
@@ -450,48 +535,59 @@ export const deposit: MobileToolExecutor = (input, context) =>
         throw new DefiError("wallet_cannot_execute");
       }
 
-      // 1. Approval preamble.
-      if (unsignedCall.needsApproval) {
+      // ── Safety pipeline, anchor 2 of 2 (§11.1, §11 Layer 4) ────────────
+      // The on-device anchor. These checks read the call that is ABOUT TO BE
+      // SIGNED — chain binding, decoded-intent match, approval scoping, quote
+      // freshness, simulate, idempotency. A compromised backend cannot argue
+      // its way past them, because they do not consult it.
+      if (depositTarget) {
+        assertSafetyResult(
+          await runSafetyPipeline({
+            ...safetyBase,
+            stage: "submit",
+            call: unsignedCall,
+          }),
+        );
+      }
+
+      // 1. Approval preamble. A two-sided LP add needs BOTH tokens approved in
+      //    the same build, so iterate the normalised list rather than the
+      //    single field — one dropped approve makes the deposit revert.
+      for (const approval of approvalsOf(unsignedCall)) {
         try {
           if (__DEV__) {
             console.warn("[defi/deposit] reading allowance", {
-              token: unsignedCall.needsApproval.token,
+              token: approval.token,
               owner: walletClient.account.address,
-              spender: unsignedCall.needsApproval.spender,
+              spender: approval.spender,
             });
           }
           const allowance = await publicClient.readContract({
-            address: unsignedCall.needsApproval.token,
+            address: approval.token,
             abi: erc20Abi,
             functionName: "allowance",
-            args: [
-              walletClient.account.address as Address,
-              unsignedCall.needsApproval.spender,
-            ],
+            args: [walletClient.account.address as Address, approval.spender],
           });
           if (__DEV__) {
             console.warn("[defi/deposit] allowance read OK", {
               allowance: allowance.toString(),
-              required: unsignedCall.needsApproval.amount.toString(),
-              sufficient: allowance >= unsignedCall.needsApproval.amount,
+              required: approval.amount.toString(),
+              sufficient: allowance >= approval.amount,
             });
           }
-          if (allowance < unsignedCall.needsApproval.amount) {
+          if (allowance < approval.amount) {
             if (__DEV__) {
               console.warn("[defi/deposit] submitting approve tx", {
-                token: unsignedCall.needsApproval.token,
-                spender: unsignedCall.needsApproval.spender,
-                amount: unsignedCall.needsApproval.amount.toString(),
+                token: approval.token,
+                spender: approval.spender,
+                amount: approval.amount.toString(),
               });
             }
             const approveHash = await walletClient.writeContract({
-              address: unsignedCall.needsApproval.token,
+              address: approval.token,
               abi: erc20Abi,
               functionName: "approve",
-              args: [
-                unsignedCall.needsApproval.spender,
-                unsignedCall.needsApproval.amount,
-              ],
+              args: [approval.spender, approval.amount],
               account: walletClient.account,
               chain: walletClient.chain,
             });
@@ -510,14 +606,33 @@ export const deposit: MobileToolExecutor = (input, context) =>
         } catch (err) {
           if (__DEV__) {
             console.error("[defi/deposit] approval_failed", {
-              token: unsignedCall.needsApproval.token,
-              spender: unsignedCall.needsApproval.spender,
-              required: unsignedCall.needsApproval.amount.toString(),
+              token: approval.token,
+              spender: approval.spender,
+              required: approval.amount.toString(),
               error: err,
             });
           }
           throw new DefiError("approval_failed");
         }
+      }
+
+      // ── Safety pipeline, the last word before broadcast ─────────────────
+      // The dry-run belongs HERE, not with the rest of Layer 4: the approvals
+      // above are separate transactions, so until they are mined the deposit
+      // has no allowance and a simulation of it can only ever revert. Anything
+      // it reports now is about the deposit itself.
+      if (depositTarget) {
+        const preflight = await runSafetyPipeline({
+          ...safetyBase,
+          stage: "broadcast",
+          call: unsignedCall,
+        });
+        if (!preflight.ok) {
+          // Nothing was broadcast, so the idempotency key claimed at submit
+          // must not outlive the attempt — a genuine retry is not a duplicate.
+          releaseSubmission(safetyBase.submissionKey ?? "");
+        }
+        assertSafetyResult(preflight);
       }
 
       // 2. Submit the protocol call (phantom-failure-safe — see
@@ -544,6 +659,11 @@ export const deposit: MobileToolExecutor = (input, context) =>
             to: unsignedCall.to,
           });
         }
+        // Definitely nothing happened, so free the idempotency key: a genuine
+        // retry should not be told it is a duplicate of a deposit that never
+        // existed. An UNCONFIRMED submission keeps its key, because there the
+        // whole risk is that it DID land.
+        releaseSubmission(safetyBase.submissionKey ?? "");
         throw new DefiError("deposit_failed");
       }
       if (submit.kind === "mined" && !submit.success) {
@@ -552,6 +672,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
             hash: submit.hash,
           });
         }
+        releaseSubmission(safetyBase.submissionKey ?? "");
         throw new DefiError("deposit_failed");
       }
       if (submit.kind === "unconfirmed") {
@@ -580,22 +701,29 @@ export const deposit: MobileToolExecutor = (input, context) =>
       }
 
       // 3. USD value snapshot for `StrategyPosition.amountAtDepositUsd`.
+      //
+      // Previously called `exchangeRateApi.getLatestExchangeRate({...,
+      // toCurrency: "USD"})`, but that table only ever holds crypto->IDR/SGD
+      // payout rates for the QRIS/PPOB rails (seeded by
+      // api/src/scripts/prisma/seed.ts) — there is no `toCurrency: "USD"`
+      // row for any asset, so that call was a guaranteed `null` and this
+      // snapshot was always 0. `strategiesApi.getAssetPrices` proxies
+      // Alchemy's Prices API instead, which actually has a USD quote.
       let amountAtDepositUsd = 0;
       try {
-        const rate = await exchangeRateApi.getLatestExchangeRate({
-          fromCurrency: assetSymbol,
-          toCurrency: "USD",
-        });
+        const [price] = await strategiesApi.getAssetPrices([
+          { chainId, assetSymbol, assetContract },
+        ]);
         const humanAmount = parseFloat(formatUnits(amountRaw, decimals));
-        const computed = humanAmount * (rate?.rate ?? 0);
+        const computed = humanAmount * (price?.usd ?? 0);
         amountAtDepositUsd = Number.isFinite(computed) ? computed : 0;
-      } catch (rateErr) {
+      } catch (priceErr) {
         if (__DEV__) {
           console.warn(
-            "[defi/deposit] exchange rate fetch failed (best-effort)",
+            "[defi/deposit] asset price fetch failed (best-effort)",
             {
               assetSymbol,
-              error: rateErr,
+              error: priceErr,
             },
           );
         }
@@ -643,6 +771,9 @@ export const deposit: MobileToolExecutor = (input, context) =>
         amount_usd: amountAtDepositUsd,
       });
 
+      // §7 requirement 3 — an async deposit is a REQUEST, not a completed
+      // deposit. Reporting "done" here is what would let the agent tell the
+      // user their money is earning when it is actually sitting in a queue.
       return {
         status: "success" as const,
         tx_hash: hash,
@@ -651,6 +782,13 @@ export const deposit: MobileToolExecutor = (input, context) =>
           protocol_slug: protocolSlug,
           chain_id: chainId,
           amount_raw: amountRaw.toString(),
+          ...(isAsyncDeposit
+            ? {
+                settlement: "pending" as const,
+                async_phase: "deposit_requested" as const,
+                note: "Deposit requested. This pool settles off-chain, so the position becomes claimable once the protocol fulfils the request. We'll notify you when it's ready to claim.",
+              }
+            : {}),
         },
       };
     } catch (err) {
@@ -658,7 +796,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
       if (__DEV__) {
         console.warn("[defi/deposit] EXIT failed", { code, error: err });
       }
-      throw new ExecutorError(ExecutorErrorCode.InvalidInput, code);
+      throw new ExecutorError(toExecutorErrorCode(code), code);
     }
   });
 
@@ -741,9 +879,10 @@ export const withdraw: MobileToolExecutor = (input, context) =>
         throw new DefiError("protocol_not_found", protocolSlug);
       }
 
-      // Strategy-paused still allows withdraw (kill-switch lets users exit).
+      // Strategy-paused still allows withdraw (kill-switch lets users exit) —
+      // the strategy is read only for the tier that sets the slippage budget
+      // on LP/router exits (§12 Q4), never to gate the exit itself.
       const strategy = await strategiesApi.getStrategy().catch(() => null);
-      void strategy; // intentionally not gating withdraw
 
       const blockchain = context.blockchains.find((b) => b.chainId === chainId);
       if (!blockchain) {
@@ -773,6 +912,8 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           },
           amount: amountRaw,
           target: withdrawTarget,
+          poolId: position.poolId ?? undefined,
+          tier: strategy ? toTierKey(strategy.tier) : undefined,
         });
       } catch (buildErr) {
         if (__DEV__) {
@@ -790,14 +931,11 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           kind: unsignedCall.kind,
           to: (unsignedCall as { to?: string }).to,
           dataLen: (unsignedCall as { data?: string }).data?.length,
-          needsApproval:
-            unsignedCall.kind === "evm-call" && unsignedCall.needsApproval
-              ? {
-                  token: unsignedCall.needsApproval.token,
-                  spender: unsignedCall.needsApproval.spender,
-                  amount: unsignedCall.needsApproval.amount.toString(),
-                }
-              : false,
+          needsApproval: approvalsOf(unsignedCall).map((a) => ({
+            token: a.token,
+            spender: a.spender,
+            amount: a.amount.toString(),
+          })),
         });
       }
 
@@ -845,6 +983,10 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           walletAddress: walletClient.account.address,
           assetSymbol,
           assetContract: assetContract ?? undefined,
+          // Kind-routed EVM adapters have no fixed deployment, so they need
+          // the pool target AND a chain to read against.
+          poolId: position.poolId ?? undefined,
+          chain: chainConfig,
         });
         if (live && live.currentAmount <= 0n) {
           if (__DEV__) {
@@ -869,39 +1011,33 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       // Some withdrawals (Lido, Ethena cooldown) require an approval
       // to the queue/redemption manager — handle the preamble the
       // same as deposit.
-      if (unsignedCall.needsApproval) {
+      for (const approval of approvalsOf(unsignedCall)) {
         try {
           if (__DEV__) {
             console.warn("[defi/withdraw] reading allowance", {
-              token: unsignedCall.needsApproval.token,
+              token: approval.token,
               owner: walletClient.account.address,
-              spender: unsignedCall.needsApproval.spender,
+              spender: approval.spender,
             });
           }
           const allowance = await publicClient.readContract({
-            address: unsignedCall.needsApproval.token,
+            address: approval.token,
             abi: erc20Abi,
             functionName: "allowance",
-            args: [
-              walletClient.account.address as Address,
-              unsignedCall.needsApproval.spender,
-            ],
+            args: [walletClient.account.address as Address, approval.spender],
           });
           if (__DEV__) {
             console.warn("[defi/withdraw] allowance read OK", {
               allowance: allowance.toString(),
-              required: unsignedCall.needsApproval.amount.toString(),
+              required: approval.amount.toString(),
             });
           }
-          if (allowance < unsignedCall.needsApproval.amount) {
+          if (allowance < approval.amount) {
             const approveHash = await walletClient.writeContract({
-              address: unsignedCall.needsApproval.token,
+              address: approval.token,
               abi: erc20Abi,
               functionName: "approve",
-              args: [
-                unsignedCall.needsApproval.spender,
-                unsignedCall.needsApproval.amount,
-              ],
+              args: [approval.spender, approval.amount],
               account: walletClient.account,
               chain: walletClient.chain,
             });
@@ -920,8 +1056,8 @@ export const withdraw: MobileToolExecutor = (input, context) =>
         } catch (err) {
           if (__DEV__) {
             console.error("[defi/withdraw] approval_failed", {
-              token: unsignedCall.needsApproval.token,
-              spender: unsignedCall.needsApproval.spender,
+              token: approval.token,
+              spender: approval.spender,
               error: err,
             });
           }
@@ -1008,7 +1144,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       if (__DEV__) {
         console.warn("[defi/withdraw] EXIT failed", { code, error: err });
       }
-      throw new ExecutorError(ExecutorErrorCode.InvalidInput, code);
+      throw new ExecutorError(toExecutorErrorCode(code), code);
     }
   });
 
@@ -1188,7 +1324,7 @@ export const claim: MobileToolExecutor = (input, context) =>
       if (__DEV__) {
         console.warn("[defi/claim] EXIT failed", { code, error: err });
       }
-      throw new ExecutorError(ExecutorErrorCode.InvalidInput, code);
+      throw new ExecutorError(toExecutorErrorCode(code), code);
     }
   });
 
@@ -1352,7 +1488,7 @@ export const rebalance: MobileToolExecutor = (input, context) =>
       if (__DEV__) {
         console.warn("[defi/rebalance] EXIT failed", { code, error: err });
       }
-      throw new ExecutorError(ExecutorErrorCode.InvalidInput, code);
+      throw new ExecutorError(toExecutorErrorCode(code), code);
     }
   });
 
@@ -1605,23 +1741,20 @@ export const compound: MobileToolExecutor = (input, context) =>
       }
 
       // 4a. Approval preamble for ERC20 deposits.
-      if (depositCall.needsApproval) {
+      for (const approval of approvalsOf(depositCall)) {
         try {
           const allowance = await publicClient.readContract({
-            address: depositCall.needsApproval.token,
+            address: approval.token,
             abi: erc20Abi,
             functionName: "allowance",
-            args: [walletAddress, depositCall.needsApproval.spender],
+            args: [walletAddress, approval.spender],
           });
-          if (allowance < depositCall.needsApproval.amount) {
+          if (allowance < approval.amount) {
             const approveHash = await walletClient.writeContract({
-              address: depositCall.needsApproval.token,
+              address: approval.token,
               abi: erc20Abi,
               functionName: "approve",
-              args: [
-                depositCall.needsApproval.spender,
-                depositCall.needsApproval.amount,
-              ],
+              args: [approval.spender, approval.amount],
               account: walletClient.account,
               chain: walletClient.chain,
             });
@@ -1679,6 +1812,6 @@ export const compound: MobileToolExecutor = (input, context) =>
       if (__DEV__) {
         console.warn("[defi/compound] EXIT failed", { code, error: err });
       }
-      throw new ExecutorError(ExecutorErrorCode.InvalidInput, code);
+      throw new ExecutorError(toExecutorErrorCode(code), code);
     }
   });

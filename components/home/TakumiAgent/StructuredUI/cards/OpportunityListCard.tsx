@@ -63,6 +63,7 @@ import {
   type DisplayPool,
   groupOpportunities,
   type OpportunityGroup,
+  prettyProtocol,
   type RawOpportunity,
 } from "@/services/defi/opportunityDisplay";
 import { protocolAppUrl } from "@/services/defi/protocolLinks";
@@ -137,55 +138,9 @@ const TIER_PILL_COLOR: Record<string, string> = {
   aggressive: "bg-rose-100 text-rose-700",
 };
 
-// Known DeFiLlama / adapter slugs → human display names. Anything not
-// listed falls back to title-casing the slug (after stripping a trailing
-// chain suffix), so new protocols still read cleanly without an entry.
-const PROTOCOL_DISPLAY_NAMES: Record<string, string> = {
-  "aave-v3": "Aave V3",
-  "aave-v2": "Aave V2",
-  aave: "Aave",
-  "fluid-lending": "Fluid",
-  fluid: "Fluid",
-  "centrifuge-protocol": "Centrifuge",
-  centrifuge: "Centrifuge",
-  maple: "Maple",
-  "morpho-vault": "Morpho",
-  "morpho-blue": "Morpho",
-  morpho: "Morpho",
-  "compound-v3": "Compound V3",
-  "compound-v2": "Compound V2",
-  spark: "Spark",
-  "sky-lending": "Sky",
-  sky: "Sky",
-  "ethena-usde": "Ethena",
-  ethena: "Ethena",
-  lido: "Lido",
-  "jito-solana": "Jito",
-  jito: "Jito",
-  "yearn-finance": "Yearn",
-  "yearn-v3": "Yearn",
-  yearn: "Yearn",
-  "curve-dex": "Curve",
-  curve: "Curve",
-  scallop: "Scallop",
-  navi: "Navi",
-};
-
-// Trailing chain qualifiers we strip from a slug before prettifying, so
-// "aave-v3-base-sepolia" → "aave-v3" (the chain is shown separately).
-const CHAIN_SUFFIXES = [
-  "-base-sepolia",
-  "-arbitrum-sepolia",
-  "-optimism-sepolia",
-  "-ethereum-sepolia",
-  "-sepolia",
-  "-base",
-  "-arbitrum",
-  "-optimism",
-  "-polygon",
-  "-ethereum",
-  "-mainnet",
-];
+// Slug → display name now lives in `services/defi/opportunityDisplay.ts`
+// (`prettyProtocol`): the approval surfaces have to show the user the same
+// venue name this list showed them when they picked it.
 
 const TESTNET_CHAIN_IDS = new Set<number>([
   11155111, // Ethereum Sepolia
@@ -274,30 +229,6 @@ function chainLabel(
     default:
       return chainId ? `Chain ${chainId}` : null;
   }
-}
-
-function prettyProtocol(slug: string): string {
-  const lower = slug.trim().toLowerCase();
-  if (PROTOCOL_DISPLAY_NAMES[lower]) return PROTOCOL_DISPLAY_NAMES[lower];
-  let base = lower;
-  for (const suffix of CHAIN_SUFFIXES) {
-    if (base.endsWith(suffix)) {
-      base = base.slice(0, -suffix.length);
-      break;
-    }
-  }
-  if (PROTOCOL_DISPLAY_NAMES[base]) return PROTOCOL_DISPLAY_NAMES[base];
-  return (
-    base
-      .split(/[-_]/)
-      .filter(Boolean)
-      .map((word) =>
-        /^v\d+$/i.test(word)
-          ? word.toUpperCase()
-          : word.charAt(0).toUpperCase() + word.slice(1),
-      )
-      .join(" ") || slug
-  );
 }
 
 function isTestnetRow(row: OpportunityRow): boolean {

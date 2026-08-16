@@ -30,7 +30,17 @@ export const AAVE_V3 = {
   },
   base: {
     chainId: 8453,
-    pool: "0xA238Dd80C259a72e81d7e4674A983a59f1ad673e" as Hex,
+    // Verified on-chain 2026-08-15: Aave's own PoolAddressesProvider on Base
+    // (0xe20fCBdBfFC4Dd138cE8b2E6FBb6CB49777ad64D) reports this as `getPool()`.
+    // The previous value here (0xA238Dd80C259a72e81d7e4674A983a59f1ad673e) had
+    // NO CODE on Base at all — a `supply()` to it would have returned success
+    // while moving nothing, so the app reported a deposit the user never got.
+    // Caught by services/defi/addressBookParity.test.ts.
+    pool: "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5" as Hex,
+    // NOTE: the provider now reports 0x0F43731EB8d45A581f4a36DD74F5f358bc90C73A
+    // as the pool data provider. The address below still has code (the earlier
+    // deployment), so it is stale rather than broken — left as-is because
+    // rotating a read path is a separate, reviewable change.
     poolDataProvider: "0xd82a47fdebB5bf5329b09441C3DaB4b5df2153Ad" as Hex,
     rewardsController: "0xf9cc4F0D883F1a1eb2c253bdb46c254Ca51E1F44" as Hex,
   },

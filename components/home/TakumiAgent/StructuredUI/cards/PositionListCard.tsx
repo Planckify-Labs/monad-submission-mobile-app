@@ -27,6 +27,11 @@ type PositionRow = {
   amount_at_deposit_usd?: string | number;
   current_amount_raw?: string | null;
   current_amount_usd?: string | number | null;
+  /** Live APY off the position's opportunity row (null once the pool ages
+   *  out of the cache) — joined server-side, never persisted. */
+  current_apy?: number | null;
+  pnl_usd?: number | null;
+  pnl_pct?: number | null;
   status?: string;
   open_tx_hash?: string | null;
   opened_at?: string;
@@ -129,6 +134,12 @@ function SkeletonRow() {
   );
 }
 
+function formatUsd(value: string | number | null | undefined): string | null {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? `$${n.toFixed(2)}` : null;
+}
+
 function PositionRowItem({ row }: { row: PositionRow }) {
   const chain = chainLabel(row.chain_id, row.namespace);
   const amount = formatTokenAmount(
@@ -136,6 +147,17 @@ function PositionRowItem({ row }: { row: PositionRow }) {
     row.asset_symbol ?? "",
   );
   const goalCountdown = daysUntil(row.target_date);
+  const currentUsd = formatUsd(row.current_amount_usd);
+  const pnlPct = Number(row.pnl_pct);
+  const hasPnl =
+    row.pnl_pct !== null &&
+    row.pnl_pct !== undefined &&
+    Number.isFinite(pnlPct);
+  const apy = Number(row.current_apy);
+  const hasApy =
+    row.current_apy !== null &&
+    row.current_apy !== undefined &&
+    Number.isFinite(apy);
 
   return (
     <View className="py-3">
@@ -160,11 +182,29 @@ function PositionRowItem({ row }: { row: PositionRow }) {
               <Text className="text-[10px] text-gray-500">· {row.status}</Text>
             ) : null}
           </View>
+          {hasApy ? (
+            <Text className="text-[10px] font-semibold text-emerald-600 mt-1">
+              Earning {apy.toFixed(2)}% APY
+            </Text>
+          ) : null}
         </View>
         <View className="items-end">
           <Text className="text-sm font-bold text-light-matte-black">
             {amount}
           </Text>
+          {currentUsd ? (
+            <Text className="text-xs text-light-matte-black/60 mt-0.5">
+              {currentUsd}
+            </Text>
+          ) : null}
+          {hasPnl ? (
+            <Text
+              className={`text-[10px] font-semibold mt-0.5 ${pnlPct >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+            >
+              {pnlPct >= 0 ? "+" : ""}
+              {pnlPct.toFixed(2)}%
+            </Text>
+          ) : null}
           {goalCountdown ? (
             <Text className="text-[10px] text-amber-700 mt-1">
               {goalCountdown}

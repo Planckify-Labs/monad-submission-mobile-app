@@ -23,11 +23,14 @@ import {
 } from "react-native-safe-area-context";
 import type { TOpportunity, TStrategyPosition } from "@/api/types/strategy";
 import SingleLoadingSekeleton from "@/components/common/SingleLoadingSekeleton";
+import { useBlockchains } from "@/hooks/queries/useBlockchains";
 import {
   useStrategyOpportunities,
   useStrategyPositions,
   useUserStrategy,
 } from "@/hooks/queries/useStrategy";
+import { useWallet } from "@/hooks/useWallet";
+import { decimalsForSymbol } from "@/services/defi/assetDecimals";
 
 const tierLabel: Record<string, string> = {
   conservative: "Conservative",
@@ -95,6 +98,10 @@ function PositionRow({
   const pnl = currentUsd - entryUsd;
   const pnlPct = entryUsd > 0 ? (pnl / entryUsd) * 100 : 0;
   const pnlPositive = pnl >= 0;
+  const rawAmount = position.currentAmountRaw ?? position.amountAtDeposit;
+  const tokenAmount = rawAmount
+    ? Number(rawAmount) / 10 ** decimalsForSymbol(position.assetSymbol)
+    : null;
 
   return (
     <TouchableOpacity
@@ -115,9 +122,23 @@ function PositionRow({
         <Text className="text-light-matte-black/50 text-xs mt-0.5">
           {position.assetSymbol} · {position.chainName}
         </Text>
+        {Number.isFinite(position.currentApy) &&
+        position.currentApy !== null ? (
+          <Text className="text-emerald-600 text-[11px] font-semibold mt-0.5">
+            Earning {Number(position.currentApy).toFixed(2)}% APY
+          </Text>
+        ) : null}
       </View>
       <View className="items-end">
-        <Text className="text-light-matte-black font-bold">
+        {tokenAmount !== null ? (
+          <Text className="text-light-matte-black font-bold">
+            {tokenAmount.toLocaleString(undefined, {
+              maximumFractionDigits: 6,
+            })}{" "}
+            {position.assetSymbol}
+          </Text>
+        ) : null}
+        <Text className="text-light-matte-black/60 text-xs mt-0.5">
           ${currentUsd.toFixed(2)}
         </Text>
         <Text
@@ -325,6 +346,8 @@ export default function StrategiesIndex() {
   const { bottom } = useSafeAreaInsets();
   const { data: strategy, isLoading: strategyLoading } = useUserStrategy();
   const hasStrategy = !!strategy;
+  const { activeWallet } = useWallet();
+  const { data: blockchains } = useBlockchains();
 
   // Note: no useFocusEffect refetch here on purpose. React Query's
   // staleTime + refetchOnMount already handle background freshness, and
@@ -332,7 +355,11 @@ export default function StrategiesIndex() {
   // returning from /strategies/onboarding or /strategies/settings shows
   // the new state without another round-trip.
 
-  const { data: positions } = useStrategyPositions(hasStrategy);
+  const { data: positions } = useStrategyPositions(
+    hasStrategy,
+    activeWallet?.address,
+    blockchains,
+  );
   const { data: opportunities } = useStrategyOpportunities(
     strategy ? { tier: strategy.tier } : {},
     hasStrategy,
