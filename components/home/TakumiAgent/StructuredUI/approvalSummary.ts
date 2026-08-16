@@ -86,7 +86,7 @@ function assetSymbolFromCaip19(asset: string | undefined): string | undefined {
  * bigint arithmetic, not `Number`: a 78-digit raw amount loses precision
  * through a float, and this string is what the user approves against.
  */
-function formatSmallestUnits(
+export function formatSmallestUnits(
   amountRaw: string | undefined,
   decimals: number | undefined,
 ): string | undefined {
@@ -233,34 +233,45 @@ export function approvalSummaryFromToolInput(
     );
   }
 
-  // DeFi writes (`defi_deposit`, `defi_rebalance`). None of their facts live in
-  // the fields probed above — the amount is `amount_raw`, the asset is
-  // `asset_symbol`, the counterparty is a POOL rather than an address — so this
-  // input used to carry no facts at all. That had two costs: the approval line
-  // fell through to the model's own prose (exactly what this module exists to
-  // prevent), and the card read "Transaction", which tells a user nothing about
-  // the thing they are being asked to approve.
+  // DeFi writes (`defi_deposit`, `defi_withdraw`, `defi_rebalance`). None of
+  // their facts live in the fields probed above — the amount is
+  // `amount_raw`, the asset is `asset_symbol`, the counterparty is a POOL
+  // rather than an address — so this input used to carry no facts at all.
+  // That had two costs: the approval line fell through to the model's own
+  // prose (exactly what this module exists to prevent), and the card read
+  // "Transaction", which tells a user nothing about the thing they are
+  // being asked to approve.
   const protocolSlug = str("protocol_slug");
   const depositSymbol = str("asset_symbol");
   const moveSymbol = str("from_asset_symbol");
+  // `defi_withdraw`'s `protocol_slug`/`asset_symbol` are OPTIONAL display
+  // hints (never routing — see writes.ts `assertWithdrawHintsMatchPosition`),
+  // present alongside `position_id`. Their presence, not the chain family,
+  // is what tells "Withdraw" apart from "Deposit" here — chain-agnostic by
+  // construction, same as the `chainName()` CAIP-2 lookup below.
+  const isWithdraw = !!str("position_id");
   if (protocolSlug && (depositSymbol || moveSymbol)) {
     const venue = prettyProtocol(protocolSlug);
     const chainId = input.chain_id;
     const chain =
       typeof chainId === "number" ? chainName(`eip155:${chainId}`) : undefined;
-    const where = chain ? `into ${venue} on ${chain}` : `into ${venue}`;
+    const preposition = isWithdraw ? "from" : "into";
+    const where = chain
+      ? `${preposition} ${venue} on ${chain}`
+      : `${preposition} ${venue}`;
+    const action = moveSymbol ? "Move" : isWithdraw ? "Withdraw" : "Deposit";
     return factsFirstSummary(
       {
-        action: moveSymbol ? "Move" : "Deposit",
+        action,
         // Smallest units without decimals stays omitted rather than printed
-        // raw — "200000000" would read as a wildly different deposit than the
+        // raw — "200000000" would read as a wildly different amount than the
         // 2 the user asked for.
         amount: formatSmallestUnits(str("amount_raw"), assetMeta?.decimals),
         asset: assetMeta?.symbol ?? moveSymbol ?? depositSymbol,
         suffix: where,
       },
       {},
-      `Deposit ${where}`,
+      `${action} ${where}`,
     );
   }
 

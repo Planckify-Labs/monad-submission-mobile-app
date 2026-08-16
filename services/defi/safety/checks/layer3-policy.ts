@@ -54,6 +54,16 @@ export function isFamilyKilled(familyOrKind: string): boolean {
 export const FamilyKillSwitchCheck: SafetyCheck = {
   id: "family-kill-switch",
   layer: 3,
+  // Deposit-only (§11 SafetyAction), same reasoning as `UserPolicyCheck`'s
+  // own pause below: this lever stops NEW capital going into a family ops
+  // just disabled, which is the common incident shape (a pool got exploited,
+  // stop feeding it) and is exactly wrong to apply to withdraw — it would
+  // trap the users already in that family at the moment they most need to
+  // leave. A future incident where the WITHDRAW CALL ITSELF is what's
+  // dangerous (a broken adapter that could misroute funds) needs a harder,
+  // separate lever than this one — don't repurpose this flag for that; add
+  // one scoped to `actions: ["withdraw"]` when that need is real.
+  appliesTo: { actions: ["deposit"] },
   run: async (ctx) => {
     const keys = [ctx.target.kind, ctx.family, ctx.protocolSlug].filter(
       (k): k is string => typeof k === "string" && k.length > 0,
@@ -71,11 +81,17 @@ export const FamilyKillSwitchCheck: SafetyCheck = {
   },
 };
 
-/** Tier ceiling + protocol whitelist + the user's own pause (§11 Layer 3, `[E]`). */
+/**
+ * Tier ceiling + protocol whitelist + the user's own pause (§11 Layer 3,
+ * `[E]`). Deposit-only (§11 SafetyAction) — already the codebase's explicit
+ * policy for the strategy-pause half ("Strategy-paused still allows
+ * withdraw — kill-switch lets users exit"); the tier/whitelist half is the
+ * same shape of rule (a ceiling on new capital) and gets the same scope.
+ */
 export const UserPolicyCheck: SafetyCheck = {
   id: "user-policy",
   layer: 3,
-  appliesTo: { stages: ["presign"] },
+  appliesTo: { stages: ["presign"], actions: ["deposit"] },
   run: async (ctx) => {
     const policy = ctx.policy;
     if (!policy) return { ok: true };
@@ -111,7 +127,10 @@ export const UserPolicyCheck: SafetyCheck = {
 export const ExposureCapCheck: SafetyCheck = {
   id: "exposure-cap",
   layer: 3,
-  appliesTo: { stages: ["presign"] },
+  // Deposit-only (§11 SafetyAction): a concentration CEILING only means
+  // something against adding more to one protocol. Withdraw only ever
+  // reduces exposure, so this check has nothing to say about it.
+  appliesTo: { stages: ["presign"], actions: ["deposit"] },
   run: async (ctx) => {
     const policy = ctx.policy;
     if (
@@ -139,7 +158,11 @@ export const ExposureCapCheck: SafetyCheck = {
 export const VelocityCapCheck: SafetyCheck = {
   id: "velocity-cap",
   layer: 3,
-  appliesTo: { stages: ["presign"] },
+  // Deposit-only (§11 SafetyAction) — bounds how fast NEW capital can move
+  // in. A withdraw-velocity concern is a real but DIFFERENT thing (rate
+  // limiting exits, not entries) and isn't modelled by this policy field;
+  // it would need its own `policy` counters if ever needed, not this one.
+  appliesTo: { stages: ["presign"], actions: ["deposit"] },
   run: async (ctx) => {
     const policy = ctx.policy;
     if (

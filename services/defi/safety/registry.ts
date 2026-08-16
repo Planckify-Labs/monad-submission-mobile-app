@@ -63,6 +63,7 @@ export function selectChecks(ctx: SafetyContext): SafetyCheck[] {
       if (a.namespaces && !a.namespaces.includes(ctx.namespace)) return false;
       if (a.kinds && !a.kinds.includes(ctx.target.kind)) return false;
       if (a.stages && !a.stages.includes(ctx.stage)) return false;
+      if (a.actions && !a.actions.includes(ctx.action)) return false;
       return true;
     })
     .sort((x, y) => x.layer - y.layer);

@@ -62,6 +62,7 @@ export function toExecutorErrorCode(
     case "position_not_found":
     case "below_min_deposit":
     case "above_max_deposit":
+    case "withdraw_exceeds_balance":
       return ExecutorErrorCode.InvalidInput;
     default:
       // Policy rejections, safety-pipeline verdicts and everything else: the

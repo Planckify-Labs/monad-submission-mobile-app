@@ -120,7 +120,12 @@ const MIN_CREDIBLE_TVL_USD = 50_000;
 export const PoolAnomalyCheck: SafetyCheck = {
   id: "pool-anomaly",
   layer: 1,
-  appliesTo: { stages: ["presign"] },
+  // Deposit-only (§11 SafetyAction): this is a "too good to be true, don't
+  // put new money in" circuit-breaker. Applying it to withdraw would block
+  // exactly the users who most need to leave a pool whose numbers just went
+  // implausible — a depeg or a TVL crater is a reason to let funds OUT
+  // faster, never a reason to trap them.
+  appliesTo: { stages: ["presign"], actions: ["deposit"] },
   run: async (ctx) => {
     const apy = ctx.cachedApy ?? ctx.expectedApy;
     if (typeof apy === "number" && apy > IMPLAUSIBLE_APY_PCT) {

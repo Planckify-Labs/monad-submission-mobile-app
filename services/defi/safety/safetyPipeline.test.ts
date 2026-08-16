@@ -14,13 +14,21 @@
 
 import { beforeEach, describe, expect, it } from "vitest";
 import type { DepositTarget } from "../types";
-import { LAYER0_CHECKS } from "./checks/layer0-input";
-import { LAYER1_CHECKS } from "./checks/layer1-identity";
 import {
+  LAYER0_CHECKS,
+  WithdrawBalanceCheck,
+  WithdrawHintMatchCheck,
+} from "./checks/layer0-input";
+import { LAYER1_CHECKS, PoolAnomalyCheck } from "./checks/layer1-identity";
+import {
+  ExposureCapCheck,
+  FamilyKillSwitchCheck,
   LAYER3_CHECKS,
   setCounterpartyDenyList,
   setDefiEnabledChains,
   setKilledFamilies,
+  UserPolicyCheck,
+  VelocityCapCheck,
 } from "./checks/layer3-policy";
 import {
   IdempotencyCheck,
@@ -81,6 +89,7 @@ function stubProvider(
 function ctx(overrides: Partial<SafetyContext> = {}): SafetyContext {
   return {
     namespace: "eip155",
+    action: "deposit",
     target,
     chainId: 1,
     wallet: WALLET,
@@ -354,5 +363,183 @@ describe("Layer 4 — idempotency", () => {
       (await runSafetyPipeline(ctx({ stage: "submit", submissionKey: "b" })))
         .ok,
     ).toBe(true);
+  });
+});
+
+describe("SafetyAction scoping — withdraw must not inherit deposit-only policy", () => {
+  it("selectChecks drops a deposit-only check for a withdraw context", () => {
+    registerSafetyCheck({
+      id: "deposit-only",
+      layer: 1,
+      appliesTo: { actions: ["deposit"] },
+      run: async () => ({ ok: true }),
+    });
+    registerSafetyCheck({
+      id: "unscoped",
+      layer: 1,
+      run: async () => ({ ok: true }),
+    });
+    const selected = selectChecks(ctx({ action: "withdraw" })).map((c) => c.id);
+    expect(selected).toEqual(["unscoped"]);
+  });
+
+  it("pool-anomaly never blocks an exit, even from an implausible pool", async () => {
+    registerSafetyCheck(PoolAnomalyCheck);
+    const result = await runSafetyPipeline(
+      ctx({ action: "withdraw", cachedApy: 5000 }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("tier/whitelist/pause never blocks a withdraw", async () => {
+    registerSafetyCheck(UserPolicyCheck);
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        protocolSlug: "some-venue",
+        policy: { paused: true, protocolWhitelist: ["aave-v3"] },
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("exposure cap never blocks a withdraw", async () => {
+    registerSafetyCheck(ExposureCapCheck);
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        policy: { currentExposurePct: 0.9, maxExposurePct: 0.1 },
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("velocity cap never blocks a withdraw", async () => {
+    registerSafetyCheck(VelocityCapCheck);
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        policy: { recentDepositCount: 99, maxDepositsPerWindow: 1 },
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("family kill-switch never blocks a withdraw", async () => {
+    setKilledFamilies(["erc4626"]);
+    registerSafetyCheck(FamilyKillSwitchCheck);
+    const result = await runSafetyPipeline(ctx({ action: "withdraw" }));
+    expect(result.ok).toBe(true);
+  });
+
+  it("deposit still gets every deposit-only check", async () => {
+    registerSafetyCheck(UserPolicyCheck);
+    const result = await runSafetyPipeline(
+      ctx({ action: "deposit", policy: { paused: true } }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("strategy_paused");
+  });
+});
+
+describe("Withdraw-only Layer 0 checks", () => {
+  beforeEach(() => {
+    registerSafetyCheck(WithdrawHintMatchCheck);
+    registerSafetyCheck(WithdrawBalanceCheck);
+  });
+
+  it("passes a withdraw with no hints at all", async () => {
+    const result = await runSafetyPipeline(
+      ctx({ action: "withdraw", protocolSlug: "compound-v3-arbitrum" }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("blocks a protocol_slug hint that disagrees with the position", async () => {
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        protocolSlug: "compound-v3-arbitrum",
+        toolInput: { protocol_slug: "aave-v3-base" },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("decoded_intent_mismatch");
+  });
+
+  it("blocks a chain_id hint that disagrees with the position", async () => {
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        chainId: 42161,
+        toolInput: { chain_id: 8453 },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("decoded_intent_mismatch");
+  });
+
+  it("blocks an asset_symbol hint that disagrees with the position", async () => {
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        assetSymbol: "USDT",
+        toolInput: { asset_symbol: "USDC" },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("decoded_intent_mismatch");
+  });
+
+  it("is not fooled by case differences", async () => {
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        protocolSlug: "Compound-V3-Arbitrum",
+        assetSymbol: "usdt",
+        toolInput: {
+          protocol_slug: "compound-v3-arbitrum",
+          asset_symbol: "USDT",
+        },
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("passes a MAX withdraw regardless of live balance", async () => {
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        stage: "submit",
+        requestedAmount: "MAX",
+        positionBalance: 1n,
+      }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("blocks a non-MAX amount that exceeds the live balance", async () => {
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        stage: "submit",
+        requestedAmount: 1_000_000n,
+        positionBalance: 500_000n,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("withdraw_exceeds_balance");
+  });
+
+  it("does not block when the live balance read failed (non-fatal)", async () => {
+    const result = await runSafetyPipeline(
+      ctx({
+        action: "withdraw",
+        stage: "submit",
+        requestedAmount: 1_000_000n,
+        positionBalance: undefined,
+      }),
+    );
+    expect(result.ok).toBe(true);
   });
 });

@@ -81,9 +81,14 @@ export const StrictInputSchemaCheck: SafetyCheck = {
         };
       }
       if (ctx.requestedAmount <= 0n) {
+        // Same shape of problem, action-appropriate label — "requires a
+        // larger minimum deposit" reads wrong on a withdraw's approval card,
+        // and no existing withdraw code fits "zero or negative" specifically
+        // enough to reuse, so this falls back to the same honest "unknown"
+        // the non-bigint branch above uses rather than a misleading one.
         return {
           ok: false,
-          fail: "below_min_deposit",
+          fail: ctx.action === "withdraw" ? "unknown" : "below_min_deposit",
           detail: "amount must be positive",
         };
       }
@@ -99,7 +104,106 @@ export const StrictInputSchemaCheck: SafetyCheck = {
   },
 };
 
+/**
+ * Withdraw hint/position provenance (§11 Layer 0, withdraw-only). Unlike
+ * deposit's `protocol_slug`/`chain_id`/`asset_symbol` — which ARE the
+ * routing target — `defi_withdraw` routes by `position_id` alone, resolved
+ * ownership-scoped server-side; these same-named fields on a withdraw call
+ * are OPTIONAL DISPLAY HINTS the model copies from `defi_list_positions` so
+ * the approval card can show what's being withdrawn instead of a bare
+ * "Transaction".
+ *
+ * But because they ARE shown to the user before they approve, a hint that
+ * disagrees with the position it's attached to is the exact prompt-injection
+ * shape this layer exists to catch: the model, steered by something it read
+ * earlier in the turn, could describe position A's withdrawal using
+ * position B's protocol/asset, and the user would approve a lie even though
+ * the on-chain call itself (routed purely by `position_id`) is correct.
+ */
+export const WithdrawHintMatchCheck: SafetyCheck = {
+  id: "withdraw-hint-match",
+  layer: 0,
+  appliesTo: { actions: ["withdraw"], stages: ["presign"] },
+  run: async (ctx) => {
+    const input = ctx.toolInput;
+    if (!input) return { ok: true };
+    const hintedSlug =
+      typeof input.protocol_slug === "string" ? input.protocol_slug : undefined;
+    const hintedChainId =
+      typeof input.chain_id === "number" ? input.chain_id : undefined;
+    const hintedSymbol =
+      typeof input.asset_symbol === "string" ? input.asset_symbol : undefined;
+
+    if (
+      hintedSlug &&
+      ctx.protocolSlug &&
+      hintedSlug.toLowerCase() !== ctx.protocolSlug.toLowerCase()
+    ) {
+      return {
+        ok: false,
+        fail: "decoded_intent_mismatch",
+        detail:
+          "protocol_slug hint does not match the position being withdrawn",
+      };
+    }
+    if (
+      hintedChainId !== undefined &&
+      typeof ctx.chainId === "number" &&
+      hintedChainId !== ctx.chainId
+    ) {
+      return {
+        ok: false,
+        fail: "decoded_intent_mismatch",
+        detail: "chain_id hint does not match the position being withdrawn",
+      };
+    }
+    if (
+      hintedSymbol &&
+      ctx.assetSymbol &&
+      hintedSymbol.toUpperCase() !== ctx.assetSymbol.toUpperCase()
+    ) {
+      return {
+        ok: false,
+        fail: "decoded_intent_mismatch",
+        detail: "asset_symbol hint does not match the position being withdrawn",
+      };
+    }
+    return { ok: true };
+  },
+};
+
+/**
+ * Withdraw amount vs. live balance (§11 Layer 0, withdraw-only). A non-MAX
+ * amount larger than the position's live on-chain balance would otherwise
+ * just revert on-chain — burning gas — instead of failing cleanly before a
+ * signature is even requested. Runs at `submit` because the live balance
+ * read needs a resolved wallet client, which isn't available yet at
+ * `presign` — see the withdraw executor.
+ */
+export const WithdrawBalanceCheck: SafetyCheck = {
+  id: "withdraw-balance",
+  layer: 0,
+  appliesTo: { actions: ["withdraw"], stages: ["submit"] },
+  run: async (ctx) => {
+    if (ctx.requestedAmount === "MAX") return { ok: true };
+    // No live read available (e.g. the RPC call failed) — non-fatal, same
+    // posture as the executor's own preflight: "we don't know" doesn't
+    // block, only a POSITIVELY confirmed over-request does.
+    if (typeof ctx.positionBalance !== "bigint") return { ok: true };
+    if (ctx.requestedAmount > ctx.positionBalance) {
+      return {
+        ok: false,
+        fail: "withdraw_exceeds_balance",
+        detail: "requested amount exceeds the position's live on-chain balance",
+      };
+    }
+    return { ok: true };
+  },
+};
+
 export const LAYER0_CHECKS: readonly SafetyCheck[] = [
   NoLlmSuppliedAddressCheck,
   StrictInputSchemaCheck,
+  WithdrawHintMatchCheck,
+  WithdrawBalanceCheck,
 ];

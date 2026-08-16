@@ -416,6 +416,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
         NATIVE_ASSET_SENTINEL;
       const safetyBase: SafetyContext = {
         namespace: adapter.namespace,
+        action: "deposit",
         target: depositTarget ?? {
           // A slug-routed legacy deposit has no resolved target. Represent it
           // honestly rather than inventing one: the kind-scoped checks skip it
@@ -847,11 +848,12 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       // vault the deposit used (the generic family adapter), not the protocol's
       // canonical market. Legacy positions (no poolId) route by slug as before.
       let withdrawTarget: DepositTarget | undefined;
+      let withdrawOpportunity: TOpportunity | null = null;
       if (position.poolId) {
-        const opp = await strategiesApi
+        withdrawOpportunity = await strategiesApi
           .getPool(position.poolId)
           .catch(() => null);
-        withdrawTarget = opp?.depositTarget ?? undefined;
+        withdrawTarget = withdrawOpportunity?.depositTarget ?? undefined;
       }
 
       if (__DEV__) {
@@ -899,6 +901,58 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       }
       const chainConfig = buildChainConfigFromBlockchain(blockchain);
       const decimals = decimalsForSymbol(assetSymbol);
+
+      // ── Safety pipeline (§11) — same runner deposit uses, action-scoped.
+      // `SafetyAction` is how a check like the tier/whitelist/exposure/
+      // velocity policy trio or the pool-anomaly circuit-breaker declares
+      // itself deposit-only: applying a ceiling-on-new-capital check to an
+      // EXIT would trap a user's funds in exactly the protocol they are
+      // trying to leave. Identity (Layer 1) and execution-integrity
+      // (Layer 4) checks are NOT scoped away — a withdraw call still needs
+      // to be signing a real, allowlisted target and pay out to the
+      // caller's own wallet.
+      bindSafetyChainResolver(context);
+      const withdrawUnderlyingExpected =
+        (withdrawTarget ? targetUnderlying(withdrawTarget) : null) ??
+        withdrawOpportunity?.assetContract ??
+        assetContract ??
+        NATIVE_ASSET_SENTINEL;
+      const withdrawSafetyBase: SafetyContext = {
+        namespace: adapter.namespace,
+        action: "withdraw",
+        target: withdrawTarget ?? {
+          // A legacy slug-routed position has no resolved target — the
+          // kind-scoped checks skip it and the universal ones still run,
+          // same posture as deposit's own fallback.
+          kind: "erc4626",
+          vault: "0x0000000000000000000000000000000000000000",
+          asset: withdrawUnderlyingExpected as `0x${string}`,
+        },
+        chainId,
+        wallet: context.wallet.address,
+        requestedAmount: amountRaw,
+        underlyingExpected: withdrawUnderlyingExpected,
+        previewOut: null,
+        tvlUsdSnapshot: null,
+        sim: null,
+        feeEstimate: null,
+        stage: "presign",
+        toolInput: input,
+        poolId: position.poolId ?? undefined,
+        protocolSlug,
+        family: withdrawTarget?.kind,
+        assetDecimals: decimals,
+        assetSymbol,
+        submissionKey: `withdraw:${context.wallet.address}:${position.poolId ?? protocolSlug}:${
+          typeof amountRaw === "string" ? amountRaw : amountRaw.toString()
+        }`,
+      };
+      // Only enforced when the pool actually resolved a target — a legacy
+      // slug-routed withdraw predates the pipeline and must not start
+      // failing (same guard deposit uses).
+      if (withdrawTarget) {
+        assertSafetyResult(await runSafetyPipeline(withdrawSafetyBase));
+      }
 
       let unsignedCall;
       try {
@@ -975,7 +1029,10 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       // Read the live position first so we can fail with a clear,
       // typed reason instead of submitting a doomed transaction. Only a
       // positively-confirmed zero balance blocks — a read failure is
-      // non-fatal and falls through to the normal path.
+      // non-fatal and falls through to the normal path. The balance is
+      // also handed to the safety pipeline below (`WithdrawBalanceCheck`)
+      // so a non-MAX over-request fails the same way, pre-signing.
+      let liveBalance: bigint | undefined;
       try {
         const live = await readPosition({
           protocolSlug,
@@ -998,6 +1055,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           }
           throw new DefiError("no_onchain_balance", positionId);
         }
+        liveBalance = live?.currentAmount;
       } catch (preflightErr) {
         if (preflightErr instanceof DefiError) throw preflightErr;
         if (__DEV__) {
@@ -1006,6 +1064,22 @@ export const withdraw: MobileToolExecutor = (input, context) =>
             { positionId, error: preflightErr },
           );
         }
+      }
+
+      // ── Safety pipeline, on-device anchor (§11.1, §11 Layer 4) — reads
+      // the call that is ABOUT TO BE SIGNED: chain binding, decoded-intent
+      // match (destination vouched-for, recipient is the caller's OWN
+      // wallet, amount matches), approval scoping, gas sanity, idempotency,
+      // plus `WithdrawBalanceCheck` now that the live balance is known.
+      if (withdrawTarget) {
+        assertSafetyResult(
+          await runSafetyPipeline({
+            ...withdrawSafetyBase,
+            stage: "submit",
+            call: unsignedCall,
+            positionBalance: liveBalance,
+          }),
+        );
       }
 
       // Some withdrawals (Lido, Ethena cooldown) require an approval
@@ -1065,6 +1139,25 @@ export const withdraw: MobileToolExecutor = (input, context) =>
         }
       }
 
+      // ── Safety pipeline, the last word before broadcast ─────────────────
+      // The dry-run belongs HERE, not with Layer 4 above: the queue/cooldown
+      // approvals above are separate transactions, so until they're mined a
+      // simulation of the withdraw itself is the only thing this reports on.
+      if (withdrawTarget) {
+        const preflight = await runSafetyPipeline({
+          ...withdrawSafetyBase,
+          stage: "broadcast",
+          call: unsignedCall,
+          positionBalance: liveBalance,
+        });
+        if (!preflight.ok) {
+          // Nothing was broadcast, so the idempotency key claimed at submit
+          // must not outlive the attempt — a genuine retry is not a duplicate.
+          releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
+        }
+        assertSafetyResult(preflight);
+      }
+
       if (__DEV__) {
         console.warn("[defi/withdraw] submitting protocol tx", {
           to: unsignedCall.to,
@@ -1090,6 +1183,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
             to: unsignedCall.to,
           });
         }
+        releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
         throw new DefiError("withdraw_failed");
       }
       if (submit.kind === "mined" && !submit.success) {
@@ -1099,6 +1193,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
             hash: submit.hash,
           });
         }
+        releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
         throw new DefiError("withdraw_failed");
       }
       if (submit.kind === "unconfirmed") {
@@ -1135,6 +1230,12 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           position_id: positionId,
           protocol_slug: protocolSlug,
           chain_id: chainId,
+          // Already resolved above (ground truth from `getPosition`, not the
+          // model's hints) — echoing them back means the post-execution
+          // receipt card has the same context the pre-approval card did,
+          // instead of just a bare tx hash.
+          asset_symbol: assetSymbol,
+          namespace,
           amount_raw:
             typeof amountRaw === "string" ? amountRaw : amountRaw.toString(),
         },

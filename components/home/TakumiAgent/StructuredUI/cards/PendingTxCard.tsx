@@ -91,7 +91,12 @@ function describe(input: WriteToolInput): string {
   );
 }
 
-function HistoricalReceipt({
+// Named exports (in addition to the default) so tool-specific cards — e.g.
+// DefiWithdrawCard, which needs a bespoke pre-approval proposal but the same
+// post-approval receipt/live-subscribed behavior every other write gets —
+// can reuse this lifecycle instead of re-deriving explorer links, the
+// failed/confirmed copy, and the pendingTxStore subscription.
+export function HistoricalReceipt({
   input,
   output,
   state,
@@ -330,7 +335,7 @@ const PendingTxCard: React.FC<
   );
 };
 
-function LivePendingTxView({
+export function LivePendingTxView({
   txHash,
   input,
   output,

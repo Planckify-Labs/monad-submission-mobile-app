@@ -37,6 +37,11 @@ export type DefiErrorCode =
   | "cooldown_not_started"
   | "no_claimable_balance"
   | "no_onchain_balance"
+  /** Withdraw-only: requested amount exceeds the position's live on-chain
+   *  balance. Distinct from `no_onchain_balance` (zero) — this is a
+   *  too-large PARTIAL withdraw, caught pre-signing instead of reverting
+   *  on-chain and burning gas. */
+  | "withdraw_exceeds_balance"
   | "submission_unconfirmed"
   | "wallet_cannot_execute"
   // Distinct from `unsupported_chain`: the chain is fine, the user just
@@ -108,6 +113,7 @@ const PASSTHROUGH_CODES = new Set<DefiErrorCode>([
   "cooldown_not_started",
   "no_claimable_balance",
   "no_onchain_balance",
+  "withdraw_exceeds_balance",
   "submission_unconfirmed",
   "wallet_cannot_execute",
   "no_wallet_on_destination_chain",
@@ -403,6 +409,11 @@ export const defiErrorCopy: Record<DefiErrorCode, DefiErrorCopy> = {
     title: "Nothing to move",
     body: "This position has no on-chain balance to withdraw right now. Refresh your positions and try again.",
     cta: "retry",
+  },
+  withdraw_exceeds_balance: {
+    title: "Amount too large",
+    body: "You're trying to withdraw more than this position currently holds. Lower the amount and try again.",
+    cta: "review",
   },
   submission_unconfirmed: {
     title: "Couldn't confirm",

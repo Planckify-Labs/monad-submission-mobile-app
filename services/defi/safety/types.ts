@@ -29,6 +29,23 @@ import type {
 export type SafetyLayer = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 /**
+ * What the pipeline is being asked to authorise. A check that only makes
+ * sense for one direction of fund flow docks itself to it via
+ * `SafetyCheck.appliesTo.actions` — same mechanism as `namespaces` /
+ * `kinds` / `stages`, zero runner changes. This is deliberately its own
+ * dimension rather than inferred from `stage` or `target.kind`: a check
+ * like the exposure/velocity/tier-whitelist policy trio is a ceiling on
+ * NEW capital, and blocking it on withdraw would trap a user's funds in
+ * exactly the protocol they are trying to leave — the omission has to be
+ * explicit and visible at the check's own declaration, not an accident of
+ * which context fields happen to be populated.
+ *
+ * New actions (`claim`, `rebalance`, …) dock the same way: add the union
+ * member here, scope any check that shouldn't run for it, done.
+ */
+export type SafetyAction = "deposit" | "withdraw";
+
+/**
  * Which trust anchor is running (§11.1). The backend owns identity, policy and
  * provenance; the on-device signer owns simulate and the decoded-intent match.
  * Neither alone can authorise a transfer — a compromised backend still can't
@@ -66,6 +83,7 @@ export interface SafetyCheck {
     readonly namespaces?: readonly Namespace[];
     readonly kinds?: readonly DepositTargetKind[];
     readonly stages?: readonly SafetyStage[];
+    readonly actions?: readonly SafetyAction[];
   };
   run(ctx: SafetyContext): Promise<SafetyResult>;
 }
@@ -129,6 +147,9 @@ export interface SafetyPolicy {
  */
 export interface SafetyContext {
   namespace: Namespace;
+  /** Required, not defaulted — a caller must state it explicitly so a check
+   *  can never run under the wrong action by omission (see `SafetyAction`). */
+  action: SafetyAction;
   target: DepositTarget;
   chainId: number | string;
   wallet: string;
@@ -161,6 +182,13 @@ export interface SafetyContext {
   cachedApy?: number;
   /** Dedup key for the idempotency guard (§11.6 #5). */
   submissionKey?: string;
+  /** Withdraw-only: asset symbol, for the hint/position match check. */
+  assetSymbol?: string;
+  /** Withdraw-only: the position's live on-chain balance, for the
+   *  amount-vs-balance check. `undefined` when the live read failed —
+   *  the check is non-fatal in that case, same posture as everywhere
+   *  else a live read backs a safety check. */
+  positionBalance?: bigint;
 }
 
 /**

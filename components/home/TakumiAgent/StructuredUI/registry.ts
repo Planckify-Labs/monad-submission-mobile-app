@@ -1,6 +1,7 @@
 import BalancesCard from "./cards/BalancesCard";
 import BridgeProgressCard from "./cards/BridgeProgressCard";
 import BridgeQuoteCard from "./cards/BridgeQuoteCard";
+import DefiWithdrawCard from "./cards/DefiWithdrawCard";
 import IntentPreviewCard from "./cards/IntentPreviewCard";
 import OpportunityListCard from "./cards/OpportunityListCard";
 import PendingTxCard from "./cards/PendingTxCard";
@@ -91,7 +92,7 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   defi_list_opportunities: OpportunityListCard,
   defi_list_positions: PositionListCard,
   defi_deposit: PendingTxCard,
-  defi_withdraw: PendingTxCard,
+  defi_withdraw: DefiWithdrawCard,
   defi_claim: PendingTxCard,
   defi_rebalance: RebalancePreviewCard,
   // Sui Intent Engine (spec §7.1): preview is an informational read card;
