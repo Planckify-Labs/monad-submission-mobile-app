@@ -24,6 +24,7 @@ import type React from "react";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 
+import { useAgentConnection } from "@/hooks/useAgentConnection";
 import PreviewCard from "../PreviewCard/PreviewCard";
 import type { ToolDecision } from "./types";
 
@@ -109,6 +110,12 @@ const WriteApprovalGate: React.FC<WriteApprovalGateProps> = ({
   onReject,
   onRequestApproval,
 }) => {
+  // Global SSE connection state (published by AgentMode.tsx from the
+  // session's onReconnecting/onReconnected bindings). Read directly
+  // rather than prop-drilled through MessageContent → the tool-card
+  // registry → here, per the avoid-props-drilling convention.
+  const { isReconnecting } = useAgentConnection();
+
   // INV-1: the auto-execute run-down is wired ONLY for `authorized`.
   if (decision === "authorized") {
     return (
@@ -116,6 +123,7 @@ const WriteApprovalGate: React.FC<WriteApprovalGateProps> = ({
         summary={summary}
         onConfirm={onApprove}
         onDismiss={onReject}
+        isReconnecting={isReconnecting}
       />
     );
   }

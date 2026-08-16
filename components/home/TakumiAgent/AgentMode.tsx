@@ -39,6 +39,7 @@ import type {
   StoredMessage,
 } from "@/hooks/queries/useConversations";
 import { useAgentBusyPublisher } from "@/hooks/useAgentBusy";
+import { useAgentConnectionPublisher } from "@/hooks/useAgentConnection";
 import { useAgentOnboarding } from "@/hooks/useAgentOnboarding";
 import { useAgentPrefill } from "@/hooks/useAgentPrefill";
 import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
@@ -557,6 +558,12 @@ export default function AgentMode() {
     };
   }, []);
 
+  // Global SSE reconnect-state publisher. Declared here (ahead of
+  // `stopAgent`/`hardResetAgent`) since both need to clear it — `stop()`
+  // closes the stream without routing a final event, so it never fires
+  // the session's `onReconnected` binding on its own.
+  const connection = useAgentConnectionPublisher();
+
   // Shared "reject any open preview/approval" step — the callbacks
   // post a typed `user_declined` to the server via a fresh fetch
   // (independent of SSE) so the conversation history records the
@@ -599,7 +606,11 @@ export default function AgentMode() {
     setApprovalState(null);
     setIsStreaming(false);
     setStreamingMessageId(null);
-  }, [rejectOpenPrompts]);
+    // `stop()` closes the stream without routing a final event, so it
+    // never fires `onReconnected` — clear the global reconnect flag
+    // directly or a mid-reconnect stop leaves it stuck `true`.
+    connection.clear();
+  }, [rejectOpenPrompts, connection]);
 
   // HARD reset — used by the "New conversation" button, the
   // wallet-change effect, and the cross-screen "Cancel task & switch"
@@ -626,7 +637,8 @@ export default function AgentMode() {
     setRetryableError(null);
     setNonRetryableError(null);
     setActiveConversationId(null);
-  }, [rejectOpenPrompts, mintIntentTool]);
+    connection.clear();
+  }, [rejectOpenPrompts, mintIntentTool, connection]);
 
   // ── Intent-paid event subscription (task 46) ──────────────────────
   // When the wallet finishes paying an intent the agent minted, the
@@ -696,6 +708,13 @@ export default function AgentMode() {
     return () => busy.reset();
   }, [busy]);
 
+  // Same for the reconnect-state snapshot — a stale `isReconnecting: true`
+  // left behind by an unmounted session would otherwise keep pausing the
+  // auto-confirm countdown on whatever screen reads it next.
+  useEffect(() => {
+    return () => connection.clear();
+  }, [connection]);
+
   // ── Per-wallet partitioning ──────────────────────────────────────
   // When the active wallet changes, the previous wallet's chat state
   // (messages, activeConversationId, pending approvals, pendingTx
@@ -760,6 +779,7 @@ export default function AgentMode() {
       setIsStreaming(false);
       setStreamingMessageId(null);
       pendingTxStore.clear();
+      connection.clear();
 
       const walletAddress = activeWallet?.address as `0x${string}` | undefined;
       const cached = walletAddress
@@ -778,7 +798,7 @@ export default function AgentMode() {
       }
       handleScrollToChat();
     },
-    [handleScrollToChat, activeWallet?.address],
+    [handleScrollToChat, activeWallet?.address, connection],
   );
 
   // ── UI bindings the session dispatches into ──────────────────────
@@ -955,11 +975,13 @@ export default function AgentMode() {
         setCurrentStatus(null);
         setIsStreaming(false);
         setStreamingMessageId(null);
+        connection.clear();
       },
       done: (meta) => {
         setCurrentStatus(null);
         setIsStreaming(false);
         setStreamingMessageId(null);
+        connection.clear();
 
         if (!meta?.conversation_id) return;
 
@@ -1054,6 +1076,13 @@ export default function AgentMode() {
       },
       onReconnecting: (attempt) => {
         setCurrentStatus(`Reconnecting… (attempt ${attempt})`);
+        connection.publish({ isReconnecting: true, attempt });
+      },
+      // Fired on every event once the stream is delivering data again —
+      // resumes anything paused for the reconnect (e.g. the write-
+      // approval auto-confirm countdown in WriteApprovalGate).
+      onReconnected: () => {
+        connection.clear();
       },
       // §1 — adopt the server's authoritative `session_id` as soon as
       // an SSE payload reveals it. Mirroring it back into
@@ -1063,7 +1092,7 @@ export default function AgentMode() {
         sessionIdRef.current = id;
       },
     }),
-    [walletContext, activeChainId, queryClient],
+    [walletContext, activeChainId, queryClient, connection],
   );
 
   const sendTextMessage = useCallback(
@@ -1129,6 +1158,7 @@ export default function AgentMode() {
       // Close any prior session first — a new turn opens its own stream.
       activeSessionRef.current?.stop();
       activeSessionRef.current = null;
+      connection.clear();
 
       // §10 — a successful new send invalidates any stale error state
       // from a previous failed turn. Track the message so a future
@@ -1224,6 +1254,7 @@ export default function AgentMode() {
       pointsAuthenticated,
       activeConversationId,
       resetAutoScroll,
+      connection,
     ],
   );
 

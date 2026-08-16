@@ -148,7 +148,10 @@ function parseSseBlock(block: string): AgentEvent | null {
  * The returned iterable terminates either when:
  *   - the server emits `done` (caller breaks out)
  *   - the caller invokes `close()`
- *   - the stream drops AND `hasPendingApprovals()` returns `false`
+ *   - the stream drops AND `hasPendingApprovals()` returns `false` — this
+ *     throws (via `onClosed` + rethrow) rather than returning silently,
+ *     since there is nothing left to reconnect for but the caller still
+ *     needs to know the turn died so it can stop showing a loading state.
  */
 export function openSseStream(opts: SseClientOptions): SseClientHandle {
   let closed = false;
@@ -247,10 +250,23 @@ export function openSseStream(opts: SseClientOptions): SseClientHandle {
     while (!closed) {
       try {
         yield* readOnce(body);
-        // Stream ended cleanly (server closed without error).
+        // `close()` was called explicitly (e.g. `done` already ran and
+        // tore the session down, or the caller unmounted/reset) — this
+        // is an intentional shutdown, not a drop. Nothing to surface.
+        if (closed) return;
+        // The stream ended on its own without an explicit `close()` and
+        // without a `done`/`error` event ever having reached us — e.g.
+        // the OS reclaimed the connection while the app was backgrounded,
+        // or the network dropped mid-turn. With no pending approvals
+        // there is nothing to resume per §4, but silently returning here
+        // leaves the caller's `isStreaming` UI stuck forever with no
+        // recovery path — throw so it falls into the same `onClosed` +
+        // rethrow handling as a hard read error below, surfacing a
+        // retryable error the caller's "Try again" affordance can use.
         if (!opts.hasPendingApprovals()) {
-          opts.onClosed?.();
-          return;
+          throw new Error(
+            "[agentSession] SSE stream ended unexpectedly with no pending approvals",
+          );
         }
         // Stream ended but caller still has pending approvals — treat
         // as an implicit drop and fall through to reconnect.

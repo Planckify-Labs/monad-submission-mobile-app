@@ -145,6 +145,13 @@ export interface AgentSessionUIBindings {
     conversation_title: string;
   }) => void;
   onReconnecting?: (attempt: number, delayMs: number) => void;
+  /**
+   * Fired on every event routed while the stream is live — signals that
+   * the connection is (again) delivering data, so any UI paused during
+   * a reconnect (e.g. the write-approval auto-confirm countdown) should
+   * resume. Cheap/idempotent; safe to call even when never reconnecting.
+   */
+  onReconnected?: () => void;
   onSessionIdChanged?: (sessionId: string) => void;
 }
 
@@ -325,6 +332,15 @@ async function routeEvent(
   // it onto the session eagerly so any `POST /chat/respond` the
   // dispatcher fires uses the id the server actually recognises.
   syncServerSessionId(event, session);
+
+  // Any routed event means the stream is currently delivering data —
+  // clear any "reconnecting" UI state a prior drop may have set, even
+  // if we were never actually mid-reconnect (idempotent no-op then).
+  try {
+    session.ui.onReconnected?.();
+  } catch (err) {
+    console.warn(`[agentSession] onReconnected threw: ${String(err)}`);
+  }
 
   switch (event.event) {
     case "text_delta":
