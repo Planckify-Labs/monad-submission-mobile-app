@@ -93,6 +93,8 @@ export const CompoundV2Adapter: DefiProtocolAdapter = {
   chainId: 0, // nominal — routed by DepositTarget.kind
   displayName: "Compound V2 Market",
   targetKinds: ["compound-v2"],
+  // Throws without a resolved target — see `requiresTarget` in types.ts.
+  requiresTarget: true,
   externalSlugs: ["venus", "venus-core-pool", "benqi-lending", "sonne-finance"],
   staticSafetyScore: 80,
 

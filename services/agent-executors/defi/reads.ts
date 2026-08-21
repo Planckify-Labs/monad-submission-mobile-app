@@ -62,6 +62,19 @@ function optionalNumber(input: ToolInput, key: string): number | undefined {
   return value;
 }
 
+/**
+ * Is there a registered adapter for this slug that can build a deposit with no
+ * resolved `depositTarget`?
+ *
+ * `getDefiAdapter` alone is not the question: it matches `externalSlugs`, which
+ * kind-routed family adapters also declare. Only an adapter that does NOT set
+ * `requiresTarget` can honour a slug-only deposit.
+ */
+function canBuildWithoutTarget(slug: string): boolean {
+  const adapter = getDefiAdapter(slug);
+  return adapter != null && adapter.requiresTarget !== true;
+}
+
 function shapeOpportunity(o: TOpportunity) {
   return {
     id: o.id,
@@ -80,13 +93,23 @@ function shapeOpportunity(o: TOpportunity) {
     // via EITHER path:
     //   1. the backend resolved a `depositTarget` (generic kind-routed adapter,
     //      §7 — e.g. any Morpho/Yearn vault), OR
-    //   2. the mobile app has a registered adapter for this protocol slug
-    //      (bespoke/single-market path, §7 "bespoke adapters stay valid" —
-    //      e.g. Scallop via the Sui Intent Engine, Aave, Lido).
-    // The mobile registry is the authority on what we can actually sign, so we
-    // OR the two. We still expose only the boolean, never an address — the card
+    //   2. the mobile app has a registered adapter for this protocol slug that
+    //      can build WITHOUT one (bespoke/single-market path, §7 "bespoke
+    //      adapters stay valid" — Scallop, NAVI and Ember keep their canonical
+    //      market when no target is present).
+    //
+    // The `requiresTarget` half of (2) is load-bearing and was missing. A
+    // kind-routed family adapter also carries `externalSlugs`, so the slug
+    // fallback matched it and the pool reported executable — but those
+    // adapters open with `if (!target) throw`, so the deposit could only fail
+    // at build time. Measured on device 2026-08-21: 5 Aerodrome, 2 Curve, 2
+    // Benqi and 1 ether.fi pool badged "Deposit in-app" with nothing able to
+    // execute them. Benqi is the clearest case — its chain is not even in the
+    // directory, so no target can exist for it at all.
+    //
+    // We still expose only the boolean, never an address — the card
     // badges/gates off it and the LLM passes `pool_id`/venue, not a target.
-    in_app: o.depositTarget != null || getDefiAdapter(o.protocolSlug) != null,
+    in_app: o.depositTarget != null || canBuildWithoutTarget(o.protocolSlug),
     apy: o.apy,
     apy_7d_avg: o.apy7dAvg,
     tvl_usd: o.tvlUsd,

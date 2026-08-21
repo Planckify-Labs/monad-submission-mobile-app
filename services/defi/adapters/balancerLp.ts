@@ -236,6 +236,8 @@ export const BalancerLpAdapter: DefiProtocolAdapter = {
   chainId: 0, // nominal — routed by DepositTarget.kind
   displayName: "Balancer Pool",
   targetKinds: ["balancer-lp"],
+  // Throws without a resolved target — see `requiresTarget` in types.ts.
+  requiresTarget: true,
   externalSlugs: ["balancer-v2", "beethoven-x"],
   staticSafetyScore: 62,
 

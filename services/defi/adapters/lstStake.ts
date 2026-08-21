@@ -27,6 +27,7 @@ import { type Address, encodeFunctionData, erc20Abi } from "viem";
 import { assertEvmChain } from "@/constants/configs/chainConfig";
 import { getPublicClient } from "@/utils/clients";
 import { DefiError } from "../errors/defiErrors";
+import { minOutFor } from "../slippage";
 import type {
   BuildDepositArgs,
   BuildWithdrawArgs,
@@ -76,6 +77,24 @@ const STAKE_ABIS = {
       outputs: [{ name: "", type: "uint256" }],
     },
   ],
+  "payable-stake-minout": [
+    {
+      name: "stake",
+      type: "function",
+      stateMutability: "payable",
+      inputs: [{ name: "minMETHAmount", type: "uint256" }],
+      outputs: [],
+    },
+  ],
+  "payable-submit-referral": [
+    {
+      name: "submit",
+      type: "function",
+      stateMutability: "payable",
+      inputs: [{ name: "_referral", type: "address" }],
+      outputs: [{ name: "", type: "uint256" }],
+    },
+  ],
 } as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
@@ -110,7 +129,11 @@ function requireVenue(key: string, chainId: number): LstVenueConfig {
 }
 
 /** Encode the venue's stake call. `wallet` fills receiver/referral slots. */
-function encodeStake(venue: LstVenueConfig, wallet: Address): `0x${string}` {
+function encodeStake(
+  venue: LstVenueConfig,
+  wallet: Address,
+  minOut?: bigint,
+): `0x${string}` {
   switch (venue.shape) {
     case "payable-deposit":
       return encodeFunctionData({
@@ -135,7 +158,79 @@ function encodeStake(venue: LstVenueConfig, wallet: Address): `0x${string}` {
         abi: STAKE_ABIS["payable-submit"],
         functionName: "submit",
       });
+    case "payable-submit-referral":
+      return encodeFunctionData({
+        abi: STAKE_ABIS["payable-submit-referral"],
+        functionName: "submit",
+        // Same convention as `payable-deposit-referral`: no referral
+        // programme, and the zero address is the documented "none".
+        args: [ZERO_ADDRESS],
+      });
+    case "payable-stake-minout":
+      if (minOut === undefined || minOut <= 0n) {
+        // Unreachable via buildDeposit, which computes and checks it — but a
+        // zero minimum is the single thing §12 Q4 forbids outright, so it
+        // fails loudly here rather than encoding a sandwichable call.
+        throw new DefiError(
+          "slippage_too_high",
+          `lst-stake: ${venue.key} needs a positive minimum-out and none was computed`,
+        );
+      }
+      return encodeFunctionData({
+        abi: STAKE_ABIS["payable-stake-minout"],
+        functionName: "stake",
+        args: [minOut],
+      });
   }
+}
+
+/**
+ * The minimum receipt this stake must return, from the protocol's own quote.
+ *
+ * Read at build time, never cached and never model-supplied (§12 Q4). The pair
+ * is an LST against its own native asset, i.e. CORRELATED, so it draws the
+ * `stable` slippage budget rather than the volatile one.
+ */
+async function minReceiptFor(
+  venue: LstVenueConfig,
+  chain: BuildDepositArgs["chain"],
+  amount: bigint,
+  tier: BuildDepositArgs["tier"],
+): Promise<bigint> {
+  if (!venue.previewView) {
+    throw new DefiError(
+      "protocol_not_found",
+      `lst-stake: venue "${venue.key}" needs a preview view to price its minimum`,
+    );
+  }
+  const evm = assertEvmChain(chain);
+  const client = getPublicClient(evm.chain);
+  const previewAbi = [
+    {
+      name: venue.previewView,
+      type: "function",
+      stateMutability: "view",
+      inputs: [{ name: "amount", type: "uint256" }],
+      outputs: [{ name: "", type: "uint256" }],
+    },
+  ] as const;
+
+  const expected = (await client.readContract({
+    address: venue.entry,
+    abi: previewAbi,
+    functionName: venue.previewView,
+    args: [amount],
+  })) as bigint;
+
+  if (!expected || expected <= 0n) {
+    // A quote of zero means the venue would mint nothing. Refusing is the only
+    // honest answer: the alternative is a stake with a zero floor.
+    throw new DefiError(
+      "withdraw_failed",
+      `lst-stake: ${venue.key} quoted zero receipt for the stake amount`,
+    );
+  }
+  return minOutFor(expected, { tier, stable: true });
 }
 
 export const LstStakeAdapter: DefiProtocolAdapter = {
@@ -145,7 +240,10 @@ export const LstStakeAdapter: DefiProtocolAdapter = {
   chainId: 0, // nominal — routed by DepositTarget.kind
   displayName: "Liquid Staking",
   targetKinds: ["lst-stake"],
+  // Throws without a resolved target — see `requiresTarget` in types.ts.
+  requiresTarget: true,
   externalSlugs: [
+    "lido",
     "rocket-pool",
     "ether.fi-stake",
     "stader",
@@ -159,6 +257,7 @@ export const LstStakeAdapter: DefiProtocolAdapter = {
     chain,
     amount,
     target,
+    tier,
   }: BuildDepositArgs): Promise<UnsignedCall> {
     const t = requireLstTarget(target);
     const evm = assertEvmChain(chain);
@@ -174,10 +273,24 @@ export const LstStakeAdapter: DefiProtocolAdapter = {
       );
     }
 
+    // A venue with an on-chain floor refuses below it. Checking here turns a
+    // paid-for revert into a message the user can act on.
+    if (venue.minStakeWei !== undefined && amount < venue.minStakeWei) {
+      throw new DefiError(
+        "below_min_deposit",
+        `lst-stake: ${venue.key} requires at least ${venue.minStakeWei} wei`,
+      );
+    }
+
+    const minOut =
+      venue.shape === "payable-stake-minout"
+        ? await minReceiptFor(venue, chain, amount, tier)
+        : undefined;
+
     return {
       kind: "evm-call",
       to: venue.entry,
-      data: encodeStake(venue, wallet.address as Address),
+      data: encodeStake(venue, wallet.address as Address, minOut),
       // Native deposit: the amount rides as `value`, and there is deliberately
       // NO `needsApproval` (§12 Q5).
       value: amount,
@@ -239,29 +352,24 @@ export const LstStakeAdapter: DefiProtocolAdapter = {
             name: venue.rateView,
             type: "function",
             stateMutability: "view",
-            inputs:
-              venue.rateView === "getPooledAvaxByShares"
-                ? [{ name: "shareAmount", type: "uint256" }]
-                : [],
+            inputs: venue.rateTakesAmount
+              ? [{ name: "shareAmount", type: "uint256" }]
+              : [],
             outputs: [{ name: "", type: "uint256" }],
           },
         ] as const;
         const raw = (await client
           .readContract({
-            address: venue.receipt,
+            address: venue.rateViewOn === "entry" ? venue.entry : venue.receipt,
             abi: rateAbi,
             functionName: venue.rateView,
-            args:
-              venue.rateView === "getPooledAvaxByShares"
-                ? [balance]
-                : ([] as const),
+            args: venue.rateTakesAmount ? [balance] : ([] as const),
           })
           .catch(() => null)) as bigint | null;
         if (raw !== null) {
-          currentAmount =
-            venue.rateView === "getPooledAvaxByShares"
-              ? raw // already the asset amount for `balance` shares
-              : (balance * raw) / 10n ** 18n;
+          currentAmount = venue.rateTakesAmount
+            ? raw // already the asset amount for `balance` shares
+            : (balance * raw) / 10n ** 18n;
         }
       }
 

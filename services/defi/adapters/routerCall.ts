@@ -178,6 +178,8 @@ export const RouterCallAdapter: DefiProtocolAdapter = {
   chainId: 0, // nominal — routed by DepositTarget.kind
   displayName: "Pendle Market",
   targetKinds: ["router-call"],
+  // Throws without a resolved target — see `requiresTarget` in types.ts.
+  requiresTarget: true,
   externalSlugs: ["pendle"],
   // Calldata we did not author, priced by a third party: deliberately the
   // lowest static score of the EVM families.

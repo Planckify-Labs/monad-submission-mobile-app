@@ -146,6 +146,8 @@ export const SolidlyLpAdapter: DefiProtocolAdapter = {
   chainId: 0, // nominal — routed by DepositTarget.kind
   displayName: "Solidly Pool",
   targetKinds: ["solidly-lp"],
+  // Throws without a resolved target — see `requiresTarget` in types.ts.
+  requiresTarget: true,
   externalSlugs: ["aerodrome-v1", "velodrome-v2"],
   staticSafetyScore: 62,
 

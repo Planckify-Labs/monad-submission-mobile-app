@@ -314,6 +314,12 @@ order of how much TVL they hold:
 a distinct risk decision; the honest Manual badge is the correct output until
 someone makes it.
 
+> **The oracle gate is not the main reason Morpho pools are Manual, and a
+> resolving Morpho pool is not necessarily correct.** Measured 2026-08-21: only
+> one refusal in a full run came from this gate, while 25 pools that DO resolve
+> were routing to the wrong vault. See [§11.6b](#116b-morpho-measured-2026-08-21-and-a-live-mis-route-found)
+> before spending time here.
+
 ### 11.3b Exit terms: what "in-app" promises about getting out
 
 Badging a pool "Deposit in-app" is a claim about BOTH directions. `ExitTerms`
@@ -700,16 +706,348 @@ The registry contract each source reads is **pinned** in
 registry chooses which vault a deposit routes into, so whoever can swap the
 registry can swap the destination.
 
+### 11.6a Onboarding pass, 2026-08-21 — what the queue actually contained
+
+A full sweep of the EVM onboarding queue, taken top-down. Recorded here because
+the useful output was not the code: it was learning that **most of the queue is
+not extractable, and each row is unusable for a different, specific reason.**
+Anyone re-running this should read the refusals before repeating the work.
+
+**Shipped (resolves today, on chains we have seeded):**
+
+| Protocol | Shape | Where the address came from |
+|---|---|---|
+| `lido` (~$23.0B) | `lst-stake`, new `payable-submit-referral` shape | the stETH token IS the entry contract; DeFiLlama's own adaptor names it |
+| `autofinance` (6 pools, ~$34M) | `erc4626` + `protocol-api` | `autopools-api.tokemaklabs.com/api/{chainId}/gen3` |
+| `avantis` (~$18M) | `erc4626-pinned` | `ADDRESSES.base.AvantisVault` |
+| `forty-acres` (~$7.2M Base) | `erc4626-pinned` | four constants in the adaptor |
+| `lista-lending` (3 Ethereum vaults) | `erc4626` + `protocol-api` | `api.lista.org/api/moolah/vault/list` |
+| `meth-protocol` (~$562M) | `lst-stake`, new `payable-stake-minout` shape | DeFiLlama's own `stakingAbi.json`, verified on chain |
+
+Lido had been Manual the whole time for a reason worth naming: the device has
+shipped a complete Lido adapter (`services/defi/adapters/lido.ts`, submit +
+withdrawal queue + claim) since Phase 1, but **`in_app` is driven by
+`depositTarget`, not by whether an adapter exists.** No resolver claimed the
+`lido` slug, so the largest pool in the entire catalog rendered as a deep link.
+An adapter with no resolver is invisible.
+
+**Refused, with the evidence, so nobody re-derives it:**
+
+| Protocol | Why |
+|---|---|
+| `gains-network` | Real 4626, but `withdrawEpochsTimelock() == 3` — redeem needs a request and a three-epoch wait, and **neither exit probe can see it**. This is §11.3b's "one soft spot" occurring in the wild |
+| `pareto-credit` | `AA_FalconXUSDC` is an Idle-lineage tranche token; `asset()` reverts |
+| `zerobase-cedefi`, `bitway-earn` | Vault reverts on every 4626 selector; separate receipt / per-asset LP tokens |
+| `native-credit-pool` | `totalUnderlying()` shape |
+| `usd-ai` | Labelled "30d unlock" — an unreadable lockup, same failure mode as gains |
+| `cian-yield-layer` | The only true discovery failure: CIAN's APY endpoints publish no vault address |
+| `renzo` | `RestakeManager` has `depositETH()` and `depositETH(uint256)` — a stake shape we lack — plus a mint cap and a queue exit |
+| `centrifuge-protocol` (~$1.19B) | ERC-7540 async. Reserved, not withheld, so no 4626 family answers for it |
+| `avant` | Pinned, correct, deposits fine — and `redeem()` **reverts** with `OperationNotAllowed()` while `cooldownDuration` is 86400. Found by the fork run, after every structural check had passed |
+
+**The pattern to take away:** of ten protocols investigated, exactly one was
+blocked on finding an address. Discovery is mostly solved; **execution shape and
+exit readability are what actually gate a protocol now.** Probe `asset()` and
+then probe how the money gets OUT before writing an entry — an epoch-gated
+redeem passes every structural check and still makes the card lie.
+
+A third gate showed up once Morpho was measured properly (§11.6b): **`maxDeposit`
+is doing more work than anything else in this system.** It is what refuses
+Maple's syrup pools, every one of Morpho's 80 Vault V2s, and the $324.9M
+`sirloinUSDC` that looked for a while like a coverage bug. When a large,
+conforming, correctly-identified vault refuses, check `maxDeposit(<any
+address>)` before assuming the resolver is at fault — a permissioned or capped
+vault is a correct Manual, not a miss.
+
+#### What the fork run changed (and why the dry run was not enough)
+
+Six of the seven onboarded protocols were dry-run green before any fork test
+existed. `services/defi/__fork__/onboarding.fork.test.ts` then executed the
+bytes the DEVICE builds against forked mainnet, and the result was not a
+formality:
+
+- **Lido's new `payable-submit-referral` encoder works** — stakes ETH, mints
+  stETH, no approval, and the queue-exit refusal fires. That is the only new
+  calling convention in the pass, so it is the one thing a unit test could not
+  have covered.
+- **Avant failed, and had to be withheld.** Deposit succeeded; the MAX withdraw
+  reverted with `OperationNotAllowed()` (`0xf50a3b52`). savETH follows Ethena's
+  `StakedUSDeV2` pattern: while `cooldownDuration != 0`, `withdraw`/`redeem`
+  revert outright and the only exit is `cooldownShares()` → wait → `unstake()`.
+  Every earlier signal said ship it — the vault is conforming 4626, and because
+  `cooldownDuration()` is readable the exit probe reported an honest `delayed`.
+  **An honest label on a button that always reverts is still a broken button.**
+  That is why §11.2 asks for a ROUND TRIP and not a deposit.
+- **Four cases failed on a copied assertion, not a bug.** The Tier-1 helper
+  asserts the round trip returns all but 2 units, which is true of sDAI and of
+  nothing that charges to leave. Measured at the pin: 40 Acres 0.0008bp (pure
+  4626 rounding), Auto Finance 1.3–5.3bp, **Avantis ~50bp**. The helper now
+  takes a `maxLossBps` per case, so an exit fee is recorded rather than
+  absorbed, and a vault that starts charging 10× fails.
+
+The generalisable one: **`readExitTerms` answers "how long", never "will this
+call succeed".** Any cooldown-convention vault (Ethena, Avant, and whatever
+copies them next) deposits cleanly and cannot be exited by the generic 4626
+adapter. Probe the exit by EXECUTING it.
+
+#### Fork hygiene: pin near the head, and let the pin complain
+
+A fork is only evidence if it resembles the chain people are actually
+depositing into.
+
+- `FORK_BLOCKS` (23,000,000 / 28,000,000) stays put — every existing case is
+  reproducible there, and moving it silently re-dates results nobody
+  re-checked. It is also **too old for new protocols**: Avant's `savETH` and
+  Tokemak's `baseUSD` have zero code at those blocks.
+- `FORK_BLOCKS_RECENT` is the near-head pin for newly onboarded families,
+  set a few hundred blocks behind the head **at the time it was set**. Close
+  enough to be representative, far enough back to survive a reorg and an
+  archive endpoint's indexing lag.
+- **The harness now tells you when a pin has aged**: `warnIfPinIsStale` reads
+  the upstream head and warns past roughly a day of blocks (7,200 Ethereum /
+  43,200 Base), because a pin that quietly drifts is a suite quietly testing
+  history. Same idea as the dry run's `<< DARK` line.
+- `FORK_BLOCK_<chainId>=N` forks any block without editing code. Still a
+  number, never `latest`, so the run stays reproducible.
+- `FORK_LATEST=1` exists and still warns loudly. Use it to ask "does this work
+  against the chain right now"; do not use it as evidence a family is safe.
+
+One environment fact to add to the three already in §11.7: **anvil's fork
+bootstrap fails on a transient upstream hiccup** (`failed to get fork block …
+connection closed`) and the harness's retry only covers port collisions. A Base
+run that dies at startup is usually worth simply re-running before
+investigating.
+
+#### The substring report caught this session's own mistake
+
+Worth recording because it is the check working on a hole opened five minutes
+earlier, not an inherited one. The `lista-lending` entry shipped with a bare
+`"lista"` alias, and the next dry run said:
+
+```
+  lista-cdp                          served by: lista-lending
+  lista-liquid-staking               served by: lista-lending
+```
+
+Both are different products — a CDP that mints lisUSD, and slisBNB liquid
+staking — and neither is a curated 4626 supply vault. Fixed twice over: the
+bare brand alias is gone (nothing in the feed uses a plain `lista` slug, so it
+bought nothing), and both look-alikes are now `reserved`.
+
+**Never give a family a bare brand alias.** `lista`, `spark`, `origin`, `venus`
+are product LINES, not protocols, and a one-word alias makes every future
+product in that line resolve to whichever one shipped first.
+
+#### The slipstream mis-claim
+
+`aerodrome-slipstream` and `velodrome-slipstream` were **explicit aliases** of
+the Solidly-fork families — worse than the substring fallback, because the
+family asserted it handled them. Slipstream is the concentrated-liquidity
+generation: a position needs a tick range, and the Router `addLiquidity` the
+adapter builds addresses the v2 pair instead. 11 Aerodrome pools (~$139M) were
+Manual only because a CL pool has no `stable()` for `readPoolIdentity` to read.
+`velodrome-v3` had already been reserved for exactly this; the slipstream slugs
+were missed. Both are now `reserved`.
+
+**When reserving a slug, grep the resolver ALIAS lists too**, not just the dry
+run's substring report — the report cannot flag a claim the family made openly.
+
+#### The address-book collision check needed widening
+
+`address-book.spec.ts` pinned a vault's underlying with a per-family owner, so
+"two protocols hold a vault over Base USDC" read as a copy-paste between books.
+40 Acres and Avantis were the first pair to collide, and the pairing is
+completely normal. Underlyings now share one owner, the same carve-out the
+Chainlink feeds already had; vault-to-vault and vault-to-underlying collisions
+are still caught.
+
+#### Chains are the binding constraint, not resolvers
+
+Measured against the live feed: **BNB Chain and Avalanche resolve 0 of 27
+pools (~$1.6B)** purely because neither has a `Blockchain` row. That is not a
+resolver gap — `AAVE_V3_POOLS` already pins both, Venus and Benqi have their
+Comptroller sources, and `lista-lending` resolves its Ethereum vaults through
+the same API that serves its 11 BNB ones. Optimism is the same story for the
+40 Acres OP vault. Per §11.1 those are a seeded row plus an rpc-proxy route,
+and the resolvers light up with no further code change.
+
+### 11.6b Morpho: measured 2026-08-21, and a live mis-route found
+
+Two things were established by measurement rather than reasoning, and both
+contradicted a confident prior. **Read this before touching the Morpho
+resolver** — the obvious improvements have already been tried and reverted.
+
+#### Morpho Vault V2 is invisible to us, and it does not matter yet
+
+`erc4626.resolver.ts` queries `vaults(...)`. Morpho's schema also has a
+**separate `vaultV2s` / `vaultV2ByAddress` type**, so every Morpho Vault V2 is
+structurally unreachable — which is why a $324.9M vault looked like it was "not
+in Morpho's API at all" until someone asked the right question.
+
+Before building that path, it was measured. 273 morpho-blue pools on chains the
+directory can reach, TVL ≥ $1M:
+
+| | count |
+|---|---|
+| deep link carries no single address (market rows — a 32-byte market id, correctly rejected by the boundary regex) | 140 |
+| deep link is not a Morpho vault at all | 53 |
+| **confirmed Vault V2** | **80** |
+| └─ **depositable** | **0** |
+| └─ `maxDeposit == 0` (caller-gated) | 80 |
+
+**All 80 refuse a deposit.** Verified as a genuine zero rather than a revert
+miscounted as one: eight were re-probed by hand across both chains and a 500×
+TVL range ($542.8M down to $1.2M), and every one answers `totalAssets()` and
+`convertToShares()` normally while returning `maxDeposit(<ordinary address>) ==
+0`. Morpho V2 vaults are caller-gated, the same shape as Maple's syrup pools —
+and `validateErc4626`'s `maxDeposit` gate would refuse all 80 even if the
+resolver could see them.
+
+**So do not build the V2 path for coverage.** It resolves zero pools today. If
+it is ever built, make it an ADDRESS-keyed lookup (`vaultV2ByAddress` on the
+deep-link candidate), never a list fetch: V2 vaults are permissionlessly
+deployable and `vaultV2s` on Base returns 200+ entries including `Test`,
+`SDFSDF` and dozens unnamed, all with `asset: USDC`. Merging that into the
+candidate set makes every USDC label ambiguous, and ambiguity is a refusal — it
+would *reduce* coverage while adding mis-match risk.
+
+#### The real finding: 25 pools, ~$478M, deposit into the wrong vault
+
+Cross-referencing those 80 against what actually resolves:
+
+**25 of the 69 resolving Morpho pools route to a different vault than the pool
+row describes.** Worked example, Ethereum `STEAKUSDC`, whose DeFiLlama row says
+$92.0M:
+
+| | picked by label (V1) | named by DeFiLlama's deep link (V2) |
+|---|---|---|
+| name | Steakhouse **USDC** | Steakhouse **Prime** USDC |
+| `totalAssets` | **$75.0M** — 18% off the row | **$93.9M** — 2% off the row |
+| `maxDeposit` | open | 0 |
+
+The row is about the Prime vault; the deposit goes into a different Steakhouse
+vault. Corroborated by the matcher collapsing distinct products onto shared V1
+vaults: `0xbeefff2092…` serves both `BBQUSDC` and `GROVE-BBQUSDC`,
+`0x2371e134e3…` serves both `GTWETHP` and `GTWETHB`.
+
+**The safety net does not catch this.** `asset()` matches — both are USDC
+vaults — and the TVL band tolerates an 18% gap. This is the `spark-savings →
+SparkLend` class one level down: same brand, same asset, different product,
+different APY, different risk.
+
+Root cause is ordering. `labelMatches` is bidirectionally fuzzy
+(`hay.includes(needle) || needle.includes(hay)`), so `3F-steakUSDC` matches
+plain `steakUSDC`; and `pickByCandidateAddress` — which knows the exact address
+the protocol's own deep link names — only runs as a FALLBACK after the label
+pass has already produced a wrong answer.
+
+**The fix is to try the address BEFORE the label.** An address is a far stronger
+identity claim than a shared symbol, and §11.5b already says the deep link
+"only ever selects, never supplies". Reversing the order fixes both halves: a
+mis-routed pool goes to the vault its row names, and a pool naming a gated V2
+vault correctly becomes Manual.
+
+**It costs coverage, and that is the point.** Morpho is expected to drop from
+~69 to ~44 resolving pools, because most of those 25 rows point at V2 vaults
+that will not accept a deposit. That is ~$478M moving from apparent coverage to
+honest Manual.
+
+**APPLIED 2026-08-21.** `claimByCandidateAddress` replaces
+`pickByCandidateAddress` and returns three states rather than two — the missing
+one being `"unvouched"`: *the protocol named an address, and it is not one of
+our candidates*. That is now a refusal instead of an invitation for the label
+matcher to have a second opinion. Applied to **Morpho and Yearn** both; Yearn
+needs it more, since its rows carry `poolMeta: null` and `symbol` = the ASSET
+("USDC") while mainnet has four distinct USDC vaults, so the label there is
+nearly worthless.
+
+Pinned by three tests in `evm-resolvers.spec.ts` ("deep-link address outranks
+the label"): the link wins over an ambiguous label, an unvouched link refuses
+outright, and a pool with NO link still falls back to labels — that last one
+matters, because "no address available" and "an address that contradicts the
+label" are different situations and only the second is a refusal.
+
+**Still to do: re-measure.** The 25/69 figure was taken with two experimental
+matching tweaks in the tree that were later reverted, and DeFiLlama was
+rate-limiting when the fix landed, so the post-fix count is not yet confirmed.
+Run `pnpm defi:dry-run --protocol morpho-blue --min-tvl 1000000` and record the
+real number here.
+
+#### Two matching changes that were tried and REVERTED
+
+Both were plausible, both were measured, both are recorded so nobody re-derives
+them:
+
+- **`listed` as a preference rather than a hard filter** (+8 pools). Morpho's
+  `listed` is a UI-curation flag, not a risk property, and §12 Q1 says the
+  on-chain validator is the verification for a discovered vault. But the case
+  that motivated it — `sirloinUSDC`, $324.9M — turned out to be a **correct**
+  refusal (`maxDeposit == 0`), and widening the candidate set enlarges exactly
+  the pool of same-symbol namesakes that the mis-route above feeds on. Base has
+  a $10K `sirloinUSDC` sitting next to the $325M one.
+- **Exact-normalised label match before the fuzzy one** (+2 pools). Sound in
+  isolation, but it only gained 2 because the fuzzy matcher was mostly
+  *succeeding wrongly* rather than refusing — which is the mis-route, not a
+  coverage problem.
+
+Neither is wrong on its own terms. Both are the wrong thing to do **first**:
+tuning the label matcher while the address is available and unused is
+optimising the weaker signal. Do the address-first reorder, re-measure, and
+only then decide whether either of these still earns its place.
+
+#### mETH: the min-out shape, and what actually blocked it
+
+`meth-protocol` (~$562M) sat in `LST_VENUES_DEFERRED` because
+`stake(uint256 minMETHAmount)` takes a caller-supplied minimum. The note said
+that needed "the slippage policy wired into the stake shape plus a verified
+preview view", and only the second half turned out to be the work: the policy
+already existed in `services/defi/slippage.ts`, serving Curve, Solidly and
+Balancer. **The blocker was never the min-out, it was having a quote to derive
+the floor from.**
+
+`ethToMETH(uint256)` is that quote, on the Staking contract itself. Verified on
+chain 2026-08-21 alongside the rest: `stake`, `ethToMETH`, `mETHToETH` and
+`unstakeRequest(uint128,uint128)` all present in the implementation behind
+`0xe3cBd06D…`; `totalControlled()` reads 237,128 ETH, matching DeFiLlama's TVL;
+`minimumStakeBound()` is 0.02 ETH.
+
+Three things a future min-out venue should copy:
+
+- **LST/native is a CORRELATED pair**, so it draws the `stable` slippage budget
+  (25bp conservative / 50bp balanced), not the volatile one. Using the wrong
+  branch is invisible until someone is sandwiched.
+- **A zero quote is a refusal, never a `stake(0)` fallback.** §12 Q4 forbids a
+  zero minimum outright, and the adapter throws instead — asserted in both the
+  unit and fork suites.
+- **Declare the on-chain minimum** (`minStakeWei`). Catching a sub-minimum
+  stake in the adapter costs the user nothing; letting it reach the chain costs
+  them gas for a guaranteed revert.
+
+Kelp rsETH is the same shape and stays deferred purely because its preview view
+has not been confirmed on chain. Confirm it and Kelp is a config row.
+
+**One name-branch removed on the way.** `lstStake.ts` decided whether a rate
+view took an argument by comparing it to the literal string
+`"getPooledAvaxByShares"` — a branch on one venue's function NAME, in the file
+whose whole purpose is to be config-driven. mETH's `mETHToETH` is the second
+view with that convention, so it would have been silently mis-valued. It is now
+a declared `rateTakesAmount`, with `rateViewOn` alongside it because
+`mETHToETH` lives on the Staking contract rather than on the receipt token.
+
 ### 11.7 Fork-test status
 
-Run against Ethereum block 23,000,000 and Base block 28,000,000 (`FORK_BLOCKS`),
-16 cases, all passing. What each tier proved:
+**27 cases, all passing** (2026-08-21). Tiers 1-3 run at `FORK_BLOCKS`
+(Ethereum 23,000,000 / Base 28,000,000); the onboarding suite runs at the
+near-head `FORK_BLOCKS_RECENT` because two of its vaults did not exist at the
+older pin. What each tier proved:
 
 | Tier | Proven on a fork |
 |---|---|
 | 1 | ERC-4626 (sDAI) and Aave v3 deposit + `MAX` withdraw round trip; SparkLend executes through the SAME adapter with only a different pinned Pool, which is the §5.3b claim; a declared asset that contradicts the target's underlying is refused |
 | 2 | Comet, cToken and Morpho Blue round trips — chosen because they cover the three ways a position is represented (the market IS the receipt / a separate exchange-rate receipt / shares inside a singleton). A Morpho params struct with one field altered cannot supply, which is §5.2's hole closed on-chain |
 | 3 | Rocket Pool and ether.fi stake ETH and receive their receipt with NO approval; a queue-exit venue REFUSES an in-app withdraw (§12 Q2); an unpinned venue key refuses; Aerodrome's two-sided add emits BOTH approvals, each scoped to the router and never infinite |
+| Onboarding (§11.6a) | Lido's new `payable-submit-referral` encoder stakes ETH and mints stETH with no approval, and refuses a queue exit; the pinned Avantis and 40 Acres vaults and two Auto Finance autopools round-trip within a MEASURED fee band; Avant deposits and then **cannot** be exited — `redeem()` reverts under cooldown, which is what withheld it |
+| mETH min-out | `stake(minMETHAmount)` mints mETH against a floor the tier policy computed from `ethToMETH`, asserted non-zero **from the calldata** rather than from the helper that built it, and the contract honours at least that minimum; a sub-`minimumStakeBound` stake is refused before it reaches the chain |
 
 Passing here is necessary, not sufficient. It says the bytes are right and the
 position moves. It does not say the pinned addresses have been reviewed (§12 Q7)

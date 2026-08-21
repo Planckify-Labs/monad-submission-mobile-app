@@ -95,6 +95,8 @@ export const CometV3Adapter: DefiProtocolAdapter = {
   chainId: 0,
   displayName: "Compound III",
   targetKinds: ["compound-v3"],
+  // Throws without a resolved target — see `requiresTarget` in types.ts.
+  requiresTarget: true,
   externalSlugs: ["compound-v3", "compound"],
   staticSafetyScore: 88,
 

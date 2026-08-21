@@ -130,6 +130,8 @@ export const CurveLpAdapter: DefiProtocolAdapter = {
   chainId: 0, // nominal — routed by DepositTarget.kind
   displayName: "Curve Pool",
   targetKinds: ["curve-lp"],
+  // Throws without a resolved target — see `requiresTarget` in types.ts.
+  requiresTarget: true,
   externalSlugs: ["curve-dex", "curve"],
   // Conservative on purpose: an LP position can lose value to de-peg or
   // impermanent loss in ways a single-asset lending position cannot.

@@ -420,6 +420,30 @@ export interface DefiProtocolAdapter {
    */
   readonly targetKinds?: readonly DepositTargetKind[];
   /**
+   * `true` when `buildDeposit` CANNOT build without a resolved
+   * `depositTarget` — i.e. the adapter throws rather than falling back to a
+   * canonical market.
+   *
+   * This exists because `externalSlugs` is consulted as a fallback when no
+   * target was resolved (`getDefiAdapter(slug)`), and for a kind-routed family
+   * adapter that fallback is a lie: `CurveLpAdapter`, `SolidlyLpAdapter`,
+   * `CompoundV2Adapter`, `CometV3Adapter`, `BalancerLpAdapter`,
+   * `RouterCallAdapter` and `LstStakeAdapter` all open with
+   * `if (!target) throw`. A pool of theirs with no target was being reported
+   * agent-executable and would have failed at build time — measured on device
+   * 2026-08-21: 5 Aerodrome, 2 Curve, 2 Benqi and 1 ether.fi pool badged
+   * "Deposit in-app" with nothing able to execute them.
+   *
+   * The Sui single-market adapters (Scallop, NAVI, Ember) are the opposite
+   * case and stay unflagged on purpose: they read `target?.kind` and keep
+   * their canonical market when it is absent, which is the backward-compatible
+   * behaviour the pool-level spec §6 describes.
+   *
+   * The adapter is the authority on this, so it declares it rather than
+   * shared code inferring it from `targetKinds` — both families declare those.
+   */
+  readonly requiresTarget?: boolean;
+  /**
    * Atomic swap→supply zap composer (Sui Intent Engine §4.7): one PTB that
    * swaps into the supply asset and supplies it, all-or-nothing. Optional —
    * only venues that support single-PTB zap-in expose it; the compiler

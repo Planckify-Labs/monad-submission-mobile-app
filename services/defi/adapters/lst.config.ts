@@ -30,7 +30,18 @@ export type LstStakeShape =
   /** `deposit(address referral)` payable — Binance `wBETH`. */
   | "payable-deposit-referral"
   /** `submit()` payable — Benqi `StakedAvax`. */
-  | "payable-submit";
+  | "payable-submit"
+  /** `submit(address _referral)` payable — Lido `stETH`. */
+  | "payable-submit-referral"
+  /**
+   * `stake(uint256 minMETHAmount)` payable — Mantle `Staking`.
+   *
+   * The only shape that carries slippage. The minimum is read from the
+   * protocol's own `previewView` at build time and floored by the tier policy;
+   * a venue on this shape without a `previewView` cannot build (§12 Q4 forbids
+   * a zero minimum).
+   */
+  | "payable-stake-minout";
 
 export interface LstVenueConfig {
   readonly key: string;
@@ -46,10 +57,34 @@ export interface LstVenueConfig {
    */
   readonly valuation: "rate" | "share";
   /**
-   * The view that converts one receipt unit to the staked asset, for `"share"`
-   * valuation. Read on the receipt token itself.
+   * The view that converts the receipt to the staked asset, for `"share"`
+   * valuation.
    */
   readonly rateView?: string;
+  /**
+   * Which contract `rateView` lives on. Defaults to the receipt token, which
+   * is where every venue had it until Mantle — `mETHToETH` is on the Staking
+   * contract, not on mETH.
+   */
+  readonly rateViewOn?: "receipt" | "entry";
+  /**
+   * `true` when `rateView` takes the share amount and returns the asset amount
+   * directly; `false`/absent when it returns a per-unit rate to multiply by.
+   *
+   * This used to be inferred by comparing `rateView` to the string
+   * `"getPooledAvaxByShares"` — a branch on a venue's function NAME, which is
+   * exactly the per-venue special-casing this config table exists to avoid. It
+   * silently mis-valued the second venue to use that convention (Mantle's
+   * `mETHToETH`), so it is now declared.
+   */
+  readonly rateTakesAmount?: boolean;
+  /**
+   * Assets-in → shares-out quote, read on `entry`. Required by
+   * `payable-stake-minout`; the twin of the backend book's `previewView`.
+   */
+  readonly previewView?: string;
+  /** Smallest stake the contract accepts, in wei, when it enforces one. */
+  readonly minStakeWei?: bigint;
 }
 
 export const LST_VENUE_CONFIGS: readonly LstVenueConfig[] = [
@@ -94,6 +129,27 @@ export const LST_VENUE_CONFIGS: readonly LstVenueConfig[] = [
     rateView: "exchangeRate",
   },
   {
+    // Lido. The stake goes to the stETH token itself, which is both the entry
+    // contract and the receipt.
+    //
+    // `valuation: "rate"` — stETH REBASES, so a balance already reads in ETH
+    // terms and there is no share rate to apply. Getting this wrong is the
+    // subtle failure mode of this table: treating a rebasing receipt as a
+    // share token would multiply an already-correct balance by a rate.
+    //
+    // The backend pins `exit: "queue"`, so this venue is deposit-only through
+    // `LstStakeAdapter`. `adapters/lido.ts` already implements the real
+    // two-step exit (requestWithdrawals -> claimWithdrawals) and is the
+    // implementation to wire in when the Tier-4 request/claim flow lands.
+    key: "lido",
+    chainId: 1,
+    entry: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+    receipt: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
+    shape: "payable-submit-referral",
+    displayName: "Lido",
+    valuation: "rate",
+  },
+  {
     key: "benqi-savax",
     chainId: 43114,
     entry: "0x2b2C81e08f1Af8835a78Bb2A90AE924ACE0eA4bE",
@@ -101,8 +157,31 @@ export const LST_VENUE_CONFIGS: readonly LstVenueConfig[] = [
     shape: "payable-submit",
     displayName: "BENQI Liquid Staking",
     valuation: "share",
-    // sAVAX exposes AVAX-per-share through this view.
+    // sAVAX exposes AVAX-per-share through this view, taking the amount.
     rateView: "getPooledAvaxByShares",
+    rateTakesAmount: true,
+  },
+  {
+    // Mantle mETH. The stake takes a caller-supplied minimum, so this is the
+    // one venue whose deposit reads chain state before encoding: `ethToMETH`
+    // on the Staking contract quotes the mETH for a given ETH amount, and the
+    // tier policy floors it. LST/native is a CORRELATED pair, so it draws the
+    // `stable` budget (25bp conservative / 50bp balanced), not the volatile one.
+    //
+    // `mETHToETH` lives on the Staking contract too, not on the mETH token,
+    // which is why `rateViewOn` exists.
+    key: "mantle-meth",
+    chainId: 1,
+    entry: "0xe3cBd06D7dadB3F4e6557bAb7EdD924CD1489E8f",
+    receipt: "0xd5F7838F5C461fefF7FE49ea5ebaF7728bB0ADfa",
+    shape: "payable-stake-minout",
+    previewView: "ethToMETH",
+    minStakeWei: 20_000_000_000_000_000n,
+    displayName: "Mantle mETH",
+    valuation: "share",
+    rateView: "mETHToETH",
+    rateViewOn: "entry",
+    rateTakesAmount: true,
   },
 ];
 

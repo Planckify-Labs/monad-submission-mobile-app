@@ -71,6 +71,93 @@ export const FORK_BLOCKS: Readonly<Record<number, bigint>> = {
   8453: 28_000_000n,
 };
 
+/**
+ * A second, NEAR-HEAD pinned block per chain.
+ *
+ * ## Why a second pin at all
+ *
+ * `FORK_BLOCKS` cannot simply be bumped: every existing case is reproducible at
+ * those blocks and moving them re-dates results nobody re-checked. But a
+ * protocol onboarded today may not have EXISTED at them — Avant's `savETH` and
+ * Tokemak's `baseUSD` both have zero code at 23,000,000 / 28,000,000
+ * respectively (verified 2026-08-21), and a fork test against an undeployed
+ * address fails for a reason that has nothing to do with the adapter.
+ *
+ * ## Why NEAR-HEAD rather than merely "later"
+ *
+ * The point of a fork is to be indistinguishable from mainnet. A pin that has
+ * aged is not: vault parameters change, caps fill, a market's utilisation
+ * moves, a proxy gets upgraded. Testing a vault at a block from two weeks ago
+ * proves the adapter worked against a state nobody is depositing into any more.
+ *
+ * So these are pinned a few hundred blocks behind the head AT THE TIME THEY
+ * WERE SET (2026-08-21: Ethereum head 25,803,477 / Base head 50,262,782),
+ * which is close enough to be representative and far enough back that a reorg
+ * or an archive endpoint's indexing lag cannot make the run flaky.
+ *
+ * **Bump these when you run a pass.** `forkPinAge()` warns when they have
+ * drifted, so an aged pin announces itself rather than quietly testing history.
+ * `FORK_BLOCK_<chainId>` overrides one without editing code.
+ */
+export const FORK_BLOCKS_RECENT: Readonly<Record<number, bigint>> = {
+  1: 25_803_000n,
+  8453: 50_262_000n,
+};
+
+/**
+ * How far behind the head a near-head pin may drift before the harness says
+ * so, per chain. Roughly one day of blocks: ~7,200 on Ethereum (12s), ~43,200
+ * on Base (2s). Past that the fork is testing history, which is the one thing
+ * a fork is supposed not to do.
+ */
+const PIN_STALE_AFTER_BLOCKS: Readonly<Record<number, bigint>> = {
+  1: 7_200n,
+  8453: 43_200n,
+};
+
+/**
+ * Ask the upstream for its head and warn if the pinned block has aged out.
+ *
+ * Best-effort and never fatal: an endpoint that will not answer `eth_blockNumber`
+ * is not a reason to fail a test, and a silent pass is exactly what this is
+ * trying to prevent elsewhere. Same spirit as the dry run's `<< DARK` line —
+ * "your evidence is weaker than it looks" should be told to you, not
+ * discovered.
+ */
+async function warnIfPinIsStale(
+  chainId: number,
+  upstream: string,
+  pinned: bigint,
+): Promise<void> {
+  const limit = PIN_STALE_AFTER_BLOCKS[chainId];
+  if (!limit) return;
+  try {
+    const res = await fetch(upstream, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_blockNumber",
+        params: [],
+      }),
+    });
+    const body = (await res.json()) as { result?: string };
+    if (!body.result) return;
+    const head = BigInt(body.result);
+    const age = head - pinned;
+    if (age <= limit) return;
+    console.warn(
+      `[fork] chain ${chainId}: pinned block ${pinned} is ${age} blocks behind ` +
+        `head ${head} (limit ${limit}). The fork is testing HISTORY — vault ` +
+        "caps, utilisation and proxy implementations have moved since. Bump " +
+        `FORK_BLOCKS_RECENT[${chainId}], or set FORK_BLOCK_${chainId}=${head - 200n}.`,
+    );
+  } catch {
+    // Upstream would not answer. Not worth failing a run over.
+  }
+}
+
 export function forkRpcUrl(chainId: number): string | undefined {
   return process.env[`FORK_RPC_URL_${chainId}`]?.trim() || undefined;
 }
@@ -159,7 +246,15 @@ async function waitForRpc(
  * `ChainConfig` shaped exactly like the app's own so the adapters take their
  * real code path.
  */
-export async function startFork(chainId: number): Promise<ForkContext> {
+export async function startFork(
+  chainId: number,
+  /**
+   * Override the pinned block. MUST be another pinned constant (see
+   * `FORK_BLOCKS_RECENT`) — passing a live head here would quietly reintroduce
+   * exactly the flakiness `FORK_BLOCKS` exists to prevent.
+   */
+  opts?: { block?: bigint },
+): Promise<ForkContext> {
   const upstream = forkRpcUrl(chainId);
   if (!upstream) throw new Error(`FORK_RPC_URL_${chainId} is not set`);
 
@@ -168,7 +263,7 @@ export async function startFork(chainId: number): Promise<ForkContext> {
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < PORT_ATTEMPTS; attempt++) {
     try {
-      return await startForkOnce(chainId, upstream);
+      return await startForkOnce(chainId, upstream, opts?.block);
     } catch (err) {
       lastError = err as Error;
       if (!/Address already in use/i.test(lastError.message)) throw lastError;
@@ -180,10 +275,18 @@ export async function startFork(chainId: number): Promise<ForkContext> {
 async function startForkOnce(
   chainId: number,
   upstream: string,
+  blockOverride?: bigint,
 ): Promise<ForkContext> {
   const port = nextPort++;
   const rpcUrl = `http://127.0.0.1:${port}`;
-  const block = FORK_BLOCKS[chainId];
+  // Precedence: explicit env override > the caller's pin > the shared pin.
+  // The env hatch exists so "fork right now, at today's state" is a one-liner
+  // rather than an edit — but it is still a NUMBER, not `latest`, so the run
+  // stays reproducible by writing it down.
+  const envBlock = process.env[`FORK_BLOCK_${chainId}`]?.trim();
+  const block = envBlock
+    ? BigInt(envBlock)
+    : (blockOverride ?? FORK_BLOCKS[chainId]);
 
   // Forking at a PINNED block is an archive request, which most free endpoints
   // refuse ("Archive requests require a personal token"). `FORK_LATEST=1` trades
@@ -200,6 +303,8 @@ async function startForkOnce(
         "Use an archive RPC and the pinned block before trusting a run.",
     );
   }
+
+  if (block && !useLatest) await warnIfPinIsStale(chainId, upstream, block);
 
   const child: ChildProcess = spawn(
     anvilBinary(),
