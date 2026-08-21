@@ -20,8 +20,18 @@
 >   Fast Refresh will not re-read the flags.
 > - **Enabling in production**: §12.3. Eight requirements, one of which
 >   (security sign-off on the pinned address book) cannot be automated and is
->   the one most likely to be skipped.
+>   the one most likely to be skipped. Its first full run found **three wrong
+>   addresses in 125**, all invisible to the test suite — procedure, evidence
+>   and the standing record live in
+>   [`defi-address-book-security-signoff.md`](./defi-address-book-security-signoff.md).
 > - **What is still blocking**: §12.4.
+>
+> ### Pinning a new address? [§11.5c Step 5](#step-5--security-sign-off-on-every-address-you-pinned-mandatory) is not optional.
+>
+> Adding a line to `address-book/` adds a `tx.to` for user funds. A fork test
+> proves the calldata is well-formed *for whatever address you gave it*, so a
+> wrong address is a green test and a wrong deposit. Nothing downstream catches
+> it: a wrong pin fails closed and reads as "a pool that was never ours".
 >
 > ### Adding a protocol? Start at [§11.5c Step 0](#step-0--decide-what-kind-of-job-this-actually-is).
 >
@@ -576,6 +586,50 @@ above shipped with `limit=500`, the API caps it at 100 and returns HTTP 400, and
 the source yielded zero rows. It read as "Pendle has no pools of ours" until the
 health line reported `0 hits / 72 lookups`. Fixing the limit took it to **62/84**.
 
+#### Step 5 — security sign-off on every address you pinned (MANDATORY)
+
+**If your entry added a line to `api/src/strategies/targets/address-book/`, you
+are not done.** A pinned address is a `tx.to` for user funds, and it is the one
+thing in this pipeline that no test can validate — a fork test proves the
+calldata is well-formed *for the address you gave it*, so a wrong address
+produces a green test and a wrong deposit.
+
+Procedure, evidence format and the standing record:
+**`docs/runbooks/defi-address-book-security-signoff.md`**.
+
+The bar (from `address-book/README.md`) is three things, and the third is the
+one people skip:
+
+1. The address comes from the protocol's **own** deployment registry or docs.
+2. It is cross-checked against a **second official source**.
+3. **The label matches.** An address can be real, official, and still be the
+   wrong contract.
+
+> **This is not a formality that has never caught anything.** The first full
+> run (2026-08-21) reviewed 125 pinned addresses and found **three wrong ones**:
+> Ethereum `cWETHv3` pinned to an address with **no code on mainnet**; Radiant
+> pinned to a pool that reverts, for a protocol that has been **winding down
+> since June 2026** after a $50M exploit; and Origin `wOUSD` pinned to
+> **Origin's governance token**. All three were fail-closed, which is precisely
+> why nobody noticed — see below.
+
+**Why the safety layers do not cover this.** Every one of those three failed
+closed to Manual. Nothing went red, no dry run reported an error, and the
+checksum guard in `address-book.spec.ts` passed on all of them — a mistyped
+address that is re-checksummed produces a *valid* checksum, so the guard cannot
+fail on this class of bug. A wrong pin does not look like a bug; it looks like
+**a pool that was never ours**. Fail-closed is a safety net, not a detector.
+
+**Ask the venue question too.** "Is this the right address?" is the easy half.
+"Should we be sending user funds here at all?" is the half that needs a person:
+the Radiant finding could not have been caught by any address diff, and
+"fixing" the address without asking would have enabled deposits into a
+protocol in maintenance mode.
+
+**Do not trust a `do not re-investigate` comment in the book** until sign-off
+has confirmed the constants it is defending. One of those comments is exactly
+what hid the Origin finding.
+
 #### Resolving is NOT shipping
 
 A green `--protocol <slug>` line means the backend can produce a validated
@@ -585,8 +639,9 @@ target. It does **not** mean users can deposit. Between there and production:
    family badges "Deposit in-app" for a target the device cannot build (§8.6).
 2. Fork tests must show the calldata **the device builds** actually moves the
    position (§11.7).
-3. Pinned addresses need **security sign-off** (§12 Q7) — the one step no test
-   replaces.
+3. Pinned addresses need **security sign-off** (§12 Q7, Step 5 above) — the one
+   step no test replaces. Procedure + record:
+   `docs/runbooks/defi-address-book-security-signoff.md`.
 4. A human must run it **end to end on a real device with real funds** (§12.3
    #9).
 
@@ -1154,7 +1209,7 @@ ordered so that failing an earlier one makes a later one meaningless.
 | 2 | Pinned addresses match the deployments | `DRIFT_CHECKS=1` address-book drift green for the family's chains | Engineer |
 | 3 | External APIs still have the shape we send | `DRIFT_CHECKS=1` external-API drift green | Engineer |
 | 4 | The calldata the DEVICE builds moves the position | Fork tests green for the tier **at a pinned block** (§11.7) | Engineer |
-| 5 | Every pinned address reviewed | Diff review of `address-book/` against each protocol's own docs, cross-checked against a second official source (§12 Q7, `address-book/README.md`) | **Security** |
+| 5 | Every pinned address reviewed | Diff review of `address-book/` against each protocol's own docs, cross-checked against a second official source (§12 Q7, `address-book/README.md`). **Procedure + standing record: `docs/runbooks/defi-address-book-security-signoff.md`** | **Security** |
 | 6 | The family has no open blocker | Not listed in §11.2's deliberately-off table | Engineer |
 | 7 | Exit path is honest | A queue/DEX-exit venue must not offer an in-app withdraw (§12 Q2) | Product + Engineer |
 | 8 | Ops can turn it off | `DEFI_FAMILY_KILL_SWITCH` understood and reachable without a deploy | Ops |
@@ -1164,6 +1219,22 @@ Requirement 5 is the one that cannot be automated and the one most likely to be
 skipped. A green fork test proves the bytes are right; it says nothing about
 whether the address they are sent to is the contract we believe it is. Only a
 human comparing the book against the protocol's own documentation closes that.
+
+**It has now been run once, and it earned its place.** The 2026-08-21 pass over
+all 125 pinned addresses found **six** problems. Three were wrong addresses —
+Ethereum `cWETHv3` pointing at an address with **no code**, Radiant pointing at
+a reverting pool for a protocol that is **winding down**, and Origin `wOUSD`
+pointing at **Origin's governance token** — and all three were fail-closed, so
+no test, dry run or checksum guard could have surfaced any of them.
+
+The other three came from running the on-chain drift spec for the first time,
+and two of those were **not** fail-closed: the Pendle router allowlist accepted
+a codeless `to` on five chains, and Curve read the **wrong registry** on Polygon
+(an active "Cryptopool Factory") which answered successfully instead of
+reverting. The sixth was a provenance gap (Avantis) since closed.
+
+All six are fixed; drift went 13 → 0. Findings, evidence and the corrections:
+**`docs/runbooks/defi-address-book-security-signoff.md`**.
 
 #### Requirement 9 — the end-to-end human test
 
@@ -1195,7 +1266,9 @@ hashes. "The fork test was green" is not an answer to requirement 9.
 
 | Blocker | Affects | Owner |
 |---|---|---|
-| Address-book security sign-off (req. 5) | **all tiers** | Security |
+| Address-book security sign-off (req. 5) — **run 2026-08-21; 125/125 signed off, all 6 findings closed, on-chain drift 13 → 0.** Needs only a named counter-signature | **all tiers** | Security |
+| `address-book-drift.spec.ts` is **not scheduled anywhere** — it already encodes the check that would have caught the `cWETHv3` bug, but its first-ever run was during the sign-off. It is green now, so scheduling starts from a clean baseline | all pinned families | Ops |
+| Avantis `avUSDC` withdrawals **revert above 90% utilization** — `instant` is honest today (~9.4%) but the exit copy must not promise an unconditional MAX withdraw | `avantis` | Product |
 | Morpho oracle/IRM allowlist is empty | Morpho Blue direct markets — every one refuses by design until oracles are reviewed | Risk |
 | `BalancerQueries` not pinned | `balancer-lp` — cannot price `minimumBPT`, and a zero minimum is a silent sandwich | Engineer + Security |
 | Curve classic pools refuse | `curve-lp` on non-NG pools — needs `lpToken` on the shared union | Engineer |
@@ -1204,4 +1277,7 @@ hashes. "The fork test was green" is not an answer to requirement 9.
 | DeFiLlama `/poolsOld` paywalled | Families with no on-chain registry source yet — set `DEFILLAMA_PRO_API_KEY` or add a source | Ops or Engineer |
 
 Tiers 1–3 have cleared requirements 1–4. They are **not** cleared for production
-until requirement 5 lands.
+until requirement 5 lands — which now means: apply the three address
+corrections, resolve Radiant and Avantis, and get the sign-off log in
+`docs/runbooks/defi-address-book-security-signoff.md` §7 countersigned by a
+named human.

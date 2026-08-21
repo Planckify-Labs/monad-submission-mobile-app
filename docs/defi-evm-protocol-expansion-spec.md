@@ -16,11 +16,36 @@ possible", in four safety-ordered tiers.
 > moved. See `docs/runbooks/add-defi-pool-resolver.md` §11.7 for what each tier
 > proved and `services/defi/__fork__/` for the suite.
 >
-> **They are still not cleared for production**, because §12 Q7 requires
-> security sign-off on every pinned address in
-> `api/src/strategies/targets/address-book/` and that has not happened. A green
-> fork test proves the bytes are right; it says nothing about whether the
-> address they are sent to is the contract we believe it is.
+> **They are still not cleared for production.** §12 Q7 requires security
+> sign-off on every pinned address in
+> `api/src/strategies/targets/address-book/`. A green fork test proves the bytes
+> are right; it says nothing about whether the address they are sent to is the
+> contract we believe it is.
+>
+> **That review ran on 2026-08-21** and is recorded in
+> `docs/runbooks/defi-address-book-security-signoff.md`. It found three wrong
+> addresses in 125 — Ethereum `cWETHv3` pinned to an address with **no code on
+> mainnet**; Radiant pinned to a reverting pool for a protocol that has been
+> **winding down since June 2026**; Origin `wOUSD` pinned to **Origin's
+> governance token**. All three were fail-closed, so no test, dry run or
+> checksum guard surfaced any of them, and all three are now **fixed** (Radiant
+> was removed outright rather than repointed).
+>
+> The **first ever run** of `address-book-drift.spec.ts` (opt-in, scheduled
+> nowhere) found two more defects, both since fixed and both worse than the
+> address typos because neither failed closed: the Pendle router allowlist was
+> **chain-blind**, approving a codeless `to` on five chains in the one table
+> whose whole job is to be restrictive; and `CURVE_METAREGISTRY_ID` read the
+> **wrong registry on Polygon** (an active "Cryptopool Factory"), which answered
+> `find_pool_for_coins` successfully instead of reverting. Drift is now **0
+> across all ten chains**, down from 13.
+>
+> **All six findings are now closed and 125/125 addresses are signed off**,
+> including Avantis `avUSDC`, whose aggregator-only provenance was replaced by
+> Avantis' own address registry (authenticated 8/8 against their published
+> contracts table, and tied to the chain by an exact `totalAssets`/`totalSupply`
+> match). What remains is a named counter-signature, scheduling the drift spec,
+> and one exit-copy note — see runbook §12.4.
 >
 > ➡️ **Before flipping any flag — for a device test or for production — read
 > `docs/runbooks/add-defi-pool-resolver.md` §12.** It covers what a device test
