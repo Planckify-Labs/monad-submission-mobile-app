@@ -1063,6 +1063,46 @@ and the resolvers light up with no further code change.
 > As of the drift fix above, those pins are also **verified on chain every drift
 > run**, ahead of the seed rather than after it.
 
+### 11.6c Compound III: a resolver with a chain's markets half-pinned reads as a family half-working
+
+Measured 2026-08-21, chasing why `compound-v3` refused ~$824M of WBTC/wstETH
+pools on Ethereum despite the family being live and the same resolver already
+serving cUSDCv3/cWETHv3/cUSDTv3 cleanly. `CompoundV3Resolver` iterates every
+`COMET_MARKETS[chainId]` entry and validates `baseToken()` against each — so a
+missing market reads exactly like the family failing, when it is really the
+`address-book/` entry being incomplete.
+
+`compound-finance/comet`'s own `deployments/<chain>/` directory listing is the
+full answer, the same shortcut §11.5b describes for other families: Ethereum
+mainnet ships SIX markets (`usdc`, `usds`, `usdt`, `wbtc`, `weth`, `wsteth`);
+this book had three. Base ships five (`aero`, `usdbc`, `usdc`, `usds`, `weth`);
+this book had three. Arbitrum's four were already complete — worth checking
+before assuming every chain has the same gap.
+
+**Check a family's book against its own deployment list, not just against
+which of its markets happen to have a DeFiLlama pool already.** Base's two new
+markets (`aero`, `usds`) have no pool yet — pinned anyway, so the resolver
+claims either the moment DeFiLlama indexes it, with zero further code.
+
+### 11.6d Fluid Vaults share the `fluid-lending` slug with Fluid's lending fTokens
+
+`fluid-lending`'s Ethereum rows include `SUSDAI`, `WBTC`, `REUSD`, `PST`,
+`WEETH`, `WEETHS`, `CBBTC`, `PAXG`, `WSTUSR`, `XAUT`, `TBTC`, `SUSDE` — none of
+which match any of the seven addresses `LendingResolver.getAllFTokens()`
+actually returns (`fUSDC`, `fWETH`, `fUSDT`, `fwstETH`, `fGHO`, `fsUSDS`,
+`fUSDtb`). All refuse, correctly: they are collateral rows from **Fluid
+Vaults** — Instadapp's separate leveraged-borrow product — sharing the
+`fluid-lending` DeFiLlama slug with the plain lending markets. `getCode` on
+Fluid's `VaultResolver.getAllVaultsAddresses()` confirms real vault-shaped data
+sits behind these symbols.
+
+Same category as Sky's CDP ilks and Curve LlamaLend's borrow-side rows: a
+leveraged/collateral position is a §1 non-goal, not a discovery bug. Fluid's
+own `ETH` rows (asset = native sentinel vs `fWETH`'s real WETH `asset()`) are
+the already-documented fluid-lite mismatch, occurring again under a different
+slug. Nothing here needed a code change — only recognising the shape before
+spending time on it.
+
 ### 11.6b Morpho: measured 2026-08-21, and a live mis-route found
 
 Two things were established by measurement rather than reasoning, and both
