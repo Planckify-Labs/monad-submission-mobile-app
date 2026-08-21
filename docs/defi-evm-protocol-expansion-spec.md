@@ -27,9 +27,18 @@ possible", in four safety-ordered tiers.
 > needs (both sides on, bundle rebuilt, app force-stopped), the eight
 > requirements for production, and what is still blocking.
 >
-> Six families are additionally withheld with stated reasons (Balancer, Uniswap
-> LP, async vaults, Convex/Aura, Avalon, six LST venues); see
+> Balancer v2 registered 2026-08-19 (§6.2); Balancer v3 stays withheld. Five
+> more families are additionally withheld with stated reasons (Uniswap LP,
+> async vaults, Convex/Aura, Avalon, six LST venues); see
 > `docs/runbooks/add-defi-pool-resolver.md` §11.3.
+>
+> **Morpho Blue un-darkened 2026-08-19 (§12 Q6).** Its oracle gate had shipped
+> with an empty allowlist, so the family resolved *nothing* on either chain —
+> fail-closed, but silently and permanently. Replaced with an on-chain
+> provenance check (pinned factory + reviewed Chainlink feed list); measured
+> live, 23 markets / ~$2.44B of supply now resolve, and every refusal names the
+> check that rejected it. Partial coverage is the intended end state, not a
+> gap: see the runbook §11.3a before widening it.
 >
 > **Chain support is data-driven**: the supported-chain set comes from the
 > `Blockchain` table through `api/src/strategies/targets/chain-directory.ts`,
@@ -151,7 +160,7 @@ Family A instead.
 | Curve | $1.38B | `add_liquidity`/`remove_liquidity_one_coin` | `[T2]` `[docs]` |
 | Uniswap v3 / v4 | ~$1.9B | hosted-API calldata | `[T3]` `[docs]` |
 | Aerodrome / Velodrome (Solidly) | — | Router `addLiquidity(stable/volatile)` | `[T3]` `[docs]` |
-| Balancer v3 / Beets | $406M | Vault/Router | `[T3]` |
+| Balancer v3 / Beets | $406M | Vault/Router | `[T3]` v2 pools registered 2026-08-19; v3 still Manual (§6.2) |
 | Convex / Aura (LP boosting) | $444M | deposit LP → stake | `[T3]` (after Curve/Bal) |
 | Pendle (LP + PT) | $371M | hosted-API calldata | `[T3]` `[docs]` |
 
@@ -526,10 +535,29 @@ from `quoteAddLiquidity`. Adapter `adapters/solidlyLp.ts`,
 official pool factory. Router MUST be address-book-pinned. IL risk → conservative
 `staticSafetyScore`, `lp_stable`/`lp_volatile` tier.
 
-### 6.2 Balancer v3 / Beets — `balancer-lp`
-Deposit through the Balancer **Vault/Router** by `poolId`; single-asset joins
-set min-BPT-out. New adapter + resolver; Vault pinned in the address-book. Lower
-priority than Solidly (fewer stablecoin single-sided pools).
+### 6.2 Balancer v2 (live) / v3 (still Manual) — `balancer-lp`
+Deposit through the Balancer **Vault** by `poolId`; single-asset joins/exits
+set min-BPT-out / min-amounts-out from `BalancerQueries.queryJoin`/`queryExit`.
+
+**Registered 2026-08-19, v2 only.** `BalancerQueries` is now pinned per chain
+(verified against the official `balancer/balancer-deployments` repo — it is
+NOT the same address on every chain, unlike the Vault) in both address-books,
+and `BalancerLpAdapter`/`BalancerResolver`/`BeetsResolver` are registered
+behind `FEATURE_DEFI_EVM_TIER3` + their per-family sub-flags. Withdraw
+(`EXACT_BPT_IN_FOR_ONE_TOKEN_OUT`) ships alongside deposit, not deposit-only.
+
+**Balancer v3 pools stay Manual on purpose.** v3 is a different contract shape
+— no `joinPool`/`exitPool` on the Vault and no `BalancerQueries` singleton;
+liquidity goes through a **Router** (`addLiquidityUnbalanced`/
+`removeLiquiditySingleTokenExactIn` + their `query*` counterparts), and v3
+pools do not implement `getPoolId()` at all (`IBasePool` has no such member),
+so the existing resolver's identity probe already fails closed on genuine
+v3-native pools. `BalancerLpAdapter` additionally refuses to build against
+anything but the pinned v2 Vault as a second, independent guard. Wiring v3 is
+separate work: a Router-based join/exit adapter, a new resolver identity check
+(likely `Vault.getPoolTokenInfo(pool)` or similar in place of `getPoolId()`),
+and pinning the *active* v3 Router per chain (Balancer has shipped several
+deprecated Router versions — only the current one may be pinned).
 
 ### 6.3 Convex / Aura — LP boosting
 Two-step: obtain the Curve/Balancer LP (Family G above), then `deposit(pid, amt,
@@ -835,9 +863,12 @@ This is the "is this the *real* contract" layer — the core of the user's ask.
 - `[N]` **Factory/deployer provenance (where available)** — verify a vault was
   deployed by the protocol's known factory, not a look-alike with a correct
   `asset()` but malicious logic.
-- `[N]` **Oracle/IRM allowlist (Morpho Blue)** — even as a *lender* you inherit
+- `[N]` **Oracle/IRM provenance (Morpho Blue)** — even as a *lender* you inherit
   bad-debt risk from a manipulated oracle (borrowers escape liquidation). Only
-  resolve markets whose `oracle`/`irm` are on a curated allowlist.
+  resolve markets whose `irm` is pinned AND whose oracle was deployed by the
+  pinned `MorphoChainlinkOracleV2Factory` AND reads only reviewed Chainlink
+  feeds, each live within `2 × heartbeat` (§12 Q6). Read from the chain, not
+  from Morpho's API — the wiring is the thing being checked.
 - `[E]` **TVL sanity band** — on-chain `totalAssets` within a loose factor of
   DeFiLlama's TVL (stablecoins). Catches wrong/dust vaults.
 - `[N]` **Proxy/upgradeability flag** — detect proxy targets; surface
@@ -1155,12 +1186,41 @@ deposits set `value: amount` on the `evm-call` and **omit `needsApproval`**
 amount` instead of an approve preamble. *Why:* correctness — an approve on a
 native deposit would be a no-op and mask a mis-build.
 
-**Q6 — Morpho Blue oracle/IRM allowlist ownership.** *Decided:* a curated
-allowlist in the backend address-book (`morpho-allowlist.ts`), **seeded from
-Morpho's own curated/whitelisted-market flags** via their API and reviewed on
-change; the resolver rejects markets whose `oracle`/`irm` aren't on it. *Why:*
-lenders inherit bad-debt risk from a bad oracle (§11 L1); trust Morpho's curation
-but pin it so a silent API change can't widen our exposure.
+**Q6 — Morpho Blue oracle/IRM allowlist ownership.** *Decided (revised
+2026-08-19):* the gate is on oracle **provenance**, verified on chain at resolve
+time, not on a list of oracle addresses. `morpho-allowlist.ts` pins the IRM set,
+the `MorphoChainlinkOracleV2Factory` and a reviewed **Chainlink feed** list
+(`address-book/oracles.ts`); a market resolves only when its oracle was deployed
+by that factory, reads *only* reviewed feeds, prices through no ERC-4626 vault,
+and every feed is live within `2 × heartbeat`. *Why:* lenders inherit bad-debt
+risk from a bad oracle (§11 L1). The original per-market address list was the
+right intent in an unmaintainable shape — Morpho deploys one oracle instance per
+market, so the list shipped **empty and rejected the entire family in silence**.
+Pinning what markets *share* is both maintainable and strictly stronger: the
+factory proves the oracle's code is Morpho's audited implementation (and its
+wiring is immutable, so it can never be re-pointed), while the feed list proves
+its inputs. Both halves are required — `createMorphoChainlinkOracleV2` is
+permissionless, so factory membership alone would admit an oracle whose
+`baseFeed1` is attacker-controlled. Morpho's API is used only to *enumerate*
+candidate markets; the wiring is always re-read from the chain (§11 L6).
+
+**Q2a — Exit terms and lockup consent.** *Decided 2026-08-19:* every deposit
+must establish, before signing, how long funds are locked, and a non-instant
+exit requires explicit user acknowledgement. Modelled as `ExitTerms`
+(`instant` | `delayed{seconds}` | `queued` | `unknown`), READ through the
+`ChainSafetyProvider.readExitTerms` capability (Layer-5 primitive) and ENFORCED
+by `ExitTermsConsentCheck` at Layer 3, because consent is an authorization fact
+rather than a protocol fact. `unknown` fails closed; an acknowledgement smaller
+than the delay read this block fails closed too (a cooldown is mutable, and the
+user only agreed to what they were shown). *Why:* there is no ERC that declares
+a lockup, so a 30-day-unlock vault and a liquid one are identical through the
+ERC-4626 interface. A deposit the user cannot exit is a real loss even when
+nothing is stolen, and the risk is highest exactly where it is least visible:
+an agent depositing on the user's behalf. Scoped to `deposit` only, since
+blocking a slow WITHDRAW would strand funds in the protocol the user is
+leaving. A namespace with no registered provider is out of scope for the check
+(its other provider-backed layers already no-op); a namespace that HAS docked a
+provider must answer.
 
 **Q7 — Address-book vs API-sourced addresses.** *Decided:* **singleton/router**
 contracts (Aave/Spark Pool, Morpho, Comet, Curve registry, Pendle/Solidly/

@@ -34,6 +34,7 @@ import {
   AaveV3EthereumAdapter,
   AaveV3EthereumSepoliaAdapter,
 } from "./adapters/aaveV3";
+import { BalancerLpAdapter } from "./adapters/balancerLp";
 import { CometV3Adapter } from "./adapters/cometV3";
 import { CompoundV2Adapter } from "./adapters/compoundV2";
 import { Curve3poolAdapter } from "./adapters/curve3pool";
@@ -165,10 +166,15 @@ export function bootDefi(): void {
     if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "lst-stake")) {
       registerDefiAdapter(LstStakeAdapter);
     }
-    // BalancerLpAdapter is NOT registered — its single-asset join needs a
-    // reviewed `BalancerQueries` deployment to price `minimumBPT`, and §12 Q4
-    // forbids a zero minimum. Unlike a wrong ABI (which reverts), a zero
-    // minimum is a silent sandwich. Pin the queries contract, then register.
+    // Balancer v2 / Beets — single-asset joins/exits, priced by the pinned
+    // `BalancerQueries` singleton (services/defi/constants/evmAddressBook.ts).
+    // v2 ONLY: the adapter refuses to build against a v3 Vault (no
+    // `joinPool`/`exitPool`/`BalancerQueries` there at all — see the file
+    // header on `adapters/balancerLp.ts`); v3 pools stay Manual until a
+    // Router-based join/exit ships as separate work.
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "balancer-lp")) {
+      registerDefiAdapter(BalancerLpAdapter);
+    }
   }
 
   // ── Sui adapters (Intent Engine) ────────────────────────────────

@@ -55,6 +55,32 @@ export const UNISWAP_V4_POSITION_MANAGERS: Readonly<Record<number, Address>> = {
   8453: "0x7C5f5A4bBd8fD63184577525326123B519429bDc",
 };
 
+/** The Balancer v2 Vault singleton — one address on every chain it is deployed to. */
+export const BALANCER_V2_VAULT: Address =
+  "0xBA12222222228d8Ba445958a75a0704d566BF2C8";
+
+/**
+ * `BalancerQueries` (v2) per chain — mirrors the backend's pin
+ * (`api/src/strategies/targets/address-book/dex.ts`, verified against
+ * `balancer/balancer-deployments`, 2026-08-19). Unlike the Vault, this address
+ * is NOT the same across chains, so it is a map, never a single constant. A
+ * chain absent here has no reviewed queries deployment — the adapter MUST
+ * refuse to build rather than price a join/exit with a zero minimum (§12 Q4).
+ */
+export const BALANCER_QUERIES: Readonly<Record<number, Address>> = {
+  1: "0xE39B5e3B6D74016b2F6A9673D7d7493B6DF549d5", // Ethereum
+  10: "0xE39B5e3B6D74016b2F6A9673D7d7493B6DF549d5", // Optimism
+  137: "0xE39B5e3B6D74016b2F6A9673D7d7493B6DF549d5", // Polygon
+  8453: "0x300Ab2038EAc391f26D9F895dc61F8F66a548833", // Base
+  42161: "0xE39B5e3B6D74016b2F6A9673D7d7493B6DF549d5", // Arbitrum
+  43114: "0xC128468b7Ce63eA702C1f104D55A2566b13D3ABD", // Avalanche
+  100: "0x0F3e0c4218b7b0108a3643cFe9D3ec0d4F57c54e", // Gnosis
+};
+
+export function balancerQueries(chainId: number): Address | null {
+  return BALANCER_QUERIES[chainId] ?? null;
+}
+
 type RouterProtocol = Extract<
   DepositTarget,
   { kind: "router-call" }

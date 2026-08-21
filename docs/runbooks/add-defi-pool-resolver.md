@@ -22,6 +22,16 @@
 >   (security sign-off on the pinned address book) cannot be automated and is
 >   the one most likely to be skipped.
 > - **What is still blocking**: §12.4.
+>
+> ### Adding a protocol? Start at [§11.5c Step 0](#step-0--decide-what-kind-of-job-this-actually-is).
+>
+> Step 0 exists because **not every protocol is an extraction**. A
+> `protocols.ts` entry supplies an address; it does not teach the system how to
+> build a deposit. An LP, a dated market or an async vault needs a new execution
+> kind — adapter, validator, Layer-4 decode, Layer-5 pause — which is weeks, not
+> hours. And a resolving dry run is **not** a release: production needs §12.3,
+> including a **human running it end to end on a real device with real funds**
+> (§12.3 #9).
 
 ---
 
@@ -57,8 +67,10 @@ path automatically. Never guess an address that routes user funds.
 - The `/pools` `project` slug **==** the folder name at
   `github.com/DefiLlama/yield-server/src/adaptors/{slug}/`.
 - That `index.js` *is* how DeFiLlama fetches the protocol — it shows the
-  endpoint(s) and where the on-chain address lives. It's MIT-licensed;
-  mirror the fetch logic.
+  endpoint(s) and where the on-chain address lives. **Read it as
+  documentation, not as code to copy: the repo ships no LICENSE file**
+  (verified 2026-08-19 — `LICENSE` 404, GitHub reports no license). Take the
+  endpoint and the field name from it, then write our own fetch.
 
 Verified references:
 
@@ -257,6 +269,9 @@ A family goes live **only** when all of these exist and are fork-tested:
 - [ ] Union updated in **both** files (`services/defi/unionParity.test.ts` is
       the CI guard).
 - [ ] Pinned addresses security-reviewed (§12 Q7).
+- [ ] Exit terms answerable: the chain's `readExitTerms` returns something other
+      than `unknown` for the family's kind, or the family stays Manual (§12 Q2a).
+      A lockup nobody can read is a lockup nobody consented to.
 - [ ] Runbook entry appended.
 
 Tier flags default **OFF** on both sides (`FEATURE_DEFI_EVM_TIER1..4` /
@@ -272,13 +287,61 @@ Read the reason before turning one on.
 
 | Family | Why it is off |
 |---|---|
-| `balancer-lp` | Its single-asset join needs a reviewed `BalancerQueries` deployment to price `minimumBPT`. A zero minimum is a **silent** sandwich, not a revert. |
+| `balancer-lp` (v3 only) | v2 shipped 2026-08-19. v3 has no `joinPool`/`exitPool`/`BalancerQueries` at all — liquidity moves through a Router — so v3 pools stay Manual until that path is built. The adapter refuses to build against a non-v2 Vault. |
 | `router-call` (Uniswap v3/v4) | A concentrated-liquidity position needs a tick range — a different product decision from "supply this asset". Pendle ships; Uniswap waits for that UX. |
 | `async-vault` (ERC-7540) | §7: no resolver until the two-phase request→claim flow is proven end to end. The kind, validator, adapter and claim-watcher exist; the resolver is the last piece. |
 | Convex / Aura | Boosting is a two-leg flow (acquire the LP, then stake it) that one-shot `UnsignedCall` cannot express. Ships on the Tier-4 two-phase machinery. |
 | Avalon (Aave fork) | One `Pool` per market, so there is no single address to pin. Its book is empty on purpose. |
 | Curve classic pools | `curveLp.ts:lpTokenOf` returns `target.pool`, i.e. it assumes the pool IS its LP token. True for Curve NG, false for the classic pools (3pool mints a separate ERC-20). The resolver now refuses a pool that is not its own LP token, so classic pools fail closed to Manual. Supporting them means adding `lpToken` to the shared union — a change to both repos and the parity test. |
 | Kelp, Mantle mETH, StakeWise, cbETH, LsETH, LBTC | Each needs either a caller-supplied min-out with a verified preview view, a permissionless mint that doesn't exist, or a non-EVM deposit path. Listed in `address-book/lst.ts` as `LST_VENUES_DEFERRED`. |
+
+### 11.3a Morpho Blue markets that stay Manual (by design)
+
+`morpho-blue` is registered, but the oracle-provenance gate (§12 Q6) admits only
+part of the family — measured live on 2026-08-19, 23 markets / ~$2.44B of
+supply, which is ~80% of curated TVL on Base and ~36% on Ethereum. The rest fail
+closed, and the resolver logs which check refused them. The four reasons, in
+order of how much TVL they hold:
+
+| `reason` | What it means | To widen it |
+|---|---|---|
+| `feed-not-reviewed` | The oracle reads a real feed nobody has reviewed — a protocol's own rate adapter, or an RWA/NAV feed with a 27-hour heartbeat. | Review it and add one line to `CHAINLINK_FEEDS`. That admits every market reading it. |
+| `routes-through-erc4626-vault` | The oracle prices through a vault's `convertToAssets` (e.g. sUSDS, sUSDe collateral), which is a second trust assumption on a contract the book has not vetted. | Needs a reviewed 4626 allowlist plus a decision on share-price manipulation. Not a one-liner. |
+| `not-factory-deployed` | A bespoke oracle contract, not a `MorphoChainlinkOracleV2`. Includes some large markets (USDC/USDe on Base, $352M). | Only by reviewing that specific contract. There is no generic answer here. |
+| `irm-not-allowlisted` | A market on a non-`AdaptiveCurveIRM` model. | Pin the IRM after review. |
+
+**Do not "fix" a Manual Morpho pool by loosening the gate.** Each reason above is
+a distinct risk decision; the honest Manual badge is the correct output until
+someone makes it.
+
+### 11.3b Exit terms: what "in-app" promises about getting out
+
+Badging a pool "Deposit in-app" is a claim about BOTH directions. `ExitTerms`
+(§12 Q2a) makes that claim explicit, and the EVM provider answers it per kind:
+
+| Kind | Verdict | Where it comes from |
+|---|---|---|
+| `aave-v3`, `compound-v2/v3`, `morpho-blue`, `curve-lp`, `solidly-lp`, `balancer-lp`, `router-call` | `instant` | By construction. A money market at full utilisation is an *illiquidity* problem for Layer 2, not a lockup |
+| `lst-stake` | `queued` when the venue's `exit` is `"queue"`, else `instant` | The venue book, reviewed when the venue was pinned. `dex` costs slippage, not time |
+| `async-vault` | `queued` | ERC-7540 is a request/claim machine by definition |
+| `erc4626` | probed | `supportsInterface(0x620ee8e4)` → queued; `cooldownDuration()` → delayed; else instant |
+
+**Consent is required only for lockups we did NOT already review.** A `source:
+"declared"` verdict comes from a pinned venue book, i.e. a decision taken under
+review when the venue was added (§12 Q2 ships queue-exit LSTs deposit-only on
+purpose). A `source: "onchain"` verdict was discovered at deposit time, hidden
+behind an interface nobody could distinguish from a liquid vault, and is the
+case `ExitTermsConsentCheck` exists to stop. Requiring per-deposit consent for
+the declared ones would have blocked ether.fi and Rocket Pool, which are live
+and in-app, while telling the user nothing new.
+
+**The one soft spot, stated plainly.** That final `else instant` for `erc4626`
+rests on the family allowlist, not on proof: only vaults a reviewed family
+resolver admitted ever reach it. A vault with a bespoke lockup and neither a
+7540 interface nor a `cooldownDuration()` getter would be mischaracterised as
+liquid. **If a generic "any 4626 that validates" path is ever added, that
+default MUST become `unknown` outside a reviewed family** — the comment in
+`providers/eip155.ts` says so at the line itself.
 
 ### 11.4 Adding a new CHAIN (not a protocol)
 
@@ -318,6 +381,305 @@ Two environment quirks the harness handles, both found the hard way:
 `--hardfork latest` (Osaka) fails a plain `balanceOf` against forked mainnet
 state with `EVM error OpcodeNotFound` — it pins `prague`, overridable with
 `FORK_HARDFORK`.
+
+### 11.5b Discovery: `/poolsOld` is gone, and what replaced it
+
+`https://yields.llama.fi/poolsOld` answers **HTTP 402** on the free tier
+(verified 2026-08-19). It was the only protocol-agnostic way to turn a pool UUID
+into an address, so when it went behind the paywall **seven families stopped
+resolving anything, silently** — a missing candidate is indistinguishable from
+"this pool is not ours".
+
+It is no longer registered at all unless `DEFILLAMA_PRO_API_KEY` is set. A source
+we know answers nothing does not belong in the fallback chain: it sits there
+looking like coverage.
+
+**The free replacement is `/poolsEnriched?pool=<uuid>`** (`PoolUrlCandidateSource`).
+It carries a field `/pools` does not — `url`, the protocol's own deep link — and
+for a large slice of the catalog that link contains the contract address:
+
+```
+yearn-finance   https://yearn.fi/v3/1/0xBe53A109…             → the vault
+euler-v2        https://app.euler.finance/earn/0x2C803c8C…    → the EVault
+morpho-blue     https://app.morpho.org/base/vault/0xbeef0e…   → the MetaMorpho vault
+```
+
+Measured on 2026-08-21: Euler 1/8 → 7/9, Yearn 0/13 → 4/15, Morpho +13 pools.
+
+Two ways it could hand back a wrong address, and the guards that exist:
+
+1. **A bytes32 that looks like an address.** Morpho's *market* links carry a
+   32-byte market id, and a naive `0x[0-9a-fA-F]{40}` happily matches its first
+   40 hex characters — producing a well-formed address that is not one. The
+   regex requires hex boundaries on **both** sides, so a 64-hex id matches
+   nothing rather than matching its own prefix.
+2. **A link naming several contracts.** Which one is the vault would be a guess,
+   so more than one distinct address is a refusal.
+
+It is still only a **candidate**: §12 Q7 forbids it from ever becoming a `tx.to`
+for a singleton kind, and Layer-1 validation is what admits it.
+
+**When the link is the wrong contract.** Curve LlamaLend's deep link points at
+the market's **Controller**, not its ERC-4626 vault, so all 20 candidates
+reverted on `asset()` and were refused. The fix generalises: fetch the
+protocol's own list, then **join on the thing the link does name**. Curve's API
+publishes `controllerAddress` next to the vault, so the two sources have to
+agree, and the returned address always comes from Curve. That took LlamaLend
+from 0/21 to 11/22 — with the other 11 being borrow-side rows that must never
+resolve.
+
+**Protocols whose link has no address** (Spark, Concrete, Fluid, Venus, Vesper,
+Origin) need their own source. That is §11.6, and it is the better answer anyway.
+
+### 11.5c Adding a protocol — the extraction recipe
+
+**This is the section to follow.** One protocol is one entry in
+`api/src/strategies/targets/protocols.ts`. Registration, feature-flag gating and
+the kill-switch are derived from that entry, so a protocol cannot ship
+half-wired — the mistake §11.3 warns about is now structurally impossible rather
+than documented.
+
+#### Step 0 — decide what kind of job this actually is
+
+**Extraction is not the whole job for every protocol.** A `protocols.ts` entry
+supplies an ADDRESS. It does not teach the system how to build a deposit. If the
+protocol's execution shape is one we already implement, the entry is the whole
+change; if it is not, the entry is the smallest part of it.
+
+| What you found | What it needs | Size |
+|---|---|---|
+| ERC-4626 vault, single asset | one `protocols.ts` entry (`kind: "erc4626"`) | **hours** |
+| cToken fork (Venus/Benqi/Moonwell lineage) | one entry (`kind: "compound-v2"`), Comptroller pinned | **hours** |
+| Aave-v3 fork | one entry + the `Pool` pinned per chain | **hours** |
+| Vaults with a small fixed set | one entry (`kind: "erc4626-pinned"`) + address book + drift-spec coverage | **hours** |
+| **LP / AMM position** (paired symbol) | new `DepositTarget` kind, mobile adapter, Layer-1 validator, Layer-4 decode case, Layer-5 pause read, union updated in BOTH repos, fork test | **weeks** |
+| **Dated / maturity market** (Pendle-shaped) | as above, plus expiry handling and quote staleness | **weeks** |
+| **Async / withdrawal-queue vault** | Tier-4 two-phase machinery (§7) — request → claim, pending-position state, agent copy | **not yet built** |
+| **Leveraged / borrow position** | out of scope by design (§1 non-goals) | — |
+
+`pnpm defi:dry-run --queue` tags every row with its likely shape
+(`single-asset` / `LP pair — needs kind` / `dated market`) so this decision is
+made before the work starts, not during it. The heuristic reads the pool symbol,
+so **confirm it against the protocol's own docs** — it orders the work, it does
+not decide anything.
+
+The largest entry in the queue today (`fluid-dex`, ~$16.7B) is an AMM. It is at
+the top because of TVL, and it is the one row an engineer should *not* start
+with.
+
+#### Is this an EVM protocol?
+
+**The manifest and the discovery layer are EVM-only.** `CandidateSource` returns
+`Address` (`0x${string}`), which a Sui object id or a Solana pubkey is not, so a
+non-EVM protocol declared through `protocols.ts` would resolve nothing. It fails
+loudly rather than silently — the conformance spec rejects a non-EVM execution
+kind, and `protocolApiSource` warns by name if a non-EVM chain reaches it.
+
+Non-EVM protocols resolve through their **own resolver** today
+(`scallop.resolver.ts`, `navi.resolver.ts`, `ember.resolver.ts`,
+`suilst.resolver.ts`), each calling the protocol's API directly. Copy one of
+those, not a manifest entry.
+
+What IS already chain-agnostic, and needs nothing per namespace:
+
+| Layer | Status |
+|---|---|
+| Safety pipeline (§11) | Agnostic. A chain implements `ChainSafetyProvider`; optional capabilities are presence-checked, and a namespace with no provider no-ops rather than blocking |
+| `DepositTarget` union | Agnostic. Already carries `scallop-market`, `navi-pool`, `ember-vault`, `sui-lst`, `solana-reserve` |
+| Adapter registry | Agnostic. Routes by `kind`; `pnpm check:chains` forbids namespace branches in shared code |
+| **Discovery / manifest** | **EVM-only.** Docking means widening the candidate identifier to a namespace-neutral string, never a `namespace ===` branch |
+
+#### Step 1 — find the protocol's own address source
+
+`DefiLlama/yield-server`'s `src/adaptors/<slug>/index.js` names the endpoint and
+the field the address lives in. Every adaptor just calls the protocol's public
+API; that is the map.
+
+> ⚠️ **Read it as documentation, not as code to copy.** That repo ships **no
+> LICENSE file** (verified 2026-08-19: `LICENSE` 404, GitHub reports no
+> license). Take the endpoint and the field name, then write our own fetch.
+
+#### Step 2 — cross-check the endpoint against the protocol's own docs
+
+Adding a row means treating that domain as **authoritative for where user funds
+go**. This is the one judgement no test can make for you.
+
+This is also the line that rules out aggregators. Measured 2026-08-19: searching
+Zerion for `yoUSD` returned YieldFi's `yUSD` — a different protocol's vault
+sharing the same `asset()`, which therefore **passes** `validateErc4626`.
+Coverage was 2/12 and one of the two was wrong. A protocol is authoritative
+about its own vaults; a third-party search is not (§12 Q7).
+
+#### Step 3 — write one entry
+
+```ts
+registerProtocol({
+  slug: "yo-protocol",
+  aliases: ["yo-protocol", "yo", "yo-finance"],
+  tier: "tier1",
+  execution: { kind: "erc4626" },        // picks adapter + validator
+  minTvlUsd: 250_000,                    // RPC budget, NOT a safety control
+  discovery: {
+    via: "protocol-api",
+    url: () => "https://api.yo.xyz/api/v1/vault/stats?secondary=true",
+    rows: (payload, chainId) => /* → { address, asset, symbol, name }[] */,
+  },
+});
+```
+
+The `execution.kind` options:
+
+| kind | Use when | Registers |
+|---|---|---|
+| `erc4626` | Vaults discovered per market | `Erc4626Adapter` path |
+| `erc4626-pinned` | Small, stable vault set in the address book | pinned resolver, no discovery |
+| `compound-v2` | cToken fork (Venus, Benqi, Moonwell lineage) | `CompoundV2Adapter` path |
+| `bespoke` | Identity needs custom logic; resolver lives elsewhere | discovery only |
+| `reserved` | Claim a slug so a look-alike cannot take it | a resolver that always refuses |
+
+The `discovery.via` options:
+
+| via | Use when | Notes |
+|---|---|---|
+| `protocol-api` | The API returns address **and** asset | The common case |
+| `protocol-api-addresses` | The API lists addresses but **no asset** | `asset`/`symbol`/`name` are read on chain. Concrete is the example: its payload has no asset because DeFiLlama's adaptor multicalls `asset()` itself. Never infer an asset instead |
+| `registered-source` | An on-chain registry already registered elsewhere | e.g. `compound-v2-comptroller` |
+| `source` | You need pool-level logic before the lookup | e.g. Curve LlamaLend joining on `controllerAddress` |
+
+**If DeFiLlama publishes more than one row per market**, the non-deposit rows
+must be refused **before a candidate is requested** — pass `skipPool` to the
+resolver. Curve LlamaLend emits a borrow-side row per vault whose
+`underlyingTokens` is the *collateral*, and the collateral of one market is very
+often the borrowed asset of another, so a borrow row can find a real, validating
+vault belonging to a **different** market. Letting it through and relying on
+"the candidate we happen to get is not 4626" is the same reasoning that let
+`aave-v4` route onto the v3 Pool.
+
+#### Step 4 — run the dry run
+
+```bash
+pnpm defi:dry-run --protocol <slug>          # resolved counts + a named reason per refusal
+pnpm defi:dry-run --queue                    # what is still Manual, biggest TVL first
+```
+
+The dry run also prints **discovery health**. A source marked `<< DARK`
+answered nothing at all across every lookup — which is indistinguishable from
+"these pools are not ours" unless someone looks. That is precisely how the
+`/poolsOld` outage went unnoticed, and it is not hypothetical: the Pendle entry
+above shipped with `limit=500`, the API caps it at 100 and returns HTTP 400, and
+the source yielded zero rows. It read as "Pendle has no pools of ours" until the
+health line reported `0 hits / 72 lookups`. Fixing the limit took it to **62/84**.
+
+#### Resolving is NOT shipping
+
+A green `--protocol <slug>` line means the backend can produce a validated
+target. It does **not** mean users can deposit. Between there and production:
+
+1. The family's tier + sub-flag must be on **in both repos** — a half-flagged
+   family badges "Deposit in-app" for a target the device cannot build (§8.6).
+2. Fork tests must show the calldata **the device builds** actually moves the
+   position (§11.7).
+3. Pinned addresses need **security sign-off** (§12 Q7) — the one step no test
+   replaces.
+4. A human must run it **end to end on a real device with real funds** (§12.3
+   #9).
+
+Full list: **§12.3**. Do not treat a resolved dry run as a release.
+
+#### The three signals the dry run gives you
+
+Every recurrence of a bug this system has actually had is now something the
+tooling *tells* you, rather than something you discover:
+
+**1. `!! Slugs that reached a resolver only by SUBSTRING`**
+Nobody claims the slug outright, so a family that merely looks like it answered.
+This has mis-routed funds twice — `spark-savings` → SparkLend's lending Pool,
+`aave-v4` → the Aave v3 Pool — and **both validated cleanly**. Review every row:
+if it is not the same protocol, add a `reserved` entry. Eight slugs were closed
+this way on 2026-08-21 (`sparkdex-*`, `fluid-dex`, `fluid-lite`, `velodrome-v3`,
+`beets-dex-v3`, `origin-arm`, `compound-v2`, `venus-flux`), none of which had
+resolved yet — but relying on the validator to keep catching them is relying on
+luck, which is precisely what `aave-v4` ran out of.
+
+**2. `Discovery health … << DARK`**
+A source that answered nothing across every lookup. Indistinguishable from "no
+pools of ours" unless someone looks. A protocol-API source also now warns by
+name when its endpoint returns nothing, or returns an error body with HTTP 200
+(the GraphQL case).
+
+**3. `Onboarding queue`**
+What is still Manual, biggest TVL first, with the chains and example pools. This
+is the worklist; take it top-down, but read the execution shape first — the
+largest entry (`fluid-dex`, ~$16.8B) is an AMM, not a supply-side vault, so it
+needs a new `kind`, not an extraction.
+
+#### Traps that have already cost a session each (2026-08-21)
+
+Every one of these looked like "this protocol has no coverage" and was
+something else. Check them before concluding a protocol cannot be onboarded.
+
+**It answers `symbol()` but it is not ERC-4626.** Vesper's `VPool` reverts on
+`asset()`, `totalAssets()`, `maxDeposit()` and `convertToShares()` and answers
+`token()` instead — the older `deposit(uint256)` / `withdraw(uint256)` shape.
+Discovery found the right vault for 4 of 7 pools and the validator refused every
+one, exactly as designed. Unlocking it needs a `vault-v2` execution kind, not a
+discovery fix. **Probe `asset()` on one vault before writing the entry.**
+
+**It is 4626 and a deposit still reverts.** Maple's `syrupUSDC`/`syrupUSDT` pass
+every structural check and return `maxDeposit == 0` for anyone not allowlisted,
+because the pools are permissioned. `validateErc4626` now probes `maxDeposit`
+with an ordinary address and refuses a hard zero — a supply-capped vault is
+caught by the same check, and correctly so, since the deposit really would fail.
+
+**A bespoke resolver's own fetch is invisible to discovery health.** Those
+counters only track registered `CandidateSource`s. `ydaemon.yearn.fi` publishes
+a NAT64 `AAAA` record that Node's happy-eyeballs fails against while `curl`
+succeeds; the fetch threw, the catch returned `[]`, and Yearn resolved 0/13 with
+no signal anywhere. An empty registry now warns once, by name. If you add a
+resolver that fetches its own list, warn on empty — do not rely on the health
+table seeing it.
+
+**DeFiLlama's `underlyingTokens` can disagree with the contract's `asset()`.**
+Fluid Lite's ETH vault (~$170M) is real 4626 whose `asset()` is **stETH**, while
+DeFiLlama publishes the native sentinel normalised to the zero address. Origin
+is the same shape: `origin-ether` says `0x0` and `origin-dollar` says USDC,
+while the deposit Origin wants is a Vault `mint(asset, amount, minimumAmount)`.
+Both stay Manual, correctly. When a pool refuses despite an obviously right
+vault, compare the row's underlying against `asset()` before assuming a bug.
+
+**Ambiguity is often DeFiLlama's, not yours.** Curve LlamaLend labels two
+distinct crvUSD markets `"sfrxUSD collateral"`, and IPOR ships two Base vaults
+both named `"TAU cbETH Dynamic Looping"`. Fuzzy matching cannot fix a
+non-unique label — find an exact key (LlamaLend joins on `controllerAddress`)
+or accept the refusal. Do not loosen the uniqueness rule.
+
+#### What you do NOT have to remember
+
+The safety layers are not opt-in, so a wrong entry degrades rather than
+endangers:
+
+- a resolver that cannot be confident returns `null` → **Manual**
+- `validateTarget` has **no** `default: return true` for EVM kinds, so a kind
+  without a validator is rejected rather than trusted
+- `matchVault` refuses to pick between siblings; ambiguity is a refusal
+- the deposit-time safety pipeline (§11) runs regardless
+- `protocol-manifest.spec.ts` fails CI on a duplicate slug, an alias two
+  protocols both claim, an execution kind with no target kind, a non-pinned
+  protocol with no discovery, or a withheld entry with no stated reason
+
+**The worst outcome of a bad entry here is a pool that stays Manual.** Not funds
+sent somewhere they should not go.
+
+#### Reserved slugs, and why they exist
+
+Found by the dry run on 2026-08-21: nothing claimed `aave-v4` exactly, so the
+registry's substring fallback matched `aave` and every v4 pool resolved to the
+**Aave v3 Pool** — and validated, because wstETH, WBTC and weETH are genuinely
+listed v3 reserves. Five pools, ~$168M, all silently pointing at the wrong
+protocol version. An exact claimant beats a substring one, so
+`execution: { kind: "reserved" }` is the fix that uses the existing rule instead
+of special-casing it. Reach for it whenever a protocol ships a new major version
+we do not support yet.
 
 ### 11.6 Candidate addresses come from the protocol, not an aggregator
 
@@ -458,11 +820,38 @@ ordered so that failing an earlier one makes a later one meaningless.
 | 6 | The family has no open blocker | Not listed in §11.2's deliberately-off table | Engineer |
 | 7 | Exit path is honest | A queue/DEX-exit venue must not offer an in-app withdraw (§12 Q2) | Product + Engineer |
 | 8 | Ops can turn it off | `DEFI_FAMILY_KILL_SWITCH` understood and reachable without a deploy | Ops |
+| 9 | **A human ran it end to end** | See below | **Engineer + Product** |
 
 Requirement 5 is the one that cannot be automated and the one most likely to be
 skipped. A green fork test proves the bytes are right; it says nothing about
 whether the address they are sent to is the contract we believe it is. Only a
 human comparing the book against the protocol's own documentation closes that.
+
+#### Requirement 9 — the end-to-end human test
+
+Automated coverage stops at "the bytes are right". Nobody has confirmed a USER
+can complete the journey until a person does it on a real build, on mainnet,
+with their own funds. Small amounts, but real ones: a testnet fork cannot
+reproduce a paused market, a fee-on-transfer token, an approval that needs
+resetting to zero, or a wallet that simply has no gas.
+
+Run the whole loop for at least one pool in the family:
+
+- [ ] The pool appears with the **"Deposit in-app"** badge, not Manual
+- [ ] The approval card states the **real facts** — amount, asset, protocol,
+      chain — and for a non-instant exit, the **lockup** (§12 Q2a). Facts come
+      from tool args, never model prose
+- [ ] Deposit succeeds and the transaction confirms
+- [ ] The **position appears** with a sane value and APY, and survives an app
+      restart
+- [ ] **Partial withdraw** returns funds to the wallet
+- [ ] **`"MAX"` withdraw** empties the position, dust ≈ 0
+- [ ] A queue/DEX-exit venue **refuses** the in-app withdraw with honest copy
+      rather than failing (§12 Q2)
+- [ ] Nothing in the UI shows raw error text at any point (see CLAUDE.md)
+
+Record who ran it, on which chain, with which pool, and the two transaction
+hashes. "The fork test was green" is not an answer to requirement 9.
 
 ### 12.4 What is still blocking, as of the last review
 
