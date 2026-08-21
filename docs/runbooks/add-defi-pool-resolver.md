@@ -303,7 +303,7 @@ Read the reason before turning one on.
 | Convex / Aura | Boosting is a two-leg flow (acquire the LP, then stake it) that one-shot `UnsignedCall` cannot express. Ships on the Tier-4 two-phase machinery. |
 | Avalon (Aave fork) | One `Pool` per market, so there is no single address to pin. Its book is empty on purpose. |
 | Curve classic pools | `curveLp.ts:lpTokenOf` returns `target.pool`, i.e. it assumes the pool IS its LP token. True for Curve NG, false for the classic pools (3pool mints a separate ERC-20). The resolver now refuses a pool that is not its own LP token, so classic pools fail closed to Manual. Supporting them means adding `lpToken` to the shared union — a change to both repos and the parity test. |
-| Kelp, Mantle mETH, StakeWise, cbETH, LsETH, LBTC | Each needs either a caller-supplied min-out with a verified preview view, a permissionless mint that doesn't exist, or a non-EVM deposit path. Listed in `address-book/lst.ts` as `LST_VENUES_DEFERRED`. |
+| StakeWise, cbETH, LsETH, LBTC, Renzo | Each needs either a permissionless mint that does not exist (cbETH), a KYC-gated one (LsETH), a Bitcoin-side flow (LBTC), a per-vault entry contract that wants its own resolver (StakeWise), or an unreviewed dual-overload stake plus a mint cap (Renzo). Listed in `address-book/lst.ts` as `LST_VENUES_DEFERRED`. **Kelp and Mantle mETH have SHIPPED** — both were min-out venues, and in both cases the blocker turned out to be having a quote to floor against, not the min-out itself. |
 
 ### 11.3a Morpho Blue markets that stay Manual (by design)
 
@@ -397,6 +397,54 @@ Two environment quirks the harness handles, both found the hard way:
 `--hardfork latest` (Osaka) fails a plain `balanceOf` against forked mainnet
 state with `EVM error OpcodeNotFound` — it pins `prague`, overridable with
 `FORK_HARDFORK`.
+
+#### The tooling itself was lying, until 2026-08-21
+
+Three of the four tools above reach the network, and only the API server had
+the outbound-network settings that make that reliable. Fixed in
+`api/src/config/egress-network.ts`, which all three now import. Read this before
+concluding a protocol has no coverage, because every symptom below looks
+exactly like "this protocol is not ours".
+
+**1. Node abandons a healthy IPv4 connection.** `ydaemon.yearn.fi` is answered
+by a DNS64 resolver with both an A record and a NAT64 `AAAA`. The IPv6 form is
+`ENETUNREACH` here, and the IPv4 handshake takes **364ms** — longer than Node's
+`autoSelectFamilyAttemptTimeout`, which defaults to **250ms**. So happy-eyeballs
+drops the good address mid-flight, `fetch` throws, every resolver swallows it as
+"no candidate", and the pool degrades to Manual. **`curl` succeeds throughout**,
+which is why this reads as the remote API being down. Yearn went **0/30 → 6/30**
+with no resolver change; the full run went 397 → 408.
+
+`main.ts` had carried the fix since an earlier incident. The dry run and the
+jest processes did not, because neither boots through `main.ts` — the fix was
+one file away from the tools whose entire job is to tell you the truth.
+
+**2. Jest had no environment at all.** There is no `--env-file` for jest, so
+networked specs saw no credentials. The address-book drift check was reporting
+`checked something: 0` — not "no endpoints", but "no `.env`". Note that
+`process.loadEnvFile()` **cannot** fix this and fails silently when tried: it is
+a native binding that writes to the real process env, while jest hands each test
+file a copy. Parse and assign instead (`config/jest-setup.ts`).
+
+**3. The drift check could not reach our own RPC.** Its only endpoint mechanism
+was `STRATEGIES_RPC_URL_<chainId>`, a bare URL — and this repo's `rpc-proxy`
+authenticates with a **Bearer header**, which a URL cannot carry. Following the
+runbook therefore meant going and finding public endpoints first, which is a
+large part of why the check "is not scheduled anywhere" (§12.4) and why its
+first-ever run was during the security sign-off. It now defaults to Alchemy:
+one key already in `.env`, all ten pinned chains.
+
+**That includes chains with no `Blockchain` row (56, 43114).** A pin has to be
+verifiable *before* its chain is seeded, or the addresses go live unreviewed on
+the day someone adds the row. First real run: 73s of on-chain reads, **zero
+drift** — the first independent confirmation that the 2026-08-21 sign-off holds.
+
+**4. A permanently-red check is a disabled check.** The `/poolsOld` drift tests
+asserted free-tier reachability, which has been HTTP 402 since 2026-08-19 for a
+source we do not register without `DEFILLAMA_PRO_API_KEY`. They are now gated on
+that key. A suite that is always red about something deliberate is exactly the
+"trains people to ignore red" failure this section warns about, and it would
+have buried a real drift in a family we do use.
 
 ### 11.5b Discovery: `/poolsOld` is gone, and what replaced it
 
@@ -778,6 +826,7 @@ Anyone re-running this should read the refusals before repeating the work.
 | `forty-acres` (~$7.2M Base) | `erc4626-pinned` | four constants in the adaptor |
 | `lista-lending` (3 Ethereum vaults) | `erc4626` + `protocol-api` | `api.lista.org/api/moolah/vault/list` |
 | `meth-protocol` (~$562M) | `lst-stake`, new `payable-stake-minout` shape | DeFiLlama's own `stakingAbi.json`, verified on chain |
+| `kelp` (~$1.10B) | `lst-stake`, new `payable-deposit-eth-minout-referral` shape | Kelp's own registry, walked on chain: `pool.lrtConfig()` → `getContract(keccak("LRT_ORACLE"))` |
 
 Lido had been Manual the whole time for a reason worth naming: the device has
 shipped a complete Lido adapter (`services/defi/adapters/lido.ts`, submit +
@@ -813,6 +862,29 @@ Maple's syrup pools, every one of Morpho's 80 Vault V2s, and the $324.9M
 conforming, correctly-identified vault refuses, check `maxDeposit(<any
 address>)` before assuming the resolver is at fault — a permissioned or capped
 vault is a correct Manual, not a miss.
+
+#### Sky, measured 2026-08-21: 2/14, and twelve correct refusals
+
+`sky-lending` reads like a large gap and is very nearly not one. Recorded per
+row so nobody re-derives it:
+
+| Rows | Why they refuse | Verdict |
+|---|---|---|
+| ETH-A/B/C, WSTETH-A/B, WBTC-A/C (7 rows, ~$1.7B) | Maker **ilks** — CDP collateral types. The `underlyingTokens` is what you LOCK to borrow USDS, not something you supply for yield | Correct. Leveraged/borrow positions are a §1 non-goal |
+| SKY Staking Engine (~$638M) | A different product; not a 4626 supply vault | Correct |
+| Arbitrum + OP `sUSDS` (~$367M) | **Verified on chain**: answers `symbol()` → `"sUSDS"` and REVERTS on `asset()`, `totalAssets()`, `convertToShares()`, `maxDeposit()`. A bridged token, 160 bytes of code | Correct — and the exact §11.5c trap ("answers `symbol()` but is not 4626") |
+| USDS "GROVE Farming Pool" (~$166M) | Its deep link names `0x4E41488C…`, whose `stakingToken()` is USDS and `rewardsToken()` is GROVE — a **Synthetix-style rewards farm**, not a vault. `asset()`/`totalAssets()` revert | Correct. A farm is `stake`/`getReward`, a different kind |
+| STUSDS "Expert Mode" (~$204M) | The only genuine gap. Its link (`widget=expert&expert_module=stusds`) carries **no address at all**, so no candidate can be requested | Open — needs Sky's own address source |
+
+Two things generalise. The GROVE row is another **"the link is the wrong
+contract"** case (§11.5b): the deep link is real, official, and points at a
+farm. Only Layer-1 validation stops it becoming a `tx.to`.
+
+And the ilk rows are refused today only because the `sky` book happens to pin no
+WETH/WBTC vault — `pinnedVaultResolver` has no `skipPool`. That is the
+`aave-v4` reasoning exactly: it holds until someone pins a vault for one of
+those assets, at which point a **borrow-side row would resolve into a supply
+vault**. Worth closing before it bites.
 
 #### What the fork run changed (and why the dry run was not enough)
 
@@ -926,6 +998,18 @@ the same API that serves its 11 BNB ones. Optimism is the same story for the
 40 Acres OP vault. Per §11.1 those are a seeded row plus an rpc-proxy route,
 and the resolvers light up with no further code change.
 
+> **Re-confirmed 2026-08-21, because this keeps being read as a worklist.**
+> `venus-core-pool` (0/23, ~$1.23B), `benqi-lending` (0/5), `benqi-staked-avax`,
+> `lista-cdp`, `lista-liquid-staking` and the BSC/Avalanche `aave-v3` rows need
+> **no resolver, no adapter and no address**. Venus's BSC Comptroller
+> (`0xfD36E2c2…`), Benqi's Avalanche Comptroller (`0x486Af395…`) and both Aave
+> v3 Pools are already pinned and reviewed; `VenusResolver`, `Venus4626Resolver`
+> and `BenqiLendingResolver` are all registered and claim the slugs exactly.
+> There is nothing to build. Seed the two rows and they resolve.
+>
+> As of the drift fix above, those pins are also **verified on chain every drift
+> run**, ahead of the seed rather than after it.
+
 ### 11.6b Morpho: measured 2026-08-21, and a live mis-route found
 
 Two things were established by measurement rather than reasoning, and both
@@ -1022,11 +1106,18 @@ outright, and a pool with NO link still falls back to labels — that last one
 matters, because "no address available" and "an address that contradicts the
 label" are different situations and only the second is a refusal.
 
-**Still to do: re-measure.** The 25/69 figure was taken with two experimental
-matching tweaks in the tree that were later reverted, and DeFiLlama was
-rate-limiting when the fix landed, so the post-fix count is not yet confirmed.
-Run `pnpm defi:dry-run --protocol morpho-blue --min-tvl 1000000` and record the
-real number here.
+**Re-measured 2026-08-21 (post-fix): 53 resolved of 330 rows at TVL ≥ $1M**,
+of which ~291 are on chains the directory can reach (Ethereum 207, Base 54,
+Monad 17, Arbitrum 12, Polygon 1; the rest are Katana / Hyperliquid / Robinhood
+/ Tempo / Stable / OP, which have no `Blockchain` row). The prediction above
+was "~69 down to ~44", so the address-first reorder cost less coverage than
+expected while doing what it was for. The feed also grew — the earlier
+measurement saw 273 reachable rows against ~291 now — so the two counts are
+close but not the same denominator.
+
+Do not read the ~277 refusals as a backlog. The four §11.3a oracle reasons, the
+80 caller-gated Vault V2s and the `maxDeposit == 0` gate account for the bulk
+of them, and each is a decision rather than a gap.
 
 #### Two matching changes that were tried and REVERTED
 
@@ -1078,8 +1169,34 @@ Three things a future min-out venue should copy:
   stake in the adapter costs the user nothing; letting it reach the chain costs
   them gas for a guaranteed revert.
 
-Kelp rsETH is the same shape and stays deferred purely because its preview view
-has not been confirmed on chain. Confirm it and Kelp is a config row.
+**Kelp rsETH shipped on 2026-08-21 and it was not quite a config row.** The
+preview view confirmed immediately — `getRsETHAmountToMint(0xEeee…, 1e18)`
+reads 927271688944689890, and `getTotalAssetDeposits` matches DeFiLlama's TVL —
+but two things made it a new shape rather than a reuse of `payable-stake-minout`:
+
+- the referral is a **string**, not an address, so the calldata is head+tail
+  encoded and the min-out is the first word rather than the only one;
+- the preview view takes `(address asset, uint256 amount)`, and the asset it
+  wants is the `0xEeee…` **native sentinel** — the zero address reverts
+  (`0x762798e1`). A mocked unit test would never have shown that.
+
+Both are declared as config (`previewTakesAsset`, and a `MIN_OUT_STAKE_SHAPES`
+set) rather than branched on, for the reason the `getPooledAvaxByShares`
+name-branch already taught: a literal comparison is correct right up until a
+second venue shares the convention. **Generalise the moment there are two.**
+Missing one of those sets is quiet in the worst way — `buildDeposit` builds
+with `minOut: undefined`, the encoder refuses, and a correctly configured venue
+looks broken. The fork run caught it; nothing else would have.
+
+**Its valuation view is the trap worth copying down.** `getRsETHAmountToMint`
+is the MINT direction. Using it as the rate view would have been backwards
+*and* the wrong arity, so it would have reverted, been swallowed by the
+existing `.catch(() => null)`, and silently valued 1 rsETH as 1 ETH — a ~7.8%
+understatement with nothing anywhere to flag it. The right view is the
+LRTOracle's `rsETHPrice()`, which reads 1.078433, **exactly the inverse of the
+mint quote** — that inversion is the check that proves it is the rate. When a
+venue's rate view lives on neither the entry nor the receipt, pin it
+(`rateViewAt`) rather than reaching for whatever view the entry does expose.
 
 **One name-branch removed on the way.** `lstStake.ts` decided whether a rate
 view took an argument by comparing it to the literal string
@@ -1091,7 +1208,7 @@ a declared `rateTakesAmount`, with `rateViewOn` alongside it because
 
 ### 11.7 Fork-test status
 
-**27 cases, all passing** (2026-08-21). Tiers 1-3 run at `FORK_BLOCKS`
+**30 cases, all passing** (2026-08-21) — 27 plus Kelp's three. Tiers 1-3 run at `FORK_BLOCKS`
 (Ethereum 23,000,000 / Base 28,000,000); the onboarding suite runs at the
 near-head `FORK_BLOCKS_RECENT` because two of its vaults did not exist at the
 older pin. What each tier proved:
@@ -1103,6 +1220,7 @@ older pin. What each tier proved:
 | 3 | Rocket Pool and ether.fi stake ETH and receive their receipt with NO approval; a queue-exit venue REFUSES an in-app withdraw (§12 Q2); an unpinned venue key refuses; Aerodrome's two-sided add emits BOTH approvals, each scoped to the router and never infinite |
 | Onboarding (§11.6a) | Lido's new `payable-submit-referral` encoder stakes ETH and mints stETH with no approval, and refuses a queue exit; the pinned Avantis and 40 Acres vaults and two Auto Finance autopools round-trip within a MEASURED fee band; Avant deposits and then **cannot** be exited — `redeem()` reverts under cooldown, which is what withheld it |
 | mETH min-out | `stake(minMETHAmount)` mints mETH against a floor the tier policy computed from `ethToMETH`, asserted non-zero **from the calldata** rather than from the helper that built it, and the contract honours at least that minimum; a sub-`minimumStakeBound` stake is refused before it reaches the chain |
+| Kelp min-out | `depositETH(minOut, "")` stakes ETH and mints rsETH with no approval, against a floor read from `getRsETHAmountToMint` and asserted from the calldata; a sub-`minAmountToDeposit` stake is refused before the chain, and the **`MAX` withdraw is refused** because the exit is a queue (§12 Q2) — the assertion that would have caught Avant |
 
 Passing here is necessary, not sufficient. It says the bytes are right and the
 position moves. It does not say the pinned addresses have been reviewed (§12 Q7)
