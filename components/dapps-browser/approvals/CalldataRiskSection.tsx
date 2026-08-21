@@ -17,8 +17,9 @@
 
 import React from "react";
 import { Text, View } from "react-native";
-import { formatUnits } from "viem";
+import { formatUnits, toHex } from "viem";
 import type { DecodedCalldata } from "@/services/decoders/calldata";
+import { formatRawUint256 } from "@/services/decoders/calldata";
 
 // TWV-2026-009 — user-visible copy for the high-risk calldata variants.
 // Keep the sentences identical to the spec so reviewers can grep for
@@ -92,6 +93,19 @@ interface Props {
    * home-screen wallet or chain.
    */
   contractAddress?: `0x${string}`;
+  /**
+   * Render the supporting fact rows (spender, amount, operator, scope)
+   * inside the banner.
+   *
+   * Default `true`, which is what a surface with nowhere else to put
+   * them needs — `EvmBatchCallsSheet` renders one banner per call and
+   * has no grouped detail cards of its own. `EvmTransactionSheet` sets
+   * it `false`: its "Estimated changes" and "Advanced details" cards
+   * already carry every one of these fields, and a warning that repeats
+   * the same spender and amount a third time reads as noise, which is
+   * how a warning stops being read at all.
+   */
+  factRows?: boolean;
 }
 
 function Row({
@@ -123,6 +137,7 @@ function Row({
 export function CalldataRiskSection({
   decoded,
   contractAddress,
+  factRows = true,
 }: Props): React.ReactElement | null {
   const risk = decoded?.risk;
   if (!risk) return null;
@@ -130,16 +145,20 @@ export function CalldataRiskSection({
   if (risk.kind === "setApprovalForAll") {
     if (!risk.approved) return null;
     return (
-      <View className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3">
+      <View className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-3">
         <Text className="text-xs font-bold text-red-800 uppercase">
           High risk: grants control of entire collection
         </Text>
         <Text className="text-sm text-red-900 mt-1">
           {SET_APPROVAL_FOR_ALL_COPY}
         </Text>
-        <Row label="Operator" value={risk.operator} tone="red" />
-        {contractAddress && (
-          <Row label="Collection" value={contractAddress} tone="red" />
+        {factRows && (
+          <>
+            <Row label="Operator" value={risk.operator} tone="red" />
+            {contractAddress && (
+              <Row label="Collection" value={contractAddress} tone="red" />
+            )}
+          </>
         )}
       </View>
     );
@@ -148,51 +167,77 @@ export function CalldataRiskSection({
   if (risk.kind === "delegate") {
     if (!risk.enabled) return null;
     return (
-      <View className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3">
+      <View className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-3">
         <Text className="text-xs font-bold text-red-800 uppercase">
           High risk: grants standing rights over your NFTs
         </Text>
         <Text className="text-sm text-red-900 mt-1">{DELEGATE_COPY}</Text>
-        <Row label="Delegate" value={risk.delegate} tone="red" />
-        <Row
-          label="Scope"
-          value={
-            risk.scope === "all"
-              ? "Everything in this wallet"
-              : risk.scope === "contract"
-                ? `One collection: ${risk.contract ?? "unknown"}`
-                : `One item: ${risk.tokenId?.toString() ?? "unknown"}`
-          }
-          tone="red"
-        />
+        {factRows && (
+          <>
+            <Row label="Delegate" value={risk.delegate} tone="red" />
+            <Row
+              label="Scope"
+              value={
+                risk.scope === "all"
+                  ? "Everything in this wallet"
+                  : risk.scope === "contract"
+                    ? `One collection: ${risk.contract ?? "unknown"}`
+                    : `One item: ${risk.tokenId?.toString() ?? "unknown"}`
+              }
+              tone="red"
+            />
+          </>
+        )}
       </View>
     );
   }
 
   if (risk.kind === "approveNft") {
     return (
-      <View className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3">
+      <View className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-3">
         <Text className="text-xs font-bold text-amber-900 uppercase">
           Approves one item
         </Text>
         <Text className="text-sm text-amber-900 mt-1">{APPROVE_NFT_COPY}</Text>
-        <Row label="Operator" value={risk.operator} tone="amber" />
-        <Row label="Item" value={`#${risk.tokenId.toString()}`} tone="amber" />
+        {factRows && (
+          <>
+            <Row label="Operator" value={risk.operator} tone="amber" />
+            <Row
+              label="Item"
+              value={`#${risk.tokenId.toString()}`}
+              tone="amber"
+            />
+          </>
+        )}
       </View>
     );
   }
 
   if (risk.kind === "approveUnknownAsset") {
     return (
-      <View className="bg-amber-50 border border-amber-300 rounded-xl p-3 mb-3">
+      <View className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-3">
         <Text className="text-xs font-bold text-amber-900 uppercase">
           Approval, details unconfirmed
         </Text>
         <Text className="text-sm text-amber-900 mt-1">
           {APPROVE_UNKNOWN_COPY}
         </Text>
-        <Row label="Spender" value={risk.spender} tone="amber" />
-        <Row label="Value" value={risk.value.toString()} tone="amber" />
+        {factRows && (
+          <>
+            <Row label="Spender" value={risk.spender} tone="amber" />
+            <Row
+              label="Value"
+              value={formatRawUint256(risk.value)}
+              tone="amber"
+            />
+            <Row
+              label="Value (raw units)"
+              value={risk.value.toString()}
+              tone="amber"
+            />
+            <Row label="Value (hex)" value={toHex(risk.value)} tone="amber" />
+          </>
+        )}
         {risk.looksUnlimited && (
           <Text className="text-sm text-red-900 mt-2 font-semibold">
             {APPROVE_UNKNOWN_UNLIMITED_COPY}
@@ -214,10 +259,10 @@ export function CalldataRiskSection({
       const certain = risk.unlimitedBasis === "supply";
       return (
         <View
-          className={`border rounded-xl p-3 mb-3 ${
+          className={`border rounded-2xl p-4 mb-3 ${
             certain
-              ? "bg-red-50 border-red-300"
-              : "bg-amber-50 border-amber-300"
+              ? "bg-red-50 border-red-200"
+              : "bg-amber-50 border-amber-200"
           }`}
         >
           <Text
@@ -234,48 +279,58 @@ export function CalldataRiskSection({
           >
             {certain ? UNLIMITED_APPROVE_COPY : LOOKS_UNLIMITED_APPROVE_COPY}
           </Text>
-          <Row
-            label="Spender"
-            value={risk.spender}
-            tone={certain ? "red" : "amber"}
-          />
-          {contractAddress && (
-            <Row
-              label="Token"
-              value={contractAddress}
-              tone={certain ? "red" : "amber"}
-            />
-          )}
-          {risk.decimals !== undefined && (
-            <Row
-              label="Amount"
-              value={formatTokenAmount(risk.amount, risk.decimals)}
-              tone={certain ? "red" : "amber"}
-            />
+          {factRows && (
+            <>
+              <Row
+                label="Spender"
+                value={risk.spender}
+                tone={certain ? "red" : "amber"}
+              />
+              {contractAddress && (
+                <Row
+                  label="Token"
+                  value={contractAddress}
+                  tone={certain ? "red" : "amber"}
+                />
+              )}
+              {risk.decimals !== undefined && (
+                <Row
+                  label="Amount"
+                  value={formatRawUint256(risk.amount)}
+                  tone={certain ? "red" : "amber"}
+                />
+              )}
+            </>
           )}
         </View>
       );
     }
     // Bounded, and we know the scale. Neutral by design: this is not a
-    // warning, it is the number the user came to check.
-    if (risk.decimals !== undefined) {
+    // warning, it is the number the user came to check — so when the
+    // host sheet already shows that number in its own spending-cap row,
+    // this card is pure duplication and steps aside entirely.
+    if (risk.decimals !== undefined && factRows) {
       return (
-        <View className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-3">
-          <Text className="text-xs font-semibold text-gray-700 uppercase">
+        <View className="bg-white border border-gray-100 rounded-2xl p-4 mb-3">
+          <Text className="text-xs font-semibold text-light-matte-black/50 uppercase tracking-wider">
             Token approval
           </Text>
-          <Text className="text-sm text-gray-800 mt-1">
+          <Text className="text-sm text-light-matte-black/70 mt-1">
             {BOUNDED_APPROVE_COPY}
           </Text>
           <View className="flex-row mt-1">
-            <Text className="text-xs text-gray-500 w-20">Amount</Text>
-            <Text className="text-xs text-gray-900 flex-1" selectable>
+            <Text className="text-xs text-light-matte-black/50 w-20">
+              Amount
+            </Text>
+            <Text className="text-xs text-light-matte-black flex-1" selectable>
               {formatTokenAmount(risk.amount, risk.decimals)}
             </Text>
           </View>
           <View className="flex-row mt-1">
-            <Text className="text-xs text-gray-500 w-20">Spender</Text>
-            <Text className="text-xs text-gray-900 flex-1" selectable>
+            <Text className="text-xs text-light-matte-black/50 w-20">
+              Spender
+            </Text>
+            <Text className="text-xs text-light-matte-black flex-1" selectable>
               {risk.spender}
             </Text>
           </View>

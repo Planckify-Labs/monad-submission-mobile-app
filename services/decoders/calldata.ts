@@ -293,6 +293,73 @@ export interface DecodeCalldataOptions {
 const UINT256_MAX = (1n << 256n) - 1n;
 const UNLIMITED_APPROVE_THRESHOLD = UINT256_MAX / 2n;
 
+/**
+ * Human-readable rendering of a raw uint256 that may not have known
+ * decimals (contract type unconfirmed, so it can't be scaled). At/above
+ * the unlimited-allowance threshold, decimals stop mattering: 2^255 raw
+ * units is astronomically larger than any real token supply at any
+ * decimal scale, so the honest, readable answer is the word
+ * "Unlimited" rather than a 78-digit wall of digits nobody can evaluate
+ * at a glance. Below the threshold, digits are comma-grouped so
+ * magnitude is at least scannable.
+ */
+export function formatRawUint256(value: bigint): string {
+  if (value >= UNLIMITED_APPROVE_THRESHOLD) return "Unlimited";
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+/**
+ * The token-allowance facts of an `approve`-shaped call, flattened out
+ * of the risk union.
+ *
+ * Shared so a caller that needs "who is being approved, for how much"
+ * (the spending-cap row, the re-encode behind a custom cap) doesn't
+ * re-derive the risk-kind union `CalldataRiskSection` owns. Both EVM
+ * sheets are enforced (`walletStandardsRound2.test.ts`) to keep
+ * risk-kind branching in that one component, never inline in a sheet,
+ * so this is the supported way to read those fields from anywhere else.
+ *
+ * Returns `null` for every non-`approve` shape, including NFT approvals
+ * (`approveNft`), whose second argument is a token id rather than an
+ * amount and must never be rendered or edited as one.
+ */
+export interface ApproveRiskSummary {
+  spender: `0x${string}`;
+  /** Raw base units, exactly as encoded in the calldata. */
+  amount: bigint;
+  /** `undefined` when the contract type could not be confirmed. */
+  decimals?: number;
+  /** The wallet is confident this behaves as an unlimited allowance. */
+  unlimited: boolean;
+  /** The contract could not be typed, so the value may not be an amount. */
+  assetUnconfirmed: boolean;
+}
+
+export function approveRiskSummary(
+  decoded: DecodedCalldata | null | undefined,
+): ApproveRiskSummary | null {
+  const risk = decoded?.risk;
+  if (risk?.kind === "approve") {
+    return {
+      spender: risk.spender,
+      amount: risk.amount,
+      decimals: risk.decimals,
+      unlimited: risk.isUnlimited,
+      assetUnconfirmed: false,
+    };
+  }
+  if (risk?.kind === "approveUnknownAsset") {
+    return {
+      spender: risk.spender,
+      amount: risk.value,
+      decimals: undefined,
+      unlimited: risk.looksUnlimited,
+      assetUnconfirmed: true,
+    };
+  }
+  return null;
+}
+
 /** delegate.xyz function name → grant scope. */
 const DELEGATE_SCOPES: Record<string, "all" | "contract" | "token"> = {
   delegateForAll: "all",

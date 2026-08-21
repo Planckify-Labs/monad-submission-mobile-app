@@ -24,6 +24,23 @@ export interface Erc7730FieldSpec {
   param: string;
   /** Human label rendered next to the interpolated value. */
   label: string;
+  /**
+   * Render a bigint param for humans rather than as bare digits:
+   * "Unlimited" once the value is at or above the unlimited-allowance
+   * threshold (decimals are unknown at this layer so it cannot be
+   * scaled, but at that magnitude decimals stop mattering anyway),
+   * otherwise the same digits comma-grouped so the magnitude is
+   * scannable.
+   *
+   * The label keeps its "(raw units)" qualifier either way. Grouping
+   * `1000000` into `1,000,000` makes it readable, not scaled, and a
+   * six-decimal token would make that same number mean one — dropping
+   * the qualifier here would turn a legibility aid into a wrong claim.
+   *
+   * Exact digits and the hex form are not this card's job; the sheet's
+   * technical drawer carries both, unmodified.
+   */
+  encoding?: "readable";
 }
 
 export interface Erc7730CalldataEntry {
@@ -64,7 +81,7 @@ export const ERC7730_SNAPSHOT: readonly Erc7730SnapshotEntry[] = [
     intent: "Transfer",
     fields: [
       { param: "to", label: "To" },
-      { param: "value", label: "Amount (raw units)" },
+      { param: "value", label: "Amount (raw units)", encoding: "readable" },
     ],
     deployments: null,
   },
@@ -74,7 +91,7 @@ export const ERC7730_SNAPSHOT: readonly Erc7730SnapshotEntry[] = [
     intent: "Approve spending",
     fields: [
       { param: "spender", label: "Spender" },
-      { param: "value", label: "Allowance (raw units)" },
+      { param: "value", label: "Allowance (raw units)", encoding: "readable" },
     ],
     deployments: null,
   },
@@ -85,7 +102,7 @@ export const ERC7730_SNAPSHOT: readonly Erc7730SnapshotEntry[] = [
     fields: [
       { param: "from", label: "From" },
       { param: "to", label: "To" },
-      { param: "value", label: "Amount (raw units)" },
+      { param: "value", label: "Amount (raw units)", encoding: "readable" },
     ],
     deployments: null,
   },
@@ -128,7 +145,7 @@ export const ERC7730_SNAPSHOT: readonly Erc7730SnapshotEntry[] = [
     kind: "calldata",
     format: "withdraw(uint256 wad)",
     intent: "Unwrap WETH",
-    fields: [{ param: "wad", label: "Amount (wei)" }],
+    fields: [{ param: "wad", label: "Amount (wei)", encoding: "readable" }],
     deployments: [
       { chainId: 1, address: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2" },
       { chainId: 8453, address: "0x4200000000000000000000000000000000000006" },
@@ -144,7 +161,7 @@ export const ERC7730_SNAPSHOT: readonly Erc7730SnapshotEntry[] = [
     fields: [
       { param: "owner", label: "Owner" },
       { param: "spender", label: "Spender" },
-      { param: "value", label: "Allowance (raw units)" },
+      { param: "value", label: "Allowance (raw units)", encoding: "readable" },
       { param: "deadline", label: "Deadline (unix)" },
     ],
     deployments: null,

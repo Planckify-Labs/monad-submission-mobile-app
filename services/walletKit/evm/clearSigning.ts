@@ -36,7 +36,10 @@ import {
   toBytes,
   toFunctionSelector,
 } from "viem";
-import { decodeCalldataAgainst } from "../../decoders/calldata.ts";
+import {
+  decodeCalldataAgainst,
+  formatRawUint256,
+} from "../../decoders/calldata.ts";
 import type {
   ClearSigningDescriptor,
   ComputeSigningDigestArgs,
@@ -94,13 +97,19 @@ function interpolateFields(
   for (const spec of specs) {
     const value = lookup(spec.param);
     if (value === undefined) return null; // interpolation failed
-    fields.push({ label: spec.label, value: formatFieldValue(value) });
+    fields.push({
+      label: spec.label,
+      value: formatFieldValue(value, spec.encoding),
+    });
   }
   return fields;
 }
 
-function formatFieldValue(value: unknown): string {
-  if (typeof value === "bigint") return value.toString();
+function formatFieldValue(value: unknown, encoding?: "readable"): string {
+  if (typeof value === "bigint") {
+    if (encoding === "readable") return formatRawUint256(value);
+    return value.toString();
+  }
   if (typeof value === "boolean") return value ? "Yes" : "No";
   if (Array.isArray(value)) return `[${value.length} items]`;
   return String(value);

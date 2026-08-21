@@ -13,7 +13,13 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { encodeFunctionData, keccak256, parseAbiItem, toBytes } from "viem";
+import {
+  encodeFunctionData,
+  keccak256,
+  parseAbiItem,
+  toBytes,
+  toHex,
+} from "viem";
 
 import {
   calldataDigest,
@@ -77,7 +83,38 @@ describe("resolveEvmClearSigningDescriptor — ERC-7730 resolution", () => {
     assert.equal(d.functionName, "transfer");
     assert.equal(d.fields[0]?.label, "To");
     assert.equal(d.fields[0]?.value, RECIPIENT);
-    assert.equal(d.fields[1]?.value, "1000000");
+    const byLabel = (label: string) =>
+      d.fields.find((f) => f.label === label)?.value;
+    // Below the unlimited threshold: comma-grouped for legibility, and
+    // still labelled "raw units" because grouping does not scale.
+    assert.equal(byLabel("Amount (raw units)"), "1,000,000");
+    // One row per amount. The exact digits and the hex form belong to
+    // the sheet's technical drawer, not to this card.
+    assert.equal(
+      d.fields.filter((f) => f.label.startsWith("Amount")).length,
+      1,
+    );
+  });
+
+  it("max-uint256 approve reads as 'Unlimited', not a 78-digit wall of digits", async () => {
+    const spender = "0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07" as const;
+    const maxUint256 = (1n << 256n) - 1n;
+    const data = encodeFunctionData({
+      abi: [parseAbiItem("function approve(address spender, uint256 value)")],
+      args: [spender, maxUint256],
+    });
+    const d = await resolveEvmClearSigningDescriptor({
+      call: { to: RECIPIENT, chainId: 1, data },
+    });
+    assert.ok(d);
+    assert.equal(d.intent, "Approve spending");
+    const byLabel = (label: string) =>
+      d.fields.find((f) => f.label === label)?.value;
+    assert.equal(byLabel("Allowance (raw units)"), "Unlimited");
+    assert.equal(
+      d.fields.filter((f) => f.label.startsWith("Allowance")).length,
+      1,
+    );
   });
 
   it("deployment-pinned descriptor binds only to its pinned address/chain", async () => {

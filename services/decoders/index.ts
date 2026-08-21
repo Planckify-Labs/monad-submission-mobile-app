@@ -4,11 +4,15 @@ import { isKnownSpender, type KnownSpender } from "./knownSpenders";
 import { type DecodedPermit2, tryDecodePermit2 } from "./permit2";
 
 export { tryDecodeErc2612, tryDecodePermit2 };
-export { decodeCalldata } from "./calldata";
+export { approveRiskSummary, decodeCalldata } from "./calldata";
 export { tryParseSiwe } from "./siwe";
 export { isKnownSpender };
 export type { DecodedPermit, DecodedPermit2, KnownSpender };
-export type { DecodedArg, DecodedCalldata } from "./calldata";
+export type {
+  ApproveRiskSummary,
+  DecodedArg,
+  DecodedCalldata,
+} from "./calldata";
 export type { ParsedSiwe } from "./siwe";
 
 export type TypedDataDecoded = DecodedPermit | DecodedPermit2 | null;

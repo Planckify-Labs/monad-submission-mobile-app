@@ -11,12 +11,20 @@ import { RiskBanner } from "./RiskBanner";
 interface Props {
   intent: ApprovalIntent;
   title: string;
+  /**
+   * One plain sentence under the title saying what the site is asking
+   * for, in the user's terms rather than the protocol's. A title alone
+   * names the mechanism ("Approve transaction"); this says what it means
+   * ("This site wants permission to spend your tokens.").
+   */
+  subtitle?: string;
   children: React.ReactNode;
 }
 
 export function ApprovalShell({
   intent,
   title,
+  subtitle,
   children,
 }: Props): React.ReactElement {
   // Render strictly from the intent. The dApp surface MUST NOT
@@ -74,6 +82,11 @@ export function ApprovalShell({
           </View>
         )}
         <Text className="text-lg font-semibold text-gray-900">{title}</Text>
+        {subtitle && (
+          <Text className="text-sm text-light-matte-black/60 mt-1">
+            {subtitle}
+          </Text>
+        )}
         <View className="flex-row items-center mt-2">
           <Globe size={14} color={isSecure ? "#059669" : "#ea580c"} />
           <Text className="ml-1 text-xs text-gray-600 flex-1" numberOfLines={1}>

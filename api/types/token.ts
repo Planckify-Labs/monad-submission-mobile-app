@@ -29,3 +29,18 @@ export interface TTokenSearchParams {
   isNativeCurrency?: boolean;
   isPaymentEnabled?: boolean;
 }
+
+/**
+ * Token identity resolved by contract address, for surfaces holding an
+ * address the catalogue does not list (the dApp approval sheet can be handed
+ * any ERC-20 on any supported chain).
+ *
+ * `decimals` is the token's scale, range-checked server-side. It is what
+ * lets the approval sheet render "6 USDT" and accept "6" as typed input
+ * instead of falling back to raw base units.
+ */
+export interface TTokenIdentity {
+  symbol: string | null;
+  logo: string | null;
+  decimals: number | null;
+}

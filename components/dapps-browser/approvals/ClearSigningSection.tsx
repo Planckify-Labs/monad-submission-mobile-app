@@ -22,9 +22,11 @@
  * no `namespace ===` branches (`pnpm check:chains`).
  */
 
+import { Sparkles } from "lucide-react-native";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { ApprovalIntent } from "@/services/bridge/approval";
+import type { Namespace } from "@/services/chains/types";
 import { resolveClearSigningSummary } from "@/services/decoders/clearSigning";
 import { summarizeClearSigningDescriptor } from "@/services/decoders/summarize";
 import { EMOJI_HASH_ROWS } from "@/services/security/emojiHash";
@@ -34,6 +36,7 @@ import type {
   ComputeSigningDigestArgs,
   SigningDigest,
 } from "@/services/walletKit/types";
+import { DetailCard, DetailCardTitle, DetailRow } from "./DetailCard";
 import { EmojiHashGrid } from "./EmojiHashGrid";
 
 type DigestView = "hex" | "emoji";
@@ -74,6 +77,20 @@ interface Props {
    * (useCallback) — it's an effect dependency.
    */
   onDescriptorResolved?: (descriptor: ClearSigningDescriptor | null) => void;
+  /**
+   * Where the signing-digest block renders.
+   *
+   * `"inline"` (default) keeps it inside this card, which is what every
+   * sheet that has no technical drawer of its own wants. `"off"` hides
+   * it here so a sheet can place `<SigningDigestBlock>` itself — the
+   * EVM transaction sheet files it under "Advanced details", next to
+   * the raw calldata it is a fingerprint of, rather than mid-sheet
+   * between two human-readable cards.
+   *
+   * Hiding it never means dropping it: a sheet that passes `"off"` is
+   * asserting it renders the block somewhere else.
+   */
+  digestPlacement?: "inline" | "off";
 }
 
 const SOURCE_LABEL: Record<ClearSigningDescriptor["source"], string> = {
@@ -101,22 +118,54 @@ function truncateDigest(value: string): string {
   return `${prefixed ? "0x" : ""}${head} … ${tail}`;
 }
 
-export function ClearSigningSection({
-  intent,
-  call,
-  network,
-  digestArgs,
-  showUnrecognizedCard = false,
-  onDescriptorResolved,
-}: Props): React.ReactElement | null {
-  const ns = intent.namespace;
-
-  // undefined = resolving, null = unrecognized, value = resolved.
-  const [descriptor, setDescriptor] = useState<
-    ClearSigningDescriptor | null | undefined
-  >(call === undefined ? null : undefined);
-  const [summary, setSummary] = useState<string | null | undefined>(undefined);
+/**
+ * Computes the namespace's signing digest for `args`.
+ *
+ * Extracted from `ClearSigningSection` so a sheet can render the digest
+ * somewhere else (a technical drawer, a second column) without the
+ * digest being computed twice: whichever side is not showing it passes
+ * `null` and does no work.
+ */
+export function useSigningDigest(
+  ns: Namespace,
+  args: ComputeSigningDigestArgs | null | undefined,
+): SigningDigest | null {
   const [digest, setDigest] = useState<SigningDigest | null>(null);
+  useEffect(() => {
+    if (!args) {
+      setDigest(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        if (!walletKitRegistry.has(ns)) return;
+        const kit = walletKitRegistry.get(ns);
+        const d = await kit.computeSigningDigest?.(args);
+        if (alive) setDigest(d ?? null);
+      } catch {
+        if (alive) setDigest(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [ns, args]);
+  return digest;
+}
+
+/**
+ * The labelled, byte-grouped digest rows plus the Hex/Emoji spot-check.
+ * A display value, never a gate — nothing here touches approve/reject.
+ */
+export function SigningDigestBlock({
+  digest,
+  variant = "card",
+}: {
+  digest: SigningDigest | null;
+  /** `"bare"` drops the card chrome, for nesting inside another card. */
+  variant?: "card" | "bare";
+}): React.ReactElement | null {
   const [revealed, setRevealed] = useState(false);
   const [digestView, setDigestView] = useState<DigestView>("hex");
   // The emoji spot-check row is owned here (not in EmojiHashGrid) so it
@@ -131,11 +180,109 @@ export function ClearSigningSection({
     [],
   );
 
+  const digestRows = useMemo(() => digest?.values ?? [], [digest]);
+  // The canonical row is the actual signing digest (the last value in
+  // every scheme: EIP-712 digest, calldata digest, tx hash). That is the
+  // one worth fingerprinting for a cross-device spot-check.
+  const canonicalRow = digestRows[digestRows.length - 1];
+
+  if (digestRows.length === 0) return null;
+
+  return (
+    <View
+      className={
+        variant === "card"
+          ? "bg-white border border-gray-100 rounded-2xl p-4 mb-3"
+          : ""
+      }
+    >
+      <View className="flex-row items-center justify-between mb-2">
+        <Text className="text-xs text-light-matte-black/50 flex-1 pr-2">
+          Signing digest · verify on a second device
+        </Text>
+        <View className="flex-row bg-light-main-container rounded-lg p-0.5">
+          {(["hex", "emoji"] as const).map((mode) => {
+            const on = digestView === mode;
+            return (
+              <Pressable
+                key={mode}
+                onPress={() => setDigestView(mode)}
+                className={`px-2.5 py-1 rounded-md ${on ? "bg-white" : ""}`}
+              >
+                <Text
+                  className={`text-[11px] font-semibold ${
+                    on ? "text-light-primary-red" : "text-light-matte-black/50"
+                  }`}
+                >
+                  {mode === "hex" ? "Hex" : "Emoji"}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      {digestView === "hex" ? (
+        <Pressable onPress={() => setRevealed((r) => !r)}>
+          {digestRows.map((row) => (
+            <View key={row.label} className="mt-1">
+              <Text className="text-[10px] text-light-matte-black/50">
+                {row.label}
+              </Text>
+              <Text
+                className="text-xs font-mono text-light-matte-black"
+                selectable
+              >
+                {revealed ? groupDigest(row.value) : truncateDigest(row.value)}
+              </Text>
+            </View>
+          ))}
+          <Text className="text-[10px] text-light-matte-black/40 mt-2">
+            {revealed ? "Tap to shorten" : "Tap to show the full value"}
+          </Text>
+        </Pressable>
+      ) : (
+        canonicalRow && (
+          <EmojiHashGrid
+            value={canonicalRow.value}
+            label={canonicalRow.label}
+            activeRow={spotCheckRow}
+            onCheckAnotherRow={rerollSpotCheckRow}
+          />
+        )
+      )}
+    </View>
+  );
+}
+
+/**
+ * Resolves the Stage-2 descriptor for a call. `undefined` while
+ * resolving, `null` when nothing recognized it, a descriptor on a hit.
+ *
+ * Split out of `ClearSigningSection` so a sheet that wants to lay the
+ * pieces out itself (the EVM transaction sheet folds them into its own
+ * summary card) shares one resolution path with every sheet that just
+ * drops the whole section in.
+ */
+export function useClearSigningDescriptor(
+  ns: Namespace,
+  args: {
+    call?: unknown;
+    network?: string;
+    signer?: string;
+    onResolved?: (d: ClearSigningDescriptor | null) => void;
+  },
+): ClearSigningDescriptor | null | undefined {
+  const { call, network, signer, onResolved } = args;
+  const [descriptor, setDescriptor] = useState<
+    ClearSigningDescriptor | null | undefined
+  >(call === undefined ? null : undefined);
+
   // Phase B — descriptor resolution (automatic, on mount).
   useEffect(() => {
     if (call === undefined) {
       setDescriptor(null);
-      onDescriptorResolved?.(null);
+      onResolved?.(null);
       return;
     }
     let alive = true;
@@ -146,25 +293,36 @@ export function ClearSigningSection({
       // isolation rule. This is also the address a marketplace decoder
       // checks consideration recipients against (spec §17.6): the
       // order's own `offerer` field is attacker-set and proves nothing.
-      signer: intent.wallet?.address,
+      signer,
     }).then(
       (d) => {
         if (!alive) return;
         setDescriptor(d);
-        onDescriptorResolved?.(d);
+        onResolved?.(d);
       },
       () => {
         if (!alive) return;
         setDescriptor(null);
-        onDescriptorResolved?.(null);
+        onResolved?.(null);
       },
     );
     return () => {
       alive = false;
     };
-  }, [ns, call, network, intent.wallet?.address, onDescriptorResolved]);
+  }, [ns, call, network, signer, onResolved]);
 
-  // Phase D — AI summary, only ever fed a resolved descriptor.
+  return descriptor;
+}
+
+/**
+ * Phase D AI one-liner for a resolved descriptor. `undefined` while it
+ * loads, `null` when there is nothing to say or the call failed —
+ * fail-silent by rule, the row simply never appears.
+ */
+export function useClearSigningSummary(
+  descriptor: ClearSigningDescriptor | null | undefined,
+): string | null | undefined {
+  const [summary, setSummary] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     if (!descriptor) {
       setSummary(null);
@@ -188,160 +346,164 @@ export function ClearSigningSection({
       controller.abort();
     };
   }, [descriptor]);
+  return summary;
+}
 
-  // Phase C — digest (independent of descriptor resolution, by rule).
-  useEffect(() => {
-    if (!digestArgs) {
-      setDigest(null);
-      return;
-    }
-    let alive = true;
-    (async () => {
-      try {
-        if (!walletKitRegistry.has(ns)) return;
-        const kit = walletKitRegistry.get(ns);
-        const d = await kit.computeSigningDigest?.(digestArgs);
-        if (alive) setDigest(d ?? null);
-      } catch {
-        if (alive) setDigest(null);
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-  }, [ns, digestArgs]);
-
-  const digestRows = useMemo(() => digest?.values ?? [], [digest]);
-  // The canonical row is the actual signing digest (the last value in
-  // every scheme: EIP-712 digest, calldata digest, tx hash). That is the
-  // one worth fingerprinting for a cross-device spot-check.
-  const canonicalRow = digestRows[digestRows.length - 1];
-
+/**
+ * Decoder-declared cautions. Rendered above the descriptor so they are
+ * read before the reassuring detail rather than after it, and kept out
+ * of any host card: these are alerts, and an alert nested inside the
+ * card it is warning about reads as part of the reassurance.
+ *
+ * Generic by design — the copy is written by whichever decoder claimed
+ * the payload, so a newly docked standard raises a warning without this
+ * component learning it exists.
+ */
+export function ClearSigningWarnings({
+  descriptor,
+}: {
+  descriptor: ClearSigningDescriptor | null | undefined;
+}): React.ReactElement | null {
+  if (!descriptor?.warnings?.length) return null;
   return (
-    <View>
-      {/*
-        Decoder-declared cautions, rendered above the descriptor so they
-        are read before the reassuring detail rather than after it.
-        Generic by design: the copy is written by whichever decoder
-        claimed the payload, so a newly docked standard raises a warning
-        without this component learning it exists.
-      */}
-      {descriptor?.warnings?.map((w) => (
+    <>
+      {descriptor.warnings.map((w) => (
         <View
           key={w.title}
-          className="bg-red-50 border border-red-300 rounded-xl p-3 mb-3"
+          className="bg-red-50 border border-red-200 rounded-2xl p-4 mb-3"
         >
-          <Text className="text-xs font-bold text-red-800 uppercase">
+          <Text className="text-xs font-bold text-red-800 uppercase tracking-wider">
             {w.title}
           </Text>
           <Text className="text-sm text-red-900 mt-1">{w.detail}</Text>
         </View>
       ))}
+    </>
+  );
+}
+
+/**
+ * The descriptor itself, without card chrome, so a host can place it
+ * inside its own group.
+ *
+ * `showFields` exists because the fields are sometimes already on
+ * screen: an `approve` descriptor's fields are exactly the spender and
+ * allowance the EVM sheet renders as its headline rows, and printing
+ * them again two lines lower is the duplication this layout removed.
+ * The provenance line always stays — where a claim came from is never
+ * redundant.
+ */
+export function ClearSigningBody({
+  descriptor,
+  showFields = true,
+}: {
+  descriptor: ClearSigningDescriptor;
+  showFields?: boolean;
+}): React.ReactElement {
+  return (
+    <View>
+      <Text className="text-base font-semibold text-light-matte-black">
+        {descriptor.intent}
+      </Text>
+      {descriptor.functionName && (
+        <Text className="text-xs text-light-matte-black/50 mt-0.5" selectable>
+          {descriptor.functionName}
+        </Text>
+      )}
+      {showFields &&
+        descriptor.fields.map((f, i) => (
+          <DetailRow key={`${f.label}-${i}`} label={f.label} value={f.value} />
+        ))}
+      <Text className="text-[10px] text-light-matte-black/40 mt-2">
+        {SOURCE_LABEL[descriptor.source]}
+      </Text>
+    </View>
+  );
+}
+
+/** The "we could not identify this call" notice. */
+export function UnrecognizedCallNotice(): React.ReactElement {
+  return (
+    <View className="bg-amber-50 border border-amber-200 rounded-2xl p-4 mb-3">
+      <Text className="text-xs font-semibold text-amber-800">
+        Unrecognized contract call
+      </Text>
+      <Text className="text-xs text-amber-800 mt-1">
+        We could not identify what this call does. Review the raw data below
+        before signing.
+      </Text>
+    </View>
+  );
+}
+
+/**
+ * The AI one-liner. Chrome-free: a tinted box of its own turned a
+ * one-sentence aside into the loudest thing on the sheet, above the
+ * numbers it was describing.
+ */
+export function ClearSigningAiSummary({
+  summary,
+}: {
+  summary: string | null | undefined;
+}): React.ReactElement | null {
+  if (summary === undefined) {
+    return <View className="bg-light-matte-black/5 rounded-lg h-4 mt-1" />;
+  }
+  if (typeof summary !== "string") return null;
+  return (
+    <View className="flex-row items-start gap-1.5">
+      <Sparkles size={12} color="#20222c" opacity={0.4} />
+      <Text className="text-xs text-light-matte-black/60 flex-1 leading-4">
+        {summary}
+      </Text>
+    </View>
+  );
+}
+
+export function ClearSigningSection({
+  intent,
+  call,
+  network,
+  digestArgs,
+  showUnrecognizedCard = false,
+  onDescriptorResolved,
+  digestPlacement = "inline",
+}: Props): React.ReactElement | null {
+  const ns = intent.namespace;
+  const descriptor = useClearSigningDescriptor(ns, {
+    call,
+    network,
+    signer: intent.wallet?.address,
+    onResolved: onDescriptorResolved,
+  });
+  const summary = useClearSigningSummary(descriptor);
+  // `null` when the host sheet renders the block itself, so the digest
+  // is computed exactly once no matter where it ends up on screen.
+  const digest = useSigningDigest(
+    ns,
+    digestPlacement === "off" ? null : digestArgs,
+  );
+
+  return (
+    <View>
+      <ClearSigningWarnings descriptor={descriptor} />
       {descriptor && (
-        <View className="bg-white border border-gray-200 rounded-xl p-3 mb-3">
-          <Text className="text-xs text-gray-500 mb-1">What this does</Text>
-          <Text className="text-sm font-semibold text-gray-900">
-            {descriptor.intent}
-          </Text>
-          {descriptor.functionName && (
-            <Text className="text-xs text-gray-500 mt-0.5" selectable>
-              {descriptor.functionName}
-            </Text>
-          )}
-          {descriptor.fields.map((f, i) => (
-            <View key={`${f.label}-${i}`} className="flex-row mt-1">
-              <Text className="text-xs text-gray-500 w-28">{f.label}</Text>
-              <Text className="text-xs text-gray-900 flex-1" selectable>
-                {f.value}
-              </Text>
+        <DetailCard>
+          <DetailCardTitle>What this does</DetailCardTitle>
+          <ClearSigningBody descriptor={descriptor} />
+          {(summary === undefined || typeof summary === "string") && (
+            <View className="mt-2">
+              <ClearSigningAiSummary summary={summary} />
             </View>
-          ))}
-          <Text className="text-[10px] text-gray-400 mt-2">
-            {SOURCE_LABEL[descriptor.source]}
-          </Text>
-        </View>
+          )}
+        </DetailCard>
       )}
 
       {showUnrecognizedCard && descriptor === null && (
-        <View className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3">
-          <Text className="text-xs font-semibold text-amber-800">
-            Unrecognized contract call
-          </Text>
-          <Text className="text-xs text-amber-800 mt-1">
-            We could not identify what this call does. Review the raw data below
-            before signing.
-          </Text>
-        </View>
+        <UnrecognizedCallNotice />
       )}
 
-      {descriptor && summary === undefined && (
-        <View className="bg-gray-100 rounded-lg h-5 mb-3" />
-      )}
-      {descriptor && typeof summary === "string" && (
-        <View className="bg-blue-50 border border-blue-100 rounded-xl p-3 mb-3">
-          <Text className="text-xs text-blue-600 font-semibold mb-0.5">
-            AI summary
-          </Text>
-          <Text className="text-sm text-blue-900">{summary}</Text>
-        </View>
-      )}
-
-      {digestRows.length > 0 && (
-        <View className="bg-gray-50 border border-gray-200 rounded-xl p-3 mb-3">
-          <View className="flex-row items-center justify-between mb-2">
-            <Text className="text-xs text-gray-500 flex-1 pr-2">
-              Signing digest · verify on a second device
-            </Text>
-            <View className="flex-row bg-gray-200 rounded-lg p-0.5">
-              {(["hex", "emoji"] as const).map((mode) => {
-                const on = digestView === mode;
-                return (
-                  <Pressable
-                    key={mode}
-                    onPress={() => setDigestView(mode)}
-                    className={`px-2.5 py-1 rounded-md ${on ? "bg-white" : ""}`}
-                  >
-                    <Text
-                      className={`text-[11px] font-semibold ${
-                        on ? "text-gray-900" : "text-gray-500"
-                      }`}
-                    >
-                      {mode === "hex" ? "Hex" : "Emoji"}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-
-          {digestView === "hex" ? (
-            <Pressable onPress={() => setRevealed((r) => !r)}>
-              {digestRows.map((row) => (
-                <View key={row.label} className="mt-1">
-                  <Text className="text-[10px] text-gray-500">{row.label}</Text>
-                  <Text className="text-xs font-mono text-gray-900" selectable>
-                    {revealed
-                      ? groupDigest(row.value)
-                      : truncateDigest(row.value)}
-                  </Text>
-                </View>
-              ))}
-              <Text className="text-[10px] text-gray-400 mt-2">
-                {revealed ? "Tap to shorten" : "Tap to show the full value"}
-              </Text>
-            </Pressable>
-          ) : (
-            canonicalRow && (
-              <EmojiHashGrid
-                value={canonicalRow.value}
-                label={canonicalRow.label}
-                activeRow={spotCheckRow}
-                onCheckAnotherRow={rerollSpotCheckRow}
-              />
-            )
-          )}
-        </View>
-      )}
+      <SigningDigestBlock digest={digest} />
     </View>
   );
 }
