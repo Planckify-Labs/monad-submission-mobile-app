@@ -62,6 +62,8 @@ const STETH = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84" as Address;
 /** Mantle mETH: the Staking contract and its receipt token. */
 const MANTLE_STAKING = "0xe3cBd06D7dadB3F4e6557bAb7EdD924CD1489E8f" as Address;
 const METH = "0xd5F7838F5C461fefF7FE49ea5ebaF7728bB0ADfa" as Address;
+const KELP_POOL = "0x036676389e48133B63a802f8635AD39E752D375D" as Address;
+const RSETH = "0xA1290d69c65A6Fe4DF752f95823fae25cB99e5A7" as Address;
 
 /** Avant `savETH` (address-book vaults.ts, AVANT_VAULTS) and its underlying. */
 const SAVETH = "0xDA06eE2dACF9245Aa80072a4407deBDea0D7e341" as Address;
@@ -305,6 +307,98 @@ describeEth("Onboarding — Ethereum", () => {
           kind: "lst-stake",
           venue: "mantle-meth",
           receipt: METH,
+          asset: NATIVE,
+          exit: "queue",
+        },
+      } as never),
+    ).rejects.toThrow();
+  }, 120_000);
+
+  it("Kelp rsETH — the second min-out shape mints rsETH against a real floor", async () => {
+    // The whole reason Kelp was deferred was that nobody had confirmed it had
+    // a quote to derive a floor from. `getRsETHAmountToMint` is that quote,
+    // and this proves the device can read it and that the contract honours
+    // the minimum the tier policy computes from it.
+    //
+    // Two things here are new versus Mantle and both are config, not code:
+    // the referral is a STRING (so the calldata is head+tail encoded, not two
+    // flat words), and the preview view takes the native SENTINEL as its
+    // first argument. Passing the zero address there reverts (0x762798e1),
+    // which a unit test with a mocked client would never have surfaced.
+    const target: DepositTarget = {
+      kind: "lst-stake",
+      venue: "kelp-rseth",
+      receipt: RSETH,
+      asset: NATIVE,
+      exit: "queue",
+    };
+    const before = await positionBalance(ctx, target, ctx.account.address);
+
+    const call = await LstStakeAdapter.buildDeposit({
+      wallet: ctx.wallet,
+      chain: ctx.chain,
+      asset: { symbol: "ETH", contract: NATIVE, decimals: 18 },
+      amount: TEN_ETH,
+      target,
+      tier: "conservative",
+    } as never);
+
+    // A native stake never needs an allowance.
+    expect(approvalsOf(call)).toEqual([]);
+    expect(call.to?.toLowerCase()).toBe(KELP_POOL.toLowerCase());
+    expect(call.value).toBe(TEN_ETH);
+
+    // §12 Q4 asserted against the BYTES, not the helper that built them. The
+    // first word after the selector is `minRSETHAmountExpected`; the string
+    // referral lives past it, so this slice is the minimum regardless of how
+    // the tail is encoded.
+    const minOut = BigInt(`0x${(call.data as string).slice(10, 74)}`);
+    expect(minOut).toBeGreaterThan(0n);
+
+    expect(await executeCall(ctx, call)).toMatchObject({ status: "success" });
+
+    const after = await positionBalance(ctx, target, ctx.account.address);
+    expect(after, "stake succeeded but no rsETH arrived").toBeGreaterThan(
+      before,
+    );
+    expect(after - before).toBeGreaterThanOrEqual(minOut);
+  }, 240_000);
+
+  it("Kelp rsETH — refuses a stake below the venue's on-chain minimum", async () => {
+    // `minAmountToDeposit()` is 1e14 wei. Catching it in the adapter costs the
+    // user nothing; letting it reach the chain costs them gas for a certain
+    // revert.
+    await expect(
+      LstStakeAdapter.buildDeposit({
+        wallet: ctx.wallet,
+        chain: ctx.chain,
+        asset: { symbol: "ETH", contract: NATIVE, decimals: 18 },
+        amount: 10n ** 13n, // 0.00001 ETH, an order of magnitude under
+        target: {
+          kind: "lst-stake",
+          venue: "kelp-rseth",
+          receipt: RSETH,
+          asset: NATIVE,
+          exit: "queue",
+        },
+      } as never),
+    ).rejects.toThrow();
+  }, 120_000);
+
+  it("Kelp rsETH — refuses an in-app withdraw, because the exit is a queue", async () => {
+    // §12 Q2. Kelp's exit is initiate -> complete on its withdrawal manager,
+    // so the honest answer is a refusal rather than a button that reverts.
+    // This is the assertion that would have caught Avant.
+    await expect(
+      LstStakeAdapter.buildWithdraw({
+        wallet: ctx.wallet,
+        chain: ctx.chain,
+        asset: { symbol: "ETH", contract: NATIVE, decimals: 18 },
+        amount: "MAX",
+        target: {
+          kind: "lst-stake",
+          venue: "kelp-rseth",
+          receipt: RSETH,
           asset: NATIVE,
           exit: "queue",
         },

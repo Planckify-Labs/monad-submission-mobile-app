@@ -41,7 +41,32 @@ export type LstStakeShape =
    * a venue on this shape without a `previewView` cannot build (§12 Q4 forbids
    * a zero minimum).
    */
-  | "payable-stake-minout";
+  | "payable-stake-minout"
+  /**
+   * `depositETH(uint256 minRSETHAmountExpected, string referralId)` payable —
+   * Kelp `LRTDepositPool`.
+   *
+   * The second slippage-bearing shape. It differs from Mantle's in two ways,
+   * both of which are CONFIG rather than a branch on the venue: the referral
+   * is a STRING, and the preview view takes `(address asset, uint256 amount)`
+   * so the venue declares `previewTakesAsset`.
+   */
+  | "payable-deposit-eth-minout-referral";
+
+/**
+ * The shapes whose stake call carries a caller-supplied minimum-out.
+ *
+ * A SET, not a comparison against one literal: there are two of these now, and
+ * the property that matters is "this call can be sandwiched, so it needs a
+ * quote to floor it", not any single venue's ABI. Adding a third min-out shape
+ * to this set is what makes `buildDeposit` compute a floor for it — miss that
+ * and the adapter silently builds with `minOut: undefined`, which the encoder
+ * then refuses. Twin of the backend book's `MIN_OUT_STAKE_SHAPES`.
+ */
+export const MIN_OUT_STAKE_SHAPES: ReadonlySet<LstStakeShape> = new Set([
+  "payable-stake-minout",
+  "payable-deposit-eth-minout-referral",
+]);
 
 export interface LstVenueConfig {
   readonly key: string;
@@ -68,6 +93,16 @@ export interface LstVenueConfig {
    */
   readonly rateViewOn?: "receipt" | "entry";
   /**
+   * Read the rate view at THIS address instead of `entry`/`receipt`.
+   *
+   * Kelp is the case: its ETH-per-rsETH quote lives on the LRTOracle, a third
+   * contract. Pinned rather than discovered at runtime, and derived from the
+   * protocol's own registry rather than a docs page — see the venue row.
+   *
+   * Takes precedence over `rateViewOn` when both are present.
+   */
+  readonly rateViewAt?: Address;
+  /**
    * `true` when `rateView` takes the share amount and returns the asset amount
    * directly; `false`/absent when it returns a per-unit rate to multiply by.
    *
@@ -83,6 +118,13 @@ export interface LstVenueConfig {
    * `payable-stake-minout`; the twin of the backend book's `previewView`.
    */
   readonly previewView?: string;
+  /**
+   * The preview view takes `(address asset, uint256 amount)` rather than
+   * `(uint256 amount)`. Declared, never inferred from the view's name — the
+   * `getPooledAvaxByShares` string comparison this file's adapter used to
+   * carry is the bug this avoids repeating one call earlier.
+   */
+  readonly previewTakesAsset?: boolean;
   /** Smallest stake the contract accepts, in wei, when it enforces one. */
   readonly minStakeWei?: bigint;
 }
@@ -160,6 +202,44 @@ export const LST_VENUE_CONFIGS: readonly LstVenueConfig[] = [
     // sAVAX exposes AVAX-per-share through this view, taking the amount.
     rateView: "getPooledAvaxByShares",
     rateTakesAmount: true,
+  },
+  {
+    // Kelp rsETH. Twin of the backend book's `kelp-rseth` row; the evidence
+    // for these constants is recorded there.
+    //
+    // Second min-out venue, so the same rule applies: the floor comes from the
+    // protocol's own quote at build time and a zero minimum is a refusal, not
+    // a fallback (§12 Q4). `getRsETHAmountToMint` needs the native SENTINEL
+    // (0xEeee…) as its asset argument — the zero address reverts.
+    //
+    // Deposit-only: the exit is a two-phase initiate/complete on Kelp's
+    // withdrawal manager, so `readExitTerms` reports `queued` and the in-app
+    // withdraw is refused rather than promised.
+    key: "kelp-rseth",
+    chainId: 1,
+    entry: "0x036676389e48133B63a802f8635AD39E752D375D",
+    receipt: "0xA1290d69c65A6Fe4DF752f95823fae25cB99e5A7",
+    shape: "payable-deposit-eth-minout-referral",
+    previewView: "getRsETHAmountToMint",
+    previewTakesAsset: true,
+    minStakeWei: 100_000_000_000_000n,
+    displayName: "Kelp rsETH",
+    valuation: "share",
+    // ETH-per-rsETH, no arguments, 1e18 — the same convention as Rocket Pool's
+    // `getExchangeRate`, just on a third contract. It reads 1.078433, exactly
+    // the inverse of the pool's mint quote (0.927272), which is the check that
+    // says it is the rate and not the mint direction. Using
+    // `getRsETHAmountToMint` here would have been backwards AND the wrong
+    // arity: it would have reverted, been swallowed, and silently valued 1
+    // rsETH as 1 ETH — a ~7.8% understatement that nothing would have flagged.
+    //
+    // The LRTOracle address is not copied from a docs page: it is derived from
+    // Kelp's own registry on chain (2026-08-21) —
+    //   LRTDepositPool.lrtConfig()                     → 0x947Cb493…
+    //   LRTConfig.getContract(keccak("LRT_ORACLE"))    → 0x349A7344…
+    //   LRTConfig.rsETH()                              → 0xA1290d69… (matches `receipt`)
+    rateView: "rsETHPrice",
+    rateViewAt: "0x349A73444b1a310BAe67ef67973022020d70020d",
   },
   {
     // Mantle mETH. The stake takes a caller-supplied minimum, so this is the

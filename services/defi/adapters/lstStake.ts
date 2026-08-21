@@ -38,7 +38,11 @@ import type {
   UnsignedCall,
 } from "../types";
 import { NATIVE_ASSET_SENTINEL } from "../types";
-import { type LstVenueConfig, lstVenueConfig } from "./lst.config";
+import {
+  type LstVenueConfig,
+  lstVenueConfig,
+  MIN_OUT_STAKE_SHAPES,
+} from "./lst.config";
 
 const STAKE_ABIS = {
   "payable-deposit": [
@@ -86,6 +90,18 @@ const STAKE_ABIS = {
       outputs: [],
     },
   ],
+  "payable-deposit-eth-minout-referral": [
+    {
+      name: "depositETH",
+      type: "function",
+      stateMutability: "payable",
+      inputs: [
+        { name: "minRSETHAmountExpected", type: "uint256" },
+        { name: "referralId", type: "string" },
+      ],
+      outputs: [],
+    },
+  ],
   "payable-submit-referral": [
     {
       name: "submit",
@@ -98,6 +114,13 @@ const STAKE_ABIS = {
 } as const;
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as Address;
+/**
+ * The `0xEeee…` native-asset sentinel, as used by protocols that take an asset
+ * argument for a native-coin deposit. Distinct from the zero address, which
+ * some of the same contracts reject outright.
+ */
+const NATIVE_ETH_SENTINEL =
+  "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE" as Address;
 
 function requireLstTarget(
   target: DepositTarget | undefined,
@@ -181,6 +204,24 @@ function encodeStake(
         functionName: "stake",
         args: [minOut],
       });
+    case "payable-deposit-eth-minout-referral":
+      if (minOut === undefined || minOut <= 0n) {
+        // Same rule as `payable-stake-minout`: §12 Q4 forbids a zero minimum
+        // outright, so this refuses rather than encoding a sandwichable call.
+        throw new DefiError(
+          "slippage_too_high",
+          `lst-stake: ${venue.key} needs a positive minimum-out and none was computed`,
+        );
+      }
+      return encodeFunctionData({
+        abi: STAKE_ABIS["payable-deposit-eth-minout-referral"],
+        functionName: "depositETH",
+        // Empty referral id — no referral programme, and the protocol treats
+        // "" as none. The referral here is a STRING, unlike
+        // `payable-deposit-referral`'s address; that difference is the whole
+        // reason this is a separate shape rather than a reused one.
+        args: [minOut, ""],
+      });
   }
 }
 
@@ -205,12 +246,22 @@ async function minReceiptFor(
   }
   const evm = assertEvmChain(chain);
   const client = getPublicClient(evm.chain);
+  // Two preview conventions so far: `(uint256)` (Mantle `ethToMETH`) and
+  // `(address asset, uint256 amount)` (Kelp `getRsETHAmountToMint`). Which one
+  // a venue uses is DECLARED, never inferred from the view's name — the
+  // `getPooledAvaxByShares` string comparison this file used to carry is
+  // exactly how the second venue on a shared convention gets mis-read.
   const previewAbi = [
     {
       name: venue.previewView,
       type: "function",
       stateMutability: "view",
-      inputs: [{ name: "amount", type: "uint256" }],
+      inputs: venue.previewTakesAsset
+        ? [
+            { name: "asset", type: "address" },
+            { name: "amount", type: "uint256" },
+          ]
+        : [{ name: "amount", type: "uint256" }],
       outputs: [{ name: "", type: "uint256" }],
     },
   ] as const;
@@ -219,7 +270,12 @@ async function minReceiptFor(
     address: venue.entry,
     abi: previewAbi,
     functionName: venue.previewView,
-    args: [amount],
+    // The asset argument is the venue's own NATIVE SENTINEL, not the zero
+    // address: Kelp's pool reverts (0x762798e1) on the zero address and
+    // answers on 0xEeee…, and they are not interchangeable.
+    args: venue.previewTakesAsset
+      ? [NATIVE_ETH_SENTINEL, amount]
+      : ([amount] as const),
   })) as bigint;
 
   if (!expected || expected <= 0n) {
@@ -282,10 +338,9 @@ export const LstStakeAdapter: DefiProtocolAdapter = {
       );
     }
 
-    const minOut =
-      venue.shape === "payable-stake-minout"
-        ? await minReceiptFor(venue, chain, amount, tier)
-        : undefined;
+    const minOut = MIN_OUT_STAKE_SHAPES.has(venue.shape)
+      ? await minReceiptFor(venue, chain, amount, tier)
+      : undefined;
 
     return {
       kind: "evm-call",
@@ -360,7 +415,9 @@ export const LstStakeAdapter: DefiProtocolAdapter = {
         ] as const;
         const raw = (await client
           .readContract({
-            address: venue.rateViewOn === "entry" ? venue.entry : venue.receipt,
+            address:
+              venue.rateViewAt ??
+              (venue.rateViewOn === "entry" ? venue.entry : venue.receipt),
             abi: rateAbi,
             functionName: venue.rateView,
             args: venue.rateTakesAmount ? [balance] : ([] as const),

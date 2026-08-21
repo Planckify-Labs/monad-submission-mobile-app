@@ -27,6 +27,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { LST_VENUE_CONFIGS } from "./adapters/lst.config";
 import { AAVE_V3 } from "./constants/addresses";
 import {
   MORPHO_BLUE_SINGLETONS,
@@ -171,5 +172,144 @@ describe("address-book parity between mobile and backend", () => {
       mobile,
       "aave-v3 Pool",
     );
+  });
+});
+
+/**
+ * LST venue parity.
+ *
+ * The venue book is duplicated the same way the singleton addresses are —
+ * `api/.../address-book/lst.ts` for resolution and validation, this repo's
+ * `adapters/lst.config.ts` for the call shape — and until now nothing checked
+ * that the two agreed. Morpho, Pendle, Uniswap and Aave all had a guard; the
+ * venues, which are the rows that decide where a native-coin STAKE is sent,
+ * did not.
+ *
+ * A drift here fails the same two ways as any other: a wrong `entry` sends the
+ * stake to the wrong contract, and a wrong `shape` encodes a call the contract
+ * does not have. Both are silent until someone stakes.
+ *
+ * Only the fields both sides carry are compared. `exit` lives on the backend
+ * alone by design — it is stamped onto the resolved target and read from there
+ * (`safety/providers/eip155.ts`), so the device never keeps its own copy.
+ */
+describe("LST venue parity between mobile and backend", () => {
+  const source = backendSource("lst");
+
+  /**
+   * Slice an `export const NAME ... ];` ARRAY out of the backend source.
+   *
+   * `extractDeclaration` above is written for object literals: it looks for
+   * `\n};` and, failing that, falls back to the first `;`. Neither terminator
+   * is right for an array, and the fallback is actively wrong — the first
+   * semicolon in `LST_VENUES` sits inside a prose comment, so it silently
+   * returned the first four venues and the comparison passed vacuously on the
+   * rest. Hence a separate, array-aware helper.
+   */
+  function extractArray(src: string, name: string): string {
+    const start = src.indexOf(`export const ${name}`);
+    if (start < 0) throw new Error(`${name} not found in backend book`);
+    const rest = src.slice(start);
+    // Both terminators occur in the book: `] as const;` for the frozen
+    // deferred list, plain `];` for the typed venue array.
+    const end = [rest.indexOf("\n] as const;"), rest.indexOf("\n];")]
+      .filter((i) => i >= 0)
+      .sort((a, b) => a - b)[0];
+    if (end === undefined) throw new Error(`${name} array is unterminated`);
+    return rest.slice(0, end);
+  }
+
+  /** One `{ … }` object literal per venue, sliced out of the backend array. */
+  function backendVenues(): Map<string, Record<string, string>> {
+    const decl = extractArray(source, "LST_VENUES");
+    const out = new Map<string, Record<string, string>>();
+    for (const m of decl.matchAll(/key:\s*"([^"]+)"/g)) {
+      const key = m[1];
+      // Fields are read from the slice that starts at this venue's `key:` and
+      // runs to the next one, so a neighbour's value cannot bleed in.
+      const from = m.index ?? 0;
+      const nextKey = decl.slice(from + 1).search(/\n\s*key:\s*"/);
+      const slice =
+        nextKey < 0 ? decl.slice(from) : decl.slice(from, from + 1 + nextKey);
+      const field = (name: string): string => {
+        const hit = slice.match(new RegExp(`${name}:\\s*"([^"]+)"`));
+        return hit ? hit[1] : "";
+      };
+      out.set(key, {
+        entry: field("entry").toLowerCase(),
+        receipt: field("receipt").toLowerCase(),
+        shape: field("shape"),
+        previewView: field("previewView"),
+      });
+    }
+    return out;
+  }
+
+  const backend = backendVenues();
+
+  it("extracts the backend venues it is about to compare", () => {
+    // Guards the regex itself: a refactor that renamed the array or reshaped
+    // the rows would otherwise make every assertion below vacuously pass.
+    expect(backend.size).toBeGreaterThanOrEqual(LST_VENUE_CONFIGS.length);
+    for (const [key, v] of backend) {
+      expect(v.entry, `${key} entry`).toMatch(/^0x[0-9a-f]{40}$/);
+      expect(v.receipt, `${key} receipt`).toMatch(/^0x[0-9a-f]{40}$/);
+      expect(v.shape, `${key} shape`).not.toEqual("");
+    }
+  });
+
+  it("pins the same entry, receipt and shape for every shared venue", () => {
+    const mismatches: string[] = [];
+    for (const venue of LST_VENUE_CONFIGS) {
+      const b = backend.get(venue.key);
+      if (!b) {
+        mismatches.push(`${venue.key}: on device but not in the backend book`);
+        continue;
+      }
+      if (b.entry !== venue.entry.toLowerCase())
+        mismatches.push(
+          `${venue.key} entry: backend ${b.entry} vs mobile ${venue.entry.toLowerCase()}`,
+        );
+      if (b.receipt !== venue.receipt.toLowerCase())
+        mismatches.push(
+          `${venue.key} receipt: backend ${b.receipt} vs mobile ${venue.receipt.toLowerCase()}`,
+        );
+      if (b.shape !== venue.shape)
+        mismatches.push(
+          `${venue.key} shape: backend ${b.shape} vs mobile ${venue.shape}`,
+        );
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("agrees on the preview view wherever the shape carries slippage", () => {
+    // A min-out shape with no quote could only ship a zero floor, which §12 Q4
+    // forbids outright — so the two sides must name the same view, not merely
+    // both have one.
+    const mismatches: string[] = [];
+    for (const venue of LST_VENUE_CONFIGS) {
+      const b = backend.get(venue.key);
+      if (!b) continue;
+      if ((b.previewView || "") !== (venue.previewView || ""))
+        mismatches.push(
+          `${venue.key} previewView: backend "${b.previewView}" vs mobile "${venue.previewView ?? ""}"`,
+        );
+    }
+    expect(mismatches).toEqual([]);
+  });
+
+  it("never ships a venue the backend defers", () => {
+    // `LST_VENUES_DEFERRED` is the list of venues withheld for a stated reason
+    // (no permissionless mint, KYC-gated, an unverified shape). A device
+    // config for one of those would build a call the backend will never
+    // resolve a target for — or worse, would if someone wired it locally.
+    const deferred = extractArray(source, "LST_VENUES_DEFERRED");
+    const withheld = new Set(
+      [...deferred.matchAll(/"([^"]+)"/g)].map((m) => m[1]),
+    );
+    const shipped = LST_VENUE_CONFIGS.filter((v) => withheld.has(v.key)).map(
+      (v) => v.key,
+    );
+    expect(shipped).toEqual([]);
   });
 });
