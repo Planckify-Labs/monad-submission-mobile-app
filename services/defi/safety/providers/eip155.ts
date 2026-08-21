@@ -32,6 +32,7 @@ import { NATIVE_ASSET_SENTINEL, targetUnderlying } from "../../types";
 import type {
   ChainSafetyProvider,
   DecodedIntent,
+  ExitTerms,
   SafetyContext,
   SimResult,
 } from "../types";
@@ -102,6 +103,22 @@ const COMET_ABI = parseAbi([
   "function isSupplyPaused() view returns (bool)",
 ]);
 const CTOKEN_ABI = parseAbi(["function underlying() view returns (address)"]);
+/**
+ * The two exit signals a vault can actually expose. There is no ERC for
+ * "lockup duration", so this is the whole generic surface:
+ *
+ *  - `supportsInterface(0x620ee8e4)` — ERC-7540 async redeem. Certain
+ *    classification (the exit is a request), but carries no duration.
+ *  - `cooldownDuration()` — the cooldown-vault convention (Ethena's sUSDe
+ *    returns 86400; its own MAX is 90 days), read live because a protocol can
+ *    change it between the quote and the signature.
+ */
+const EXIT_PROBE_ABI = parseAbi([
+  "function supportsInterface(bytes4 interfaceId) view returns (bool)",
+  "function cooldownDuration() view returns (uint24)",
+]);
+/** ERC-7540 `IERC7540Redeem`. An async redeem is a request, never a withdraw. */
+const ERC7540_REDEEM_INTERFACE_ID = "0x620ee8e4";
 const CURVE_ABI = parseAbi([
   "function coins(uint256 i) view returns (address)",
 ]);
@@ -418,6 +435,81 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
       return typeof max === "bigint" && max === 0n;
     }
     return false;
+  },
+
+  /**
+   * L5: how long funds are locked on the way out (§12 Q2).
+   *
+   * Deliberately conservative about what counts as proof. Money markets and LP
+   * positions have no protocol-imposed lock — an Aave reserve at full
+   * utilisation is an *illiquidity* problem for Layer 2, not a lockup — so they
+   * answer `instant` by construction. Everything else has to show its terms.
+   */
+  async readExitTerms(target, chainId): Promise<ExitTerms> {
+    switch (target.kind) {
+      // No protocol-imposed lock: withdraw is one call whenever liquidity is
+      // there. Slippage and utilisation are other layers' problems.
+      case "aave-v3":
+      case "compound-v3":
+      case "compound-v2":
+      case "morpho-blue":
+      case "curve-lp":
+      case "solidly-lp":
+      case "balancer-lp":
+      case "router-call":
+        return { kind: "instant" };
+
+      // ERC-7540 is a request/claim state machine by definition, and §7 keeps
+      // the family unregistered until the two-phase UX exists.
+      case "async-vault":
+        return { kind: "queued", source: "declared" };
+
+      // The venue book already carries the honest exit path, reviewed when the
+      // venue was pinned. `dex` is not a lockup: it exits through a market, so
+      // it costs slippage (Layer 2), not time.
+      case "lst-stake":
+        return target.exit === "queue"
+          ? { kind: "queued", source: "declared" }
+          : { kind: "instant" };
+
+      case "erc4626": {
+        const ctx = clientFor(chainId);
+        if (!ctx) return { kind: "unknown" };
+
+        const isAsync = await probes(
+          ctx.client,
+          target.vault,
+          EXIT_PROBE_ABI,
+          "supportsInterface",
+          [ERC7540_REDEEM_INTERFACE_ID],
+        );
+        if (isAsync === true) return { kind: "queued", source: "onchain" };
+
+        const cooldown = await probes(
+          ctx.client,
+          target.vault,
+          EXIT_PROBE_ABI,
+          "cooldownDuration",
+        );
+        if (typeof cooldown === "bigint" || typeof cooldown === "number") {
+          const seconds = Number(cooldown);
+          if (seconds > 0)
+            return { kind: "delayed", seconds, source: "onchain" };
+        }
+
+        // Neither signal present. Treated as instant, and that rests on a
+        // narrower fact than it looks: the ONLY vaults that reach here are
+        // those a reviewed family resolver admitted (§12 Q1), and ERC-4626
+        // requires `redeem` to honour `maxRedeem`. A vault with a bespoke
+        // lockup and no 7540/cooldown surface would be mischaracterised — so
+        // if a generic "any 4626 that validates" path is ever added, this
+        // default MUST become `unknown` for anything outside a reviewed family.
+        return { kind: "instant" };
+      }
+
+      default:
+        return { kind: "unknown" };
+    }
   },
 
   /** L5: post-execution position delta. */

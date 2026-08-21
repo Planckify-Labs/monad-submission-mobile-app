@@ -11,7 +11,13 @@
  */
 
 import type { RiskTier } from "../../types";
-import type { SafetyCheck } from "../types";
+import { getChainSafetyProvider } from "../registry";
+import {
+  type ExitTerms,
+  exitDelaySeconds,
+  exitNeedsConsent,
+  type SafetyCheck,
+} from "../types";
 
 const TIER_RANK: Record<RiskTier, number> = {
   conservative: 0,
@@ -264,6 +270,102 @@ export function tierAllows(userTier: RiskTier, poolTier: RiskTier): boolean {
   return TIER_RANK[poolTier] <= TIER_RANK[userTier];
 }
 
+/**
+ * Exit-terms consent (§11 Layer 3, §12 Q2).
+ *
+ * A deposit the user cannot exit is a loss even when nothing is stolen, and the
+ * ERC-4626 interface cannot tell a liquid vault from one that locks funds for
+ * 30 days: `deposit()` looks identical either way. So the lockup is READ from
+ * the protocol (Layer-5 primitive, via the provider) and CONSENT is enforced
+ * here, because "the user agreed to wait a month" is an authorization fact, not
+ * a protocol fact. That distinction matters most exactly when it is least
+ * visible: an agent depositing on the user's behalf.
+ *
+ * Deposit-only by declaration. Blocking a WITHDRAW because its exit is slow
+ * would trap funds in the protocol the user is trying to leave, which is the
+ * same trap `SafetyAction` was introduced to avoid.
+ *
+ * Fail-closed in both directions:
+ *   - `unknown` (no provider capability, or an unreadable protocol) refuses.
+ *   - a known delay with no acknowledgement refuses; silence is not consent.
+ */
+export const ExitTermsConsentCheck: SafetyCheck = {
+  id: "exit-terms-consent",
+  layer: 3,
+  appliesTo: { actions: ["deposit"], stages: ["presign"] },
+  run: async (ctx) => {
+    const provider = getChainSafetyProvider(ctx.namespace);
+    // A namespace with NO provider has no provider-backed safety at all (its
+    // Layer-1/4/5 checks already no-op the same way). Blocking only this one
+    // property there would strand chains that ship without a provider while
+    // every other property stays unchecked — incoherent, not safer.
+    if (!provider) return { ok: true };
+    // A namespace that HAS docked a provider must answer this question. The
+    // interface marks `readExitTerms` optional so existing providers still
+    // compile; leaving it out is nonetheless a refusal, which is the pressure
+    // that keeps a newly docked chain from silently skipping the gate.
+    if (!provider.readExitTerms) {
+      return {
+        ok: false,
+        fail: "exit_terms_unknown",
+        detail: "this chain's provider cannot report withdrawal terms",
+      };
+    }
+
+    const terms = await provider
+      .readExitTerms(ctx.target, ctx.chainId)
+      .catch((): ExitTerms => ({ kind: "unknown" }));
+
+    if (terms.kind === "unknown") {
+      return {
+        ok: false,
+        fail: "exit_terms_unknown",
+        detail: "could not read this protocol's withdrawal terms",
+      };
+    }
+    // `unknown` already returned above, so this narrows to delayed | queued.
+    if (!exitNeedsConsent(terms) || terms.kind === "instant")
+      return { ok: true };
+
+    // A lockup we PINNED is a product decision already taken under review: the
+    // LST venue book records each venue's exit path (§12 Q2 ships those
+    // deposit-only on purpose, and `lstStake.ts` refuses the withdraw with a
+    // typed reason). Requiring per-deposit consent for those would block
+    // ether.fi and Rocket Pool, which are live and in-app today, without
+    // telling the user anything the review did not already weigh.
+    //
+    // A lockup DISCOVERED on chain is the opposite: nobody reviewed it, the
+    // interface hid it, and the user is about to fund it. That is the case this
+    // check exists for, so consent is required exactly there.
+    if (terms.source === "declared") return { ok: true };
+
+    const acknowledged = ctx.exitDelayAcknowledgedSec;
+    if (acknowledged === undefined) {
+      return {
+        ok: false,
+        fail: "exit_delay_not_acknowledged",
+        detail:
+          terms.kind === "delayed"
+            ? `withdrawals wait ${terms.seconds}s and the user was not shown that`
+            : "withdrawals are queued and the user was not shown that",
+      };
+    }
+    // A queued exit has no duration to compare against, so any explicit
+    // acknowledgement stands. A timed one must cover the delay actually read
+    // this block: a protocol can raise its cooldown between the quote and the
+    // signature, and the user only consented to what they saw.
+    const required = exitDelaySeconds(terms);
+    if (acknowledged < required) {
+      return {
+        ok: false,
+        fail: "exit_delay_not_acknowledged",
+        detail: `lockup is now ${required}s, user accepted ${acknowledged}s`,
+      };
+    }
+    return { ok: true };
+  },
+};
+
 export const LAYER3_CHECKS: readonly SafetyCheck[] = [
   FamilyKillSwitchCheck,
   ChainEnabledCheck,
@@ -271,4 +373,5 @@ export const LAYER3_CHECKS: readonly SafetyCheck[] = [
   ExposureCapCheck,
   VelocityCapCheck,
   SanctionsScreenCheck,
+  ExitTermsConsentCheck,
 ];

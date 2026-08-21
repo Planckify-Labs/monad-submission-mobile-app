@@ -87,6 +87,16 @@ export type DefiErrorCode =
   | "velocity_exceeded"
   /** L1/L3: the pool's APY/TVL is statistically implausible. */
   | "pool_anomaly_flagged"
+  /**
+   * L3: the protocol locks funds on exit and the user was not shown that.
+   *
+   * Not a protocol failure — the deposit would succeed. It is refused because
+   * consent to a lockup cannot be inferred, least of all when an agent is
+   * acting on the user's behalf.
+   */
+  | "exit_delay_not_acknowledged"
+  /** L3/L5: we could not establish how long funds would be locked. Fail closed. */
+  | "exit_terms_unknown"
   | "unknown";
 
 const PASSTHROUGH_CODES = new Set<DefiErrorCode>([
@@ -525,6 +535,16 @@ export const defiErrorCopy: Record<DefiErrorCode, DefiErrorCopy> = {
   pool_anomaly_flagged: {
     title: "Pool under review",
     body: "This pool's numbers look unusual, so we've paused in-app deposits into it while we check. Please pick another option.",
+    cta: "review",
+  },
+  exit_delay_not_acknowledged: {
+    title: "This one locks your money",
+    body: "Withdrawing from this protocol isn't instant. Review the waiting period and confirm before you deposit.",
+    cta: "review",
+  },
+  exit_terms_unknown: {
+    title: "We can't confirm withdrawals",
+    body: "We couldn't check how long your money would be locked here, so we won't deposit into it. Please pick another option.",
     cta: "review",
   },
   unknown: {

@@ -19,7 +19,7 @@
  * before painting an interactive card.
  */
 
-import { ShieldAlert } from "lucide-react-native";
+import { Clock, ShieldAlert } from "lucide-react-native";
 import type React from "react";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -39,6 +39,29 @@ export interface WriteApprovalGateProps {
   onReject: () => void;
   /** `ask` Approve — open the approval sheet (does NOT execute). */
   onRequestApproval?: () => void;
+  /**
+   * A material fact the user must read BEFORE approving, rendered above the
+   * buttons. Today this is the exit-lockup line (§12 Q2a): a deposit whose
+   * withdrawal is delayed cannot be approved on the strength of the summary
+   * alone, because the summary describes the deposit and the risk is in the
+   * exit. Hand-written copy, never a raw value.
+   */
+  notice?: string | null;
+}
+
+/** The blocking fact, shown wherever the user is about to commit funds. */
+function NoticeBanner({ notice }: { notice: string }) {
+  return (
+    <View className="mt-2.5 flex-row gap-2 rounded-xl border border-amber-300/70 bg-amber-50 px-3 py-2">
+      <Clock size={14} color="#b45309" style={{ marginTop: 1 }} />
+      <Text
+        className="flex-1 text-[11px] leading-4 text-amber-900"
+        numberOfLines={0}
+      >
+        {notice}
+      </Text>
+    </View>
+  );
 }
 
 /**
@@ -46,10 +69,12 @@ export interface WriteApprovalGateProps {
  */
 function ProposalCard({
   summary,
+  notice,
   onApprove,
   onReject,
 }: {
   summary: string;
+  notice?: string | null;
   onApprove: () => void;
   onReject: () => void;
 }) {
@@ -65,6 +90,7 @@ function ProposalCard({
       <Text className="text-sm text-light-matte-black mt-1.5" numberOfLines={0}>
         {summary}
       </Text>
+      {notice ? <NoticeBanner notice={notice} /> : null}
       <View className="flex-row gap-2 mt-3">
         <Pressable
           onPress={() => {
@@ -109,6 +135,7 @@ const WriteApprovalGate: React.FC<WriteApprovalGateProps> = ({
   onApprove,
   onReject,
   onRequestApproval,
+  notice,
 }) => {
   // Global SSE connection state (published by AgentMode.tsx from the
   // session's onReconnecting/onReconnected bindings). Read directly
@@ -117,7 +144,13 @@ const WriteApprovalGate: React.FC<WriteApprovalGateProps> = ({
   const { isReconnecting } = useAgentConnection();
 
   // INV-1: the auto-execute run-down is wired ONLY for `authorized`.
-  if (decision === "authorized") {
+  //
+  // A notice suppresses the run-down. Inaction at 0 EXECUTES, and letting a
+  // timer expire is not someone reading a lockup and accepting it — an
+  // authorized call the user never looked at would fund a 30-day lock by
+  // default. So a material notice downgrades the surface to the static
+  // two-button card, which is the same fail-closed instinct as the rest of §11.
+  if (decision === "authorized" && !notice) {
     return (
       <PreviewCard
         summary={summary}
@@ -128,11 +161,25 @@ const WriteApprovalGate: React.FC<WriteApprovalGateProps> = ({
     );
   }
 
+  // Authorized + notice: still a direct approve (the call IS authorized), but
+  // it requires a deliberate tap after reading the notice.
+  if (decision === "authorized") {
+    return (
+      <ProposalCard
+        summary={summary}
+        notice={notice}
+        onApprove={onApprove}
+        onReject={onReject}
+      />
+    );
+  }
+
   // `ask` — and, fail-closed, any unknown/absent decision — renders the
   // static proposal card. Approve opens the sheet; nothing auto-resolves.
   return (
     <ProposalCard
       summary={summary}
+      notice={notice}
       onApprove={() => onRequestApproval?.()}
       onReject={onReject}
     />

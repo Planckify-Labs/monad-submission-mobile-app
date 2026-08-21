@@ -24,6 +24,12 @@ import {
 import type React from "react";
 import { useEffect, useState } from "react";
 import { Pressable, Text, TouchableOpacity, View } from "react-native";
+import { recordExitConsent } from "@/services/defi/safety/exitConsent";
+import { exitDelaySeconds } from "@/services/defi/safety/types";
+import {
+  exitTermsNotice,
+  useExitTerms,
+} from "@/services/defi/safety/useExitTerms";
 import {
   type PendingTxRecord,
   pendingTxStore,
@@ -35,7 +41,7 @@ import {
   approvalSummaryFromToolInput,
   factsFirstSummary,
 } from "../approvalSummary";
-import type { ToolComponentProps } from "../types";
+import type { ToolComponentProps, ToolDecision } from "../types";
 import WriteApprovalGate from "../WriteApprovalGate";
 import { AddWalletErrorAction } from "./AddWalletErrorAction";
 
@@ -288,6 +294,59 @@ function useLiveRecord(
   return record;
 }
 
+/**
+ * The approval surface for a write, with the deposit lockup folded in.
+ *
+ * Split into its own component purely so the exit-terms probe can be a hook:
+ * `PendingTxCard` returns early for historical/live states, and calling a hook
+ * after those branches would break the rules-of-hooks ordering.
+ *
+ * Two things happen here that the plain gate cannot do:
+ *  1. the lockup is READ from the resolved target and shown before approval;
+ *  2. tapping Approve RECORDS that the user saw it (§12 Q2a), which is what
+ *     the Layer-3 check reads. Consent never travels through the model.
+ */
+function DepositApprovalGate({
+  input,
+  decision,
+  addToolResult,
+  onRequestApproval,
+}: {
+  input: WriteToolInput;
+  decision?: ToolDecision;
+  addToolResult: (result: Record<string, unknown>) => void;
+  onRequestApproval?: () => void;
+}) {
+  const poolId = typeof input.pool_id === "string" ? input.pool_id : undefined;
+  // A withdraw carries `position_id`; its exit terms are not a precondition of
+  // leaving, and warning there would only discourage an exit already in motion.
+  const isDeposit = !!poolId && !input.position_id;
+  const { data: terms } = useExitTerms(isDeposit ? poolId : undefined);
+  const notice = isDeposit ? exitTermsNotice(terms) : null;
+
+  const approve = () => {
+    // Record BEFORE handing the turn back, so the executor's Layer-3 read
+    // cannot race the tap.
+    if (isDeposit && poolId && terms) {
+      recordExitConsent(poolId, exitDelaySeconds(terms));
+    }
+    addToolResult({ status: "success", user_decision: "approved" });
+  };
+
+  return (
+    <WriteApprovalGate
+      decision={decision}
+      summary={describe(input)}
+      notice={notice}
+      onApprove={approve}
+      onReject={() =>
+        addToolResult({ status: "failed", user_decision: "rejected" })
+      }
+      onRequestApproval={onRequestApproval}
+    />
+  );
+}
+
 const PendingTxCard: React.FC<
   ToolComponentProps<WriteToolInput, WriteToolOutput>
 > = ({
@@ -310,15 +369,10 @@ const PendingTxCard: React.FC<
       return <HistoricalReceipt input={input} output={output} state={state} />;
     }
     return (
-      <WriteApprovalGate
+      <DepositApprovalGate
+        input={input}
         decision={decision}
-        summary={describe(input)}
-        onApprove={() =>
-          addToolResult({ status: "success", user_decision: "approved" })
-        }
-        onReject={() =>
-          addToolResult({ status: "failed", user_decision: "rejected" })
-        }
+        addToolResult={addToolResult}
         onRequestApproval={onRequestApproval}
       />
     );

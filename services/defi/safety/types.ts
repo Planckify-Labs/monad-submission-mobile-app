@@ -116,6 +116,44 @@ export interface DecodedIntent {
   deadline: number | null;
 }
 
+/**
+ * When the user can get their money back out (§11 Layer 3/5).
+ *
+ * There is no ERC that declares a lockup, so this is deliberately a *verdict*
+ * rather than a number: a cooldown vault, a withdrawal-queue LST and a plain
+ * money market are indistinguishable through the ERC-4626 interface alone, and
+ * a deposit the user cannot exit is a real loss even when nothing was stolen.
+ *
+ * `unknown` is NOT "probably fine" — it is the fail-closed value. A protocol we
+ * cannot characterise must not be badged as instantly withdrawable, because the
+ * failure mode is a user whose funds are locked for a month they never agreed
+ * to (see `adapters/asyncVault.ts` for the same reasoning applied to Tier 4).
+ */
+export type ExitTerms =
+  /** Proven withdrawable in one transaction, now. */
+  | { kind: "instant" }
+  /** A fixed cooldown before funds are claimable. */
+  | {
+      kind: "delayed";
+      seconds: number;
+      /** `onchain` = read from the protocol this block; `declared` = pinned after review. */
+      source: "onchain" | "declared";
+    }
+  /** Async/queued exit whose duration the protocol does not expose. */
+  | { kind: "queued"; source: "onchain" | "declared" }
+  /** Could not characterise. Fail closed — never treat as instant. */
+  | { kind: "unknown" };
+
+/** Seconds of lockup a verdict implies, for comparison and copy. */
+export function exitDelaySeconds(terms: ExitTerms): number {
+  return terms.kind === "delayed" ? terms.seconds : 0;
+}
+
+/** True when the user must be told before they commit funds. */
+export function exitNeedsConsent(terms: ExitTerms): boolean {
+  return terms.kind !== "instant";
+}
+
 export interface SimResult {
   ok: boolean;
   revertReason?: string;
@@ -172,6 +210,16 @@ export interface SafetyContext {
   protocolSlug?: string;
   /** Family/kind key the ops kill-switch is keyed by. */
   family?: string;
+  /**
+   * The lockup, in seconds, that the user was actually SHOWN and accepted.
+   *
+   * The consent half of the exit-terms gate: probing the delay only tells us
+   * the protocol locks funds, it does not tell us the user agreed to it. An
+   * agent can deposit on the user's behalf, so "they saw 30 days and said yes"
+   * has to be carried explicitly — an absent value means nobody was asked, and
+   * the check blocks. Never default this.
+   */
+  exitDelayAcknowledgedSec?: number;
   policy?: SafetyPolicy;
   /** On-chain `decimals()` for the deposited asset (§11.6 #1). */
   assetDecimals?: number;
@@ -230,6 +278,18 @@ export interface ChainSafetyProvider {
     target: DepositTarget,
     chainId: number | string,
   ): Promise<boolean>;
+  /**
+   * L5: how long funds are locked before they can be withdrawn.
+   *
+   * OPTIONAL on purpose (the space-docking rule): a chain whose provider does
+   * not implement this yet reports `unknown`, and the Layer-3 consent check
+   * fails closed rather than assuming instant. Docking a new chain is adding
+   * this method, never editing the check.
+   */
+  readExitTerms?(
+    target: DepositTarget,
+    chainId: number | string,
+  ): Promise<ExitTerms>;
   /** L5: post-execution position delta, for the assertion. */
   readPositionDelta(
     target: DepositTarget,

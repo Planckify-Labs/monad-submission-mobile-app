@@ -35,6 +35,7 @@ import {
   listDefiAdapters,
 } from "@/services/defi/registry";
 import { releaseSubmission } from "@/services/defi/safety/checks/layer4-execution";
+import { takeExitConsent } from "@/services/defi/safety/exitConsent";
 import { setEvmChainResolver } from "@/services/defi/safety/providers/eip155";
 import {
   assertSafetyResult,
@@ -439,6 +440,11 @@ export const deposit: MobileToolExecutor = (input, context) =>
         protocolSlug,
         family: depositTarget?.kind,
         assetDecimals: decimals,
+        // §12 Q2a — the lockup the USER was shown and accepted on the approval
+        // card, consumed once. Deliberately not a tool argument: a consent the
+        // model can emit is the agent approving its own write (§11 Layer 0).
+        // `undefined` means nobody was asked, and the Layer-3 check refuses.
+        exitDelayAcknowledgedSec: takeExitConsent(poolId),
         expectedApy,
         cachedApy: opportunity ? Number.parseFloat(opportunity.apy) : undefined,
         policy: {
