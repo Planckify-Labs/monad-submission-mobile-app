@@ -252,6 +252,35 @@ export const listOpportunities: MobileToolExecutor = (input, context) =>
           chainScope,
           slugs: opportunities.map((o) => o.protocol_slug),
         });
+        // ⚠️ TEMPORARY DIAGNOSTIC — delete with __debugEvmCoverage.ts.
+        //
+        // `in_app` ORs two independent signals, so a Manual badge does not say
+        // WHICH one was missing. The backend can have resolved a target that
+        // never reaches here (wrong field name, stripped in transit, stale
+        // response) and the symptom is identical to "the resolver refused".
+        // Print the raw shape so the two can be told apart.
+        const rows = raw ?? [];
+        const hasTarget = (o: TOpportunity) => o.depositTarget != null;
+        console.warn(
+          [
+            "═══ DEPOSIT-TARGET WIRE CHECK (copy-paste this) ═══",
+            `rows=${rows.length}`,
+            `serverResolved=${rows.filter(hasTarget).length}`,
+            `adapterOnly=${rows.filter((o) => !hasTarget(o) && getDefiAdapter(o.protocolSlug) != null).length}`,
+            `manual=${rows.filter((o) => !hasTarget(o) && getDefiAdapter(o.protocolSlug) == null).length}`,
+            // If `depositTarget` is absent from this list, the field is being
+            // dropped between Prisma and the device and nothing downstream can
+            // recover it. That is the first thing to check.
+            `keysOnFirstRow=${JSON.stringify(Object.keys(rows[0] ?? {}))}`,
+            `sampleResolved=${JSON.stringify(
+              rows
+                .filter(hasTarget)
+                .slice(0, 5)
+                .map((o) => `${o.protocolSlug}:${o.poolId}`),
+            )}`,
+            "═══ END WIRE CHECK ═══",
+          ].join("\n"),
+        );
       }
       return {
         status: "success",
