@@ -41,6 +41,9 @@ const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address;
 
 /** Compound III cUSDCv3 (address-book lending.ts `COMET_MARKETS[1]`). */
 const COMET_USDC = "0xc3d688B66703497DAA19211EEdff47f25384cdc3" as Address;
+/** Compound III cWBTCv3, added 2026-08-21 (address-book lending.ts `COMET_MARKETS[1]`). */
+const COMET_WBTC = "0xe85Dc543813B8c2CFEaAc371517b925a166a9293" as Address;
+const WBTC = "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599" as Address;
 /**
  * Compound v2 cUSDC. The registered Tier-2 cToken resolvers are forks (Venus,
  * Benqi, Sonne) on chains the `Blockchain` table does not carry yet, so the
@@ -69,6 +72,7 @@ const MORPHO_MARKET = {
 } as const;
 
 const ONE_THOUSAND_USDC = 1_000_000_000n; // 6 dp
+const ONE_WBTC = 100_000_000n; // 8 dp
 
 const describeFork = canFork(ETHEREUM) ? describe : describe.skip;
 
@@ -142,6 +146,23 @@ describeFork("Tier 2 — fork execution on Ethereum", () => {
       target: { kind: "compound-v3", comet: COMET_USDC, asset: USDC },
       asset: { symbol: "USDC", contract: USDC, decimals: 6 },
       amount: ONE_THOUSAND_USDC,
+    });
+  }, 240_000);
+
+  it("Comet cWBTCv3 — the largest of three markets added 2026-08-21", async () => {
+    // Ethereum had three Comet markets missing from the book entirely
+    // (cWBTCv3, cWstETHv3, cUSDSv3) — CompoundV3Resolver already iterates
+    // every pinned market and validates baseToken(), so this was purely a
+    // missing address, not a resolver gap, and it was the single largest
+    // coverage item on the three seeded chains (~$536M across cWBTCv3's two
+    // DeFiLlama rows). The shape is identical to cUSDCv3 above; this proves
+    // the SPECIFIC address rather than the calling convention — an 8-decimal
+    // base asset is also a different decimals path than USDC's 6 to exercise.
+    await roundTrip({
+      adapter: CometV3Adapter,
+      target: { kind: "compound-v3", comet: COMET_WBTC, asset: WBTC },
+      asset: { symbol: "WBTC", contract: WBTC, decimals: 8 },
+      amount: ONE_WBTC,
     });
   }, 240_000);
 
