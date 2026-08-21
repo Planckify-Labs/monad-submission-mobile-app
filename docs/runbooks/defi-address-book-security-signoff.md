@@ -582,6 +582,30 @@ evidence that the review is tractable rather than performative.
 |---|---|
 | §12.3 #5 — every pinned address reviewed | **COMPLETE — 125/125 signed off. All six findings closed 2026-08-21** (§6.1). Outstanding: a **named counter-signature** (§7) and the operational item in §1.6 (schedule the drift spec). |
 
+### 6.2 Addresses added after the 2026-08-21 pass
+
+The sign-off covers the book as it stood. Every line added since carries its
+own evidence here, to the same three-part bar (§2.2): the protocol's own
+registry, a second official source, and the label matching.
+
+| Address | Family | Provenance | Cross-check | Label |
+|---|---|---|---|---|
+| `0x036676389e48133B63a802f8635AD39E752D375D` | Kelp `entry` (LRTDepositPool) | Kelp's own on-chain registry: `LRTDepositPool.lrtConfig()` → `0x947Cb493…` | `LRTConfig.rsETH()` returns the pinned receipt below, so the two constants corroborate each other | `getRsETHAmountToMint` answers; `getTotalAssetDeposits` = 143,858 ETH, matching DeFiLlama's TVL |
+| `0xA1290d69c65A6Fe4DF752f95823fae25cB99e5A7` | Kelp `receipt` (rsETH) | `LRTConfig.rsETH()` | DeFiLlama's `kelp` row names rsETH on Ethereum | `symbol()` = `"rsETH"` |
+| `0x349A73444b1a310BAe67ef67973022020d70020d` | Kelp `rateViewAt` (LRTOracle, device-side) | `LRTConfig.getContract(keccak("LRT_ORACLE"))` | `rsETHPrice()` = 1.078433, the **exact inverse** of the pool's own mint quote (0.927272) | Valuation only. Not a `tx.to` |
+| `0x99CD4Ec3f88A45940936F469E4bB72A2A701EEB9` | Sky `stUSDS` | Sky's on-chain **dss-chain-log** (`0xdA0Ab1e0…`, 515 entries): `getAddress("STUSDS")` | The same registry returns `SUSDS` → `0xa3931d71…` and `USDS` → `0xdC035D45…`, both matching constants reviewed independently in the first pass | `symbol()` `"stUSDS"`, `name()` `"Staked USDS"`, `asset()` = USDS, `totalAssets()` $199.9M vs DeFiLlama's $204.0M |
+
+**Venue question asked for each** (§2.2's third part, the one that needs a
+person): Kelp is a live restaking protocol with ~$1.10B staked and a working
+withdrawal queue, shipped **deposit-only** because that queue is two-phase.
+`stUSDS` is Sky's own savings vault, deposit-capped rather than gated, and its
+round trip was **executed on a fork** rather than inferred from probes — which
+is the check Avant taught us to insist on, since every structural signal on
+Avant also looked correct.
+
+**Running total: 129 addresses.** The counter-signature in §7 covers 125; these
+four are appended pending the same signature.
+
 **This document does not by itself clear any tier for production.** §12.3 has
 nine requirements; this is one. Requirement 9 (a human running the full journey
 on a real device with real funds) remains outstanding and is not something this

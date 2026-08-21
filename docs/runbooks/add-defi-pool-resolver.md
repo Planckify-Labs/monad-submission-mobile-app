@@ -874,7 +874,7 @@ row so nobody re-derives it:
 | SKY Staking Engine (~$638M) | A different product; not a 4626 supply vault | Correct |
 | Arbitrum + OP `sUSDS` (~$367M) | **Verified on chain**: answers `symbol()` → `"sUSDS"` and REVERTS on `asset()`, `totalAssets()`, `convertToShares()`, `maxDeposit()`. A bridged token, 160 bytes of code | Correct — and the exact §11.5c trap ("answers `symbol()` but is not 4626") |
 | USDS "GROVE Farming Pool" (~$166M) | Its deep link names `0x4E41488C…`, whose `stakingToken()` is USDS and `rewardsToken()` is GROVE — a **Synthetix-style rewards farm**, not a vault. `asset()`/`totalAssets()` revert | Correct. A farm is `stake`/`getReward`, a different kind |
-| STUSDS "Expert Mode" (~$204M) | The only genuine gap. Its link (`widget=expert&expert_module=stusds`) carries **no address at all**, so no candidate can be requested | Open — needs Sky's own address source |
+| STUSDS "Expert Mode" (~$204M) | Its deep link carries **no address at all** (`widget=expert&expert_module=stusds`), so no candidate source could ever answer for it | **SHIPPED** — see below. The address came from Sky's own on-chain registry instead |
 
 Two things generalise. The GROVE row is another **"the link is the wrong
 contract"** case (§11.5b): the deep link is real, official, and points at a
@@ -885,6 +885,59 @@ WETH/WBTC vault — `pinnedVaultResolver` has no `skipPool`. That is the
 `aave-v4` reasoning exactly: it holds until someone pins a vault for one of
 those assets, at which point a **borrow-side row would resolve into a supply
 vault**. Worth closing before it bites.
+
+#### stUSDS: when the deep link has no address, look for an on-chain registry
+
+`stUSDS` (~$204M) was the only Sky row that was a real gap, and the reason is
+worth generalising: **its deep link names no contract**, so every
+candidate-source strategy in §11.5b is dead on arrival for it.
+
+The answer was Sky's own **dss-chain-log** (`0xdA0Ab1e0…`), an on-chain registry
+of 515 named addresses. `getAddress("STUSDS")` returns the vault. That is
+better provenance than any deep link: it cannot be paywalled, cannot go stale,
+and is the same trust model as the validator that runs immediately after
+(§11.6). It also **cross-checks the existing book** — the same registry returns
+`SUSDS` and `USDS` matching constants reviewed independently in the first
+sign-off pass.
+
+**Ask whether the protocol has an on-chain registry before concluding it has no
+address source.** Maker/Sky, Kelp (`LRTConfig`), Euler (`GenericFactory`) and
+Curve (MetaRegistry) all do.
+
+##### It also needed the pinned book to hold two vaults over one asset
+
+`pinnedVaultResolver` matched on `(chain, underlying)` and refused on anything
+but exactly one candidate. Sky ships **both** `sUSDS` and `stUSDS` over USDS, so
+naively pinning the second would have made the asset ambiguous and refused
+BOTH — taking the ~$4.66B `sUSDS` pool down with it. A coverage change that
+silently removes the largest pool in a family is the kind that gets noticed in
+production.
+
+The discriminator is the vault's own **ticker**, matched **exactly** against the
+row's `symbol`/`poolMeta` and required to be unique. Deliberately not fuzzy:
+bidirectional `includes()` on a shared symbol is what mis-routed 25 Morpho pools
+(§11.6b), and `sUSDS` vs `stUSDS` is precisely the near-miss pair that would
+feed on it. With one vault per asset the field is still not consulted at all, so
+nothing else in any book changed behaviour.
+
+##### The round trip returned MORE than went in, and that was correct
+
+The fork case failed on an invariant that reads as obviously right: a round trip
+must never return more than went in, or the withdraw took someone else's assets.
+
+But a yield vault accrues every block and a round trip spans several. `stUSDS`
+is the first vault here with a large enough balance and a real enough rate to
+show it: **+6.8e12 wei on 1000 USDS, or 0.000068bp**, reproducible across runs.
+The invariant now takes a `maxGainBps` (default 1bp — still ~15,000x the
+observed accrual, so "drained a neighbour" remains impossible to slip through).
+
+Two process notes from the same run. The first execution failed with a genuine
+`redeem` revert that **did not reproduce**; re-running is the documented first
+move for a fork failure, and it was the right one here. And a debug `console.log`
+of a receipt threw `Do not know how to serialize a BigInt`, which read as a chain
+revert and sent this investigation down a blind alley for a while — **simulate
+with `eth_call` BEFORE sending** when you want a revert reason, and never infer
+one from your own logging.
 
 #### What the fork run changed (and why the dry run was not enough)
 
@@ -1208,7 +1261,7 @@ a declared `rateTakesAmount`, with `rateViewOn` alongside it because
 
 ### 11.7 Fork-test status
 
-**30 cases, all passing** (2026-08-21) — 27 plus Kelp's three. Tiers 1-3 run at `FORK_BLOCKS`
+**31 cases, all passing** (2026-08-21) — 27 plus Kelp's three and Sky's stUSDS. Tiers 1-3 run at `FORK_BLOCKS`
 (Ethereum 23,000,000 / Base 28,000,000); the onboarding suite runs at the
 near-head `FORK_BLOCKS_RECENT` because two of its vaults did not exist at the
 older pin. What each tier proved:

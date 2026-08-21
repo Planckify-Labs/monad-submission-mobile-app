@@ -63,6 +63,9 @@ const STETH = "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84" as Address;
 const MANTLE_STAKING = "0xe3cBd06D7dadB3F4e6557bAb7EdD924CD1489E8f" as Address;
 const METH = "0xd5F7838F5C461fefF7FE49ea5ebaF7728bB0ADfa" as Address;
 const KELP_POOL = "0x036676389e48133B63a802f8635AD39E752D375D" as Address;
+const STUSDS = "0x99CD4Ec3f88A45940936F469E4bB72A2A701EEB9" as Address;
+const USDS_ETH = "0xdC035D45d973E3EC169d2276DDab16f1e407384F" as Address;
+const ONE_THOUSAND_USDS = 1_000n * 10n ** 18n;
 const RSETH = "0xA1290d69c65A6Fe4DF752f95823fae25cB99e5A7" as Address;
 
 /** Avant `savETH` (address-book vaults.ts, AVANT_VAULTS) and its underlying. */
@@ -114,6 +117,12 @@ async function erc4626RoundTrip(
      * fail this.
      */
     maxLossBps: bigint;
+    /**
+     * Accrual headroom for the "did not return more than went in" check.
+     * Defaults to 1bp, which is far above any per-block yield and far below
+     * anything that would indicate the withdraw took assets it should not.
+     */
+    maxGainBps?: bigint;
   },
 ): Promise<void> {
   const { vault, asset, amount, maxLossBps } = opts;
@@ -180,9 +189,27 @@ async function erc4626RoundTrip(
       "this vault is expected to charge — either the vault changed its fee or " +
       "the withdraw is not exiting the whole position",
   ).toBeLessThanOrEqual(allowed);
-  // A round trip must never RETURN more than went in: that would mean the MAX
-  // withdraw took someone else's assets, or the funding step over-dealt.
-  expect(assetFinal).toBeLessThanOrEqual(assetBefore);
+  // A round trip must not return MATERIALLY more than went in: a large gain
+  // would mean the MAX withdraw took someone else's assets, or the funding
+  // step over-dealt.
+  //
+  // "Materially" is the whole subtlety. A yield vault accrues every block, and
+  // a round trip spans several, so a small gain is not a bug — it is the vault
+  // working. Sky's `stUSDS` is the first case here to accrue fast enough to
+  // show: it returns ~6.8e12 wei on 1000 USDS, which is 0.000068bp. A strict
+  // `<=` made a correct vault unpassable, and would have done the same to any
+  // future vault with a real rate on a large balance.
+  //
+  // The bound stays tiny on purpose — 1bp is still ~15,000x the observed
+  // accrual, so "the withdraw drained a neighbour" remains impossible to slip
+  // through.
+  const maxGain = (amount * (opts.maxGainBps ?? 1n)) / 10_000n;
+  expect(
+    assetFinal,
+    `round trip RETURNED more than went in, by ${assetFinal - assetBefore} ` +
+      `of ${amount} ${asset.symbol} — beyond the ${opts.maxGainBps ?? 1n}bp ` +
+      "accrual allowance, so this is not per-block yield",
+  ).toBeLessThanOrEqual(assetBefore + maxGain);
 }
 
 describeEth("Onboarding — Ethereum", () => {
@@ -463,6 +490,31 @@ describeEth("Onboarding — Ethereum", () => {
       "savETH redeemed without a cooldown — Avant may have set cooldownDuration " +
         "to 0, in which case revisit the withheld entry in protocols.ts",
     ).rejects.toThrow(/0xf50a3b52|OperationNotAllowed|revert/i);
+  }, 240_000);
+
+  it("Sky stUSDS — round-trips the SECOND pinned vault over USDS", async () => {
+    // Two things at once.
+    //
+    // 1. `stUSDS` is a real, depositable 4626 and its exit actually works.
+    //    Every lockup probe on it REVERTS — no `cooldownDuration`, no
+    //    `withdrawEpochsTimelock`, no ERC-7540 interface — so `readExitTerms`
+    //    reports `instant` off the family allowlist rather than off proof
+    //    (§11.3b's stated soft spot). Avant is why that is not good enough:
+    //    it also passed every structural check and its redeem reverted. The
+    //    only way to know is to execute the exit.
+    //
+    // 2. The resolver picked the RIGHT one of two vaults over the same asset.
+    //    Sky pins `sUSDS` (~$4.66B) and `stUSDS` (~$204M) over USDS, and they
+    //    are different products with different rates. A round trip through the
+    //    wrong one would still "work" — money in, money out — which is exactly
+    //    why the ticker discriminator is exact and why this asserts the
+    //    address rather than just the balance.
+    await erc4626RoundTrip(ctx, {
+      vault: STUSDS,
+      asset: { symbol: "USDS", contract: USDS_ETH, decimals: 18 },
+      amount: ONE_THOUSAND_USDS,
+      maxLossBps: 5n,
+    });
   }, 240_000);
 
   it("Auto Finance — round-trips a USDC autopool found via the Tokemak API", async () => {
