@@ -12,18 +12,35 @@
  *               lendingMarket, reserveArrayIndex, clock, coin) -> Coin<CToken<P,T>>
  *
  * The `reserve::CToken<P,T>` receipt goes to the sender. `P` (marketType) is the
- * market phantom `<pkg>::suilend::MAIN_POOL`; the moveCall package is DERIVED
- * from it, so the target is fully self-contained (no config file).
+ * market phantom `<pkg>::suilend::MAIN_POOL` — that address is the type's
+ * ORIGINAL/immutable publish address, which is NOT the same as the CURRENT
+ * moveCall target once a protocol upgrades (see `suilend.config.ts`).
  *
- * SCOPE (deposit-only, 2026-07-03): deposit + the atomic swap→supply zap are
- * in-app. WITHDRAW is intentionally NOT wired: Suilend's
- * `redeem_ctokens_and_withdraw_liquidity` aborts unless the reserve price was
- * refreshed in-tx, and the on-chain Pyth `PriceInfoObject` is a PULL oracle
- * (often minutes stale) → a reliable redeem needs a full Pyth/Wormhole VAA push
- * (Hermes → verify → update → refresh → redeem), the dependency the codebase
- * deliberately dropped for Scallop. Until that lands, `buildWithdraw` fails
- * closed with a curated "withdraw on site" message and `readPosition` returns
- * null. MAINNET-ONLY (`chainId:"mainnet"`).
+ * CORRECTED 2026-08-22 — this adapter (and its resolver/bootstrap registration)
+ * was withheld since 2026-07-03 for a reason that turned out to be wrong.
+ * Original claim: "deposit AND withdraw both assert a fresh reserve price
+ * (abort code 1), needs a Pyth pull-oracle push in-tx." Verified against
+ * `solendprotocol/suilend`'s `lending_market.move` AND live
+ * `sui_devInspectTransactionBlock`: `deposit_liquidity_and_mint_ctokens` and
+ * `redeem_ctokens_and_withdraw_liquidity_request` call NEITHER Pyth nor any
+ * price/oracle function — their only asserts are version/amount/coin-type/
+ * rate-limiter. Abort code 1 is `EIncorrectVersion`: this file used to derive
+ * the moveCall package from `marketType`'s immutable prefix, which is stale
+ * (Suilend's on-chain `UpgradeCap.version` is 22 today; even the published
+ * `@suilend/sdk@11.0.4` only knows up to "PKG_V11"). Fixed by fetching the
+ * current package from the `UpgradeCap` (`suilend.config.ts`, "config not
+ * constants" — same fix NAVI already needed for the identical bug shape, see
+ * `navi.config.ts`).
+ *
+ * SCOPE (deposit-only, still true, but for a different reason now): deposit +
+ * the atomic swap→supply zap are in-app, DEVICE-VERIFIED via devInspect
+ * against live mainnet 2026-08-22. WITHDRAW stays deferred — the Move source
+ * shows no oracle blocker, so it is very likely fine with the same package
+ * fix, but it has NOT been exercised against a real on-chain position (no
+ * owned CToken to devInspect with), so `buildWithdraw` still fails closed
+ * with a curated "withdraw on site" message and `readPosition` still returns
+ * null until that verification happens — not because of Pyth. MAINNET-ONLY
+ * (`chainId:"mainnet"`).
  */
 
 import { toBase64 } from "@mysten/bcs";
@@ -44,6 +61,7 @@ import type {
   ZapSupplyResult,
 } from "../types";
 import { prepareInputCoin } from "./sui/coins";
+import { getSuilendPackage } from "./suilend.config";
 
 const SLUG = "suilend-sui";
 const NETWORK = "mainnet" as const;
@@ -57,15 +75,6 @@ function devWarn(scope: string, err: unknown): void {
 
 function suiClientFor(chain: SuiChainConfig): SuiJsonRpcClient {
   return new SuiJsonRpcClient({ url: chain.rpcUrl, network: chain.network });
-}
-
-/** The moveCall package = the address that owns the `MAIN_POOL` phantom type. */
-function packageOf(marketType: string): string {
-  const pkg = marketType.split("::")[0];
-  if (!/^0x[0-9a-fA-F]+$/.test(pkg)) {
-    throw new DefiError("deposit_failed", "suilend: malformed market type");
-  }
-  return pkg;
 }
 
 /**
@@ -100,7 +109,8 @@ export async function buildSuilendZapSupply(
   const { lendingMarket, marketType, reserveArrayIndex, coinType } =
     requireSuilendTarget(args.target);
   try {
-    const pkg = packageOf(marketType);
+    const client = suiClientFor(args.chain);
+    const pkg = await getSuilendPackage(client);
     const tx = new Transaction();
     tx.setSender(args.wallet.address);
 
@@ -124,7 +134,7 @@ export async function buildSuilendZapSupply(
       tx.pure.address(args.wallet.address),
     );
 
-    const bytes = await tx.build({ client: suiClientFor(args.chain) });
+    const bytes = await tx.build({ client });
     return {
       ptbBase64: toBase64(bytes),
       expectedOut: swap.expectedOut,
@@ -166,8 +176,8 @@ export const SuilendSuiAdapter: DefiProtocolAdapter = {
     const { lendingMarket, marketType, reserveArrayIndex, coinType } =
       requireSuilendTarget(target);
     try {
-      const pkg = packageOf(marketType);
       const client = suiClientFor(chain);
+      const pkg = await getSuilendPackage(client);
       const tx = new Transaction();
       tx.setSender(wallet.address);
 
@@ -180,7 +190,10 @@ export const SuilendSuiAdapter: DefiProtocolAdapter = {
       );
 
       // deposit_liquidity_and_mint_ctokens<P,T>(lendingMarket, reserveArrayIndex,
-      //   clock, coin) -> Coin<CToken<P,T>>. No oracle needed on the mint path.
+      //   clock, coin) -> Coin<CToken<P,T>>. No oracle needed on the mint path
+      // (verified against source + live devInspect, 2026-08-22 — see the file
+      // header). `pkg` is the CURRENT package (suilend.config.ts); `marketType`'s
+      // own prefix stays the immutable type identity for `typeArguments`.
       const [ctoken] = tx.moveCall({
         target: `${pkg}::${DEPOSIT_TARGET}`,
         typeArguments: [marketType, coinType],
@@ -203,10 +216,15 @@ export const SuilendSuiAdapter: DefiProtocolAdapter = {
   },
 
   async buildWithdraw(_args: BuildWithdrawArgs): Promise<UnsignedCall> {
-    // Deferred: Suilend's redeem requires a fresh Pyth price pushed in-tx (the
-    // on-chain PriceInfoObject is a pull oracle, often stale). Until the
-    // Pyth/Wormhole push lands, fail closed with a curated message so the user
-    // is told to withdraw on-site rather than shown a confusing on-chain abort.
+    // Deferred, but NOT for the reason this comment used to give (corrected
+    // 2026-08-22 — see the file header): `redeem_ctokens_and_withdraw_liquidity_request`
+    // in Suilend's own Move source calls no Pyth/price function at all, and the
+    // package-staleness bug that blocked deposit is fixed the same way here
+    // (`getSuilendPackage`). What's actually missing is verification: unlike
+    // deposit, this hasn't been exercised via `sui_devInspectTransactionBlock`
+    // against a real owned CToken (none available to test with outside a live
+    // position), so it stays fail-closed with a curated message until a fork/
+    // device test confirms it end to end — not because of an oracle push.
     throw new DefiError(
       "withdraw_failed",
       "In-app withdrawal isn't available for Suilend yet. Withdraw at suilend.fi.",
@@ -214,9 +232,11 @@ export const SuilendSuiAdapter: DefiProtocolAdapter = {
   },
 
   async readPosition(): Promise<DefiPosition | null> {
-    // Omitted for now: a live cToken→underlying value via simulate-redeem needs
-    // the same fresh-price refresh the withdraw path does (aborts otherwise), so
-    // the position shows its recorded deposit amount until the Pyth push lands.
+    // Omitted for now: NOT a Pyth blocker (corrected 2026-08-22, see the file
+    // header) — a live cToken→underlying value would need a read/simulate path
+    // that hasn't been written yet. The position still shows its recorded
+    // deposit amount via the generic amountAtDeposit fallback (this adapter
+    // just doesn't supply a live update).
     return null;
   },
 };

@@ -95,6 +95,11 @@ describe("DepositTarget union parity (spec §8.7)", () => {
       "navi-pool",
       "suilend-market",
       "sui-lst",
+      "kai-vault",
+      "current-market",
+      "cetus-clmm-pool",
+      "turbos-clmm-pool",
+      "bluefin-spot-pool",
       "solana-reserve",
     ]);
     const declared = kinds(mobileUnion).filter((k) => !nonEvm.has(k));

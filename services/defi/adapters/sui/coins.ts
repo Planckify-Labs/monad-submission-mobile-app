@@ -22,6 +22,23 @@ export function isNativeSui(coinType: string): boolean {
 }
 
 /**
+ * Normalise a Move type/coin-type string for containment/equality checks:
+ * lowercase and collapse leading address zeros, so `0x2::sui::SUI` matches
+ * `0x000…0002::sui::SUI`. Mirrors the API's `sui-rpc.ts` twin exactly (kept
+ * as a separate copy, not a shared package, same as every other Sui
+ * primitive duplicated across the two repos here).
+ */
+export function normSuiType(s: string): string {
+  return s.toLowerCase().replace(/0x0+/g, "0x");
+}
+
+/** Compare two Sui coin types tolerating address zero-padding + struct casing. */
+export function eqSuiCoinType(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  return normSuiType(a) === normSuiType(b);
+}
+
+/**
  * Decode a little-endian BCS unsigned integer (u64/u128/u256) from a
  * `devInspect` return-value byte array into a bigint. Width-agnostic — the loop
  * folds however many bytes the getter returned, so it serves u64 shares/amounts

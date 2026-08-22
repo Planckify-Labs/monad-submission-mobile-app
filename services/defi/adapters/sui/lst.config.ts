@@ -11,8 +11,12 @@
  * Every id below was decoded from a REAL recent mainnet stake transaction
  * (verified 2026-07-04) — never hand-guessed. The deposit legs are all
  * ORACLE-FREE (params are only `SuiSystemState` + the venue's pool objects +
- * `Coin<SUI>`; no Pyth `PriceInfoObject`), which is exactly why these can badge
- * "Deposit in-app" where Suilend (Pyth-gated) cannot.
+ * `Coin<SUI>`; no Pyth `PriceInfoObject`), which lets these badge "Deposit
+ * in-app" without a package-refresh dependency at all. (Suilend's deposit
+ * turned out to be oracle-free too, once its own stale-package bug was fixed
+ * 2026-08-22 — see `suilendSui.ts` — so "unlike Suilend" no longer applies;
+ * these venues are simply pinned rather than fetched, for a different reason:
+ * their entry points are immutable, not upgradeable.)
  *
  * The mobile `SuiLstAdapter` routes here by `DepositTarget.venue`; the backend
  * `SuiLstResolver` emits `{ kind: "sui-lst", venue, lstType }` and the LST

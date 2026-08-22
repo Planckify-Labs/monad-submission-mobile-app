@@ -37,8 +37,11 @@ import {
 } from "./adapters/aaveV3";
 import { AsyncVaultAdapter } from "./adapters/asyncVault";
 import { BalancerLpAdapter } from "./adapters/balancerLp";
+import { BluefinSpotSuiAdapter } from "./adapters/bluefinSpotSui";
+import { CetusSuiAdapter } from "./adapters/cetusSui";
 import { CometV3Adapter } from "./adapters/cometV3";
 import { CompoundV2Adapter } from "./adapters/compoundV2";
+import { CurrentSuiAdapter } from "./adapters/currentSui";
 import { Curve3poolAdapter } from "./adapters/curve3pool";
 import { CurveLpAdapter } from "./adapters/curveLp";
 import {
@@ -49,6 +52,7 @@ import { EmberSuiAdapter } from "./adapters/emberSui";
 import { Erc4626Adapter } from "./adapters/erc4626";
 import { EthenaEthereumAdapter } from "./adapters/ethena";
 import { GmxV2ArbitrumAdapter } from "./adapters/gmxV2";
+import { KaiSuiAdapter } from "./adapters/kaiSui";
 import { LidoHoleskyAdapter, LidoMainnetAdapter } from "./adapters/lido";
 import { LstStakeAdapter } from "./adapters/lstStake";
 import {
@@ -67,11 +71,9 @@ import { ScallopSuiAdapter } from "./adapters/scallopSui";
 import { SolanaJitoAdapter } from "./adapters/solanaJito";
 import { SolidlyLpAdapter } from "./adapters/solidlyLp";
 import { SuiLstAdapter } from "./adapters/suiLst";
+import { SuilendSuiAdapter } from "./adapters/suilendSui";
+import { TurbosSuiAdapter } from "./adapters/turbosSui";
 import { UniswapV2LpAdapter } from "./adapters/uniswapV2Lp";
-// SuilendSuiAdapter is implemented but NOT registered — Suilend's deposit AND
-// withdraw both assert a fresh reserve price (abort code 1), needing a Pyth
-// pull-oracle push in-tx (deferred). Registering it would badge Suilend
-// "in-app" then intermittently fail. Wire the Pyth push, then register it.
 import {
   YearnV3EthereumAdapter,
   YearnV3UsdcEthereumAdapter,
@@ -215,8 +217,48 @@ export function bootDefi(): void {
     // oracle-free (no Pyth), so they badge "Deposit in-app". The LST opportunity
     // rows are synthesized server-side (they are not in DeFiLlama's Sui pools).
     registerDefiAdapter(SuiLstAdapter);
-    // Suilend NOT registered — deposit + withdraw are Pyth-gated (see import
-    // note). Adapter is ready; wire the Pyth push then register here.
+    // Suilend — money market, routed by `DepositTarget.kind === "suilend-market"`.
+    // Deposit-only (see suilendSui.ts header, corrected 2026-08-22): the prior
+    // "Pyth-gated" reasoning was wrong — deposit is device-verifiable and its
+    // real blocker (a stale moveCall package) is fixed; withdraw stays deferred
+    // pending its own verification, not an oracle push.
+    registerDefiAdapter(SuilendSuiAdapter);
+    // Kai Finance Single Asset Vaults — generic tokenized vault, routed by
+    // `DepositTarget.kind === "kai-vault"`. Deposit AND full-exit withdraw
+    // both device-verified via sui_devInspectTransactionBlock chained
+    // atomically in one PTB against live mainnet 2026-08-22, no oracle either
+    // direction (see kaiSui.ts header).
+    registerDefiAdapter(KaiSuiAdapter);
+    // Current Finance — isolated-market money market, routed by
+    // `DepositTarget.kind === "current-market"`. DEPOSIT-ONLY: creating the
+    // obligation + depositing chain atomically in one PTB, device-verified
+    // via sui_devInspectTransactionBlock against live mainnet 2026-08-22, no
+    // oracle. Withdraw needs a genuine live Pyth push this codebase hasn't
+    // built for any protocol yet — see currentSui.ts header.
+    registerDefiAdapter(CurrentSuiAdapter);
+    // Cetus CLMM — concentrated liquidity, full-range only, routed by
+    // `DepositTarget.kind === "cetus-clmm-pool"`. DEPOSIT-ONLY: an internal
+    // swap-split zap (own-pool swap, never external) + open_position +
+    // add_liquidity_fix_coin, device-verified via
+    // sui_devInspectTransactionBlock against live mainnet 2026-08-22. No
+    // oracle. Withdraw not wired (see cetusSui.ts header).
+    registerDefiAdapter(CetusSuiAdapter);
+    // Turbos Finance CLMM — concentrated liquidity, full-range only, routed
+    // by `DepositTarget.kind === "turbos-clmm-pool"`. DEPOSIT-ONLY: an
+    // internal swap-split zap + `position_manager::mint` (explicit
+    // amountA/amountB read back in-PTB, no hot-potato receipt like Cetus),
+    // device-verified via sui_devInspectTransactionBlock against live
+    // mainnet 2026-08-22, both input directions. No oracle. Withdraw not
+    // wired (see turbosSui.ts header).
+    registerDefiAdapter(TurbosSuiAdapter);
+    // Bluefin Spot CLMM — concentrated liquidity, full-range only, routed
+    // by `DepositTarget.kind === "bluefin-spot-pool"`. DEPOSIT-ONLY: an
+    // internal swap-split zap + `gateway::provide_liquidity_with_fixed_
+    // amount` (explicit amount/amountAMax/amountBMax read back in-PTB, no
+    // hot-potato receipt), device-verified via
+    // sui_devInspectTransactionBlock against live mainnet 2026-08-22. No
+    // oracle. Withdraw not wired (see bluefinSpotSui.ts header).
+    registerDefiAdapter(BluefinSpotSuiAdapter);
   }
 
   // ── Testnet adapters (QA-only) ──────────────────────────────────

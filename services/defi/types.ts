@@ -148,10 +148,15 @@ export type DepositTarget =
   // Suilend (Sui lending) — `lending_market::deposit_liquidity_and_mint_ctokens
   // <P,T>` → `Coin<reserve::CToken<P,T>>`. `lendingMarket` = shared
   // LendingMarket<P>; `marketType` = the P phantom (`<pkg>::suilend::MAIN_POOL`)
-  // — the adapter derives the moveCall package from it; `reserveArrayIndex` = the
-  // reserve's slot in LendingMarket.reserves[] (u64 arg); `coinType` (T) ==
-  // underlyingTokens[0]. Deposit + zap are in-app; withdraw is on-site for now
-  // (Suilend's redeem needs a Pyth pull-oracle push — deferred).
+  // — the adapter fetches the CURRENT moveCall package from an on-chain
+  // UpgradeCap read (`suilend.config.ts`), not derived from this immutable
+  // type prefix; `reserveArrayIndex` = the reserve's slot in
+  // LendingMarket.reserves[] (u64 arg); `coinType` (T) == underlyingTokens[0].
+  // Deposit + zap are in-app, device-verified 2026-08-22. Withdraw is on-site
+  // for now — NOT because of Pyth (that claim was a stale-package false
+  // alarm, corrected 2026-08-22, see suilendSui.ts's header): the Move source
+  // shows no oracle blocker on withdraw either, it just hasn't been exercised
+  // against a real owned CToken yet.
   | {
       kind: "suilend-market";
       lendingMarket: string;
@@ -166,6 +171,119 @@ export type DepositTarget =
   // receipt coin (for validation/display). One `SuiLstAdapter` serves all
   // venues, routed by `kind === "sui-lst"`.
   | { kind: "sui-lst"; venue: string; lstType: string }
+  // Kai Finance Single Asset Vaults (Sui) — generic tokenized vault, own
+  // package (not Ember's). `vault::deposit<T,Y>` / `vault::withdraw<T,Y>` +
+  // `vault::redeem_withdraw_ticket<T,Y>`, both device-verified to chain
+  // atomically in one PTB (see `adapters/kaiSui.ts`), no oracle. `vault` +
+  // `coinType` (T) are pinned (no public API); `shareType` (Y) is read live
+  // off the vault's own on-chain type by the resolver, never pinned.
+  | { kind: "kai-vault"; vault: string; coinType: string; shareType: string }
+  // Current Finance (Sui) — isolated-market money market, DEPOSIT-ONLY.
+  // `deposit::deposit<M,T>(app, &mut Market<M>, &ObligationOwnerCap, Coin<T>,
+  // &Clock)` after `enter_market::enter_market_return<M>(app, &mut Market<M>)
+  // -> ObligationOwnerCap` (created inline when the wallet doesn't already own
+  // one for this market) — both device-verified atomic in one PTB, no oracle,
+  // 2026-08-22. `app` (ProtocolApp) and `market` are stable shared objects;
+  // `marketType` (M, e.g. `<pkg>::market_type::MainMarket`) is the isolated
+  // market's phantom type, matched from `pool.poolMeta`; `coinType` (T) ==
+  // underlyingTokens[0]. A debt-free obligation cannot be liquidated, so
+  // deposit carries no leverage risk despite the CDP shape.
+  //
+  // WITHDRAW is NOT wired: `withdraw::withdraw_as_coin` requires a LIVE Pyth
+  // price pushed in the SAME transaction (verified against a real production
+  // withdraw tx). That's a genuine new subsystem (Hermes fetch + VAA
+  // encoding) this codebase has never built for ANY protocol — unlike
+  // Suilend, where the identical-looking "Pyth-gated" claim turned out to be
+  // a stale-package false alarm, this one is real.
+  | {
+      kind: "current-market";
+      app: string;
+      market: string;
+      marketType: string;
+      coinType: string;
+    }
+  // Cetus CLMM (Sui) — concentrated-liquidity LP, FULL-RANGE ONLY,
+  // SINGLE-ASSET DEPOSIT via an internal swap-split zap: the adapter reads
+  // the pool's live price, estimates a swap split with
+  // `adapters/sui/clmmMath.ts` (a from-scratch `bigint` port of Cetus's own
+  // published formulas, cross-checked bit-exact against their SDK), swaps
+  // via the SAME pool (`router::swap`, never an external router), then
+  // `pool::open_position` + `pool::add_liquidity_fix_coin` — the contract
+  // computes the exact second-leg amount itself, read back via
+  // `add_liquidity_pay_amount` in the same PTB, so the off-chain estimate
+  // only has to size the swap close enough, not be exact. `pool` is the
+  // resolved pool object; `coinTypeA`/`coinTypeB` are its two legs in
+  // on-chain order; `tickSpacing` (from Cetus's own stats API) is needed
+  // because "full range" is per-pool — `open_position` rejects tick bounds
+  // that aren't multiples of the pool's own spacing, so
+  // `clmmMath.ts`'s `fullRangeTicksFor(tickSpacing)` rounds the global
+  // ±443636 bound to the nearest valid multiple per pool. No oracle.
+  // WITHDRAW is NOT wired (out of scope this round — needs its own careful
+  // `remove_liquidity`/`close_position` pass).
+  | {
+      kind: "cetus-clmm-pool";
+      pool: string;
+      coinTypeA: string;
+      coinTypeB: string;
+      tickSpacing: number;
+    }
+  // Turbos Finance CLMM (Sui) — same shape/reasoning as `cetus-clmm-pool`
+  // (full-range only, single-asset zap-deposit) but a materially simpler
+  // on-chain interface: `position_manager::mint` takes explicit `amountA`/
+  // `amountB` (no hot-potato receipt/repay dance) and the adapter reads
+  // those back from the ACTUAL post-swap coin balances IN-PTB (chained
+  // `coin::value` results), not an off-chain estimate — so there is no
+  // fix-one-side/read-the-other-back step at all. Ticks use a
+  // (absValue:u32, isNegative:bool) pair, not Cetus's two's-complement u32.
+  // Full-range bounds and the swap-split math are the SAME
+  // `adapters/sui/clmmMath.ts` (protocol-agnostic by design) already built
+  // for Cetus. `coinTypeA`/`coinTypeB`/`feeType` are the pool's own 3
+  // generic type params (`Pool<A,B,Fee>` — Turbos parametrizes the fee tier
+  // as a TYPE, not just a numeric field); `tickSpacing` and `pool` come off
+  // Turbos's own public `/pools` stats API. Package address is mutable and
+  // fetched live from Turbos's own hosted `contract.json` (a real "config
+  // not constants" endpoint, unlike Cetus which has none). No oracle.
+  // WITHDRAW is NOT wired (`decrease_liquidity` + `collect`/`collect_reward`
+  // + `burn` needs its own pass, same as Cetus).
+  | {
+      kind: "turbos-clmm-pool";
+      pool: string;
+      coinTypeA: string;
+      coinTypeB: string;
+      feeType: string;
+      tickSpacing: number;
+    }
+  // Bluefin Spot CLMM (Sui) — same shape/reasoning as `cetus-clmm-pool` with
+  // its own mix of the two other protocols' interfaces:
+  // `pool::open_position` takes just (config, pool, tickLower, tickUpper)
+  // like Cetus (two's-complement u32 ticks), but
+  // `gateway::provide_liquidity_with_fixed_amount` takes explicit
+  // amount/amountAMax/amountBMax like Turbos's `mint` (no hot-potato
+  // receipt) — confirmed against 2 real, recent, successful mainnet
+  // transactions, including verifying the liquidity call auto-refunds any
+  // unused offered balance to the sender internally (via that transaction's
+  // own balanceChanges/objectChanges, not just its success status). The
+  // internal swap-split zap uses the LOW-LEVEL `pool::swap`
+  // (Balance<A>/Balance<B> in and out, composable in one PTB) rather than
+  // the convenience `gateway::swap_assets`, which auto-transfers its output
+  // coins straight to the sender (an "entry"-style function, not chainable
+  // into the same PTB as the deposit — found via a real transaction with no
+  // disposal commands after it). `coinTypeA`/`coinTypeB` are the pool's 2
+  // generic type params (fee tier is a numeric field here, not a type param
+  // like Turbos); `tickSpacing` and `pool` come off Bluefin's own public
+  // `/pools/info` stats API. Package address is mutable and PINNED in the
+  // adapter's config (no live-fetchable config endpoint exists for Bluefin
+  // Spot, same gap as Cetus) — see `bluefin.config.ts`'s header for the
+  // verification story. No oracle. WITHDRAW is NOT wired
+  // (`pool::remove_liquidity` + `gateway::close_position` needs its own
+  // pass, same as Cetus/Turbos).
+  | {
+      kind: "bluefin-spot-pool";
+      pool: string;
+      coinTypeA: string;
+      coinTypeB: string;
+      tickSpacing: number;
+    }
   | { kind: "solana-reserve"; program: string; reserve: string; mint: string };
 
 export type DepositTargetKind = DepositTarget["kind"];
@@ -190,12 +308,20 @@ export function targetUnderlying(target: DepositTarget): string | null {
     case "solidly-lp":
     case "uniswap-v2":
       return target.token0;
+    // Same "both legs deposited, report the primary leg" shape as the EVM
+    // LP kinds above — coinTypeA is each protocol's own on-chain leg ordering.
+    case "cetus-clmm-pool":
+    case "turbos-clmm-pool":
+    case "bluefin-spot-pool":
+      return target.coinTypeA;
     case "router-call":
       return target.tokenIn;
     case "scallop-market":
     case "ember-vault":
     case "navi-pool":
     case "suilend-market":
+    case "kai-vault":
+    case "current-market":
       return target.coinType;
     case "solana-reserve":
       return target.mint;

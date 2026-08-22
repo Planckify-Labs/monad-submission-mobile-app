@@ -21,7 +21,11 @@
  * The input asset is always native SUI; the receipt is the venue's LST coin,
  * which appreciates against SUI via staking rewards. Every deposit leg is
  * ORACLE-FREE (no Pyth `PriceInfoObject`) — that is what lets these badge
- * "Deposit in-app" where Suilend (Pyth-gated) stays manual. All four are in-app.
+ * "Deposit in-app". All four are in-app. (Suilend's own deposit is oracle-free
+ * too as of 2026-08-22 — its earlier "Pyth-gated" status was a stale-package
+ * false alarm, see `suilendSui.ts` — so it's no longer the contrast case
+ * here; Current Finance's withdraw is the current real example of a
+ * genuine Pyth dependency in this codebase, see `currentSui.ts`.)
  * Haedal + Volo additionally hard version-gate their shared objects, so their
  * preview dry-run aborts `assert_version` even though real execution succeeds
  * (verified); the adapter forces an explicit gas budget (so `tx.build` doesn't
