@@ -20,7 +20,9 @@
     "test": "pnpm test:vitest && pnpm test:node",
     "test:vitest": "vitest run",
     "test:node": "bash scripts/run-node-tests.sh",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "defi:fork": "FORK_TESTS=1 vitest run services/defi/__fork__",
+    "defi:fork:pins": "node scripts/defi-fork-pins.mjs"
   },
   "dependencies": {
     "@adraffy/ens-normalize": "1.11.1",

@@ -10,6 +10,13 @@
 > users to deposit into it **in-app** instead of the "manual" fallback.
 > The spec explains *why*; this file is the *how*, step by step.
 
+> ### 🧪 Onboarding a protocol? [§13](#13-gate-4--rehearsing-the-whole-write-path-without-real-money) is how you test it without real money.
+>
+> `pnpm defi:fork` runs the **real** `deposit` / `withdraw` executors against an
+> anvil fork of mainnet — guards, approve, submit, position row, `MAX` withdraw.
+> Add one row to `EXECUTOR_FORK_CASES`; `forkCoverage.test.ts` fails the build if
+> a new execution shape or a live chain has no case.
+>
 > ### ⚠️ Turning a DeFi tier ON? Go straight to [§12](#12-turning-a-tier-on--requirements-and-how-to-test).
 >
 > The `FEATURE_DEFI_EVM_TIER*` flags default OFF **on purpose**. That is a
@@ -1708,7 +1715,22 @@ pnpm defi:fork:pins        # read heads from the chains; never invent a pin
 One Alchemy key serves all four live chains as archive, including Arbitrum and
 Polygon (verified 2026-08-22).
 
-### 13.7 Two harness bugs this found
+**In CI** (`.github/workflows/defi-verification.yml`, the repo's first workflow):
+
+| Job | When | Needs |
+|---|---|---|
+| `gate` | every push + PR | nothing. Typecheck, `check:chains`, `check:defi`, full vitest **including `forkCoverage.test.ts`** |
+| `fork` | nightly + `workflow_dispatch` | `ALCHEMY_API_KEY` secret + foundry. Runs Gates 3 and 4, and reports pin drift first |
+
+Merges are gated on `gate` only. Gating them on `fork` would make the build
+depend on third-party RPC uptime, which §11.5 warns is how a red check becomes
+an ignored one. `pnpm test:node` is wired as **non-blocking** because
+`hooks/useWallet.helpers.test.ts` is red today for an unrelated reason (the
+fire-and-forget rpc-proxy token mint escapes the test and hits `__DEV__`, which
+`node:test` does not define; every assertion in the file passes). Make it
+blocking once that is fixed.
+
+### 13.7 Four bugs this found
 
 **Arbitrum and Polygon had no fork pin at all.** Both are seeded, non-testnet
 `Blockchain` rows with pinned addresses in both books — users can reach them —
@@ -1722,6 +1744,35 @@ probe walked 40 slots; `ERC20Upgradeable` reserves a 50-slot `__gap`, so
 bridged L2 stablecoin is this shape, i.e. most of what users actually deposit.
 The failure read as "this token cannot be dealt", which looks like a property of
 the token rather than a limit of the probe. `MAX_SLOT` is now 128.
+
+Those two were harness bugs. The next two are **product** bugs, found the first
+time the ERC-4626 case ran — which is the point of the gate.
+
+**`Erc4626Adapter.readPosition()` was a stub that always returned null.** Its
+comment said the vault "is not derivable from the wallet address", which was
+true when written and stopped being true once `PositionReadContext` gained
+`target`: the withdraw path threads the vault in from the position's pinned
+`poolId`, exactly as `cometV3` receives its Comet. It now reads `balanceOf` and
+converts through `convertToAssets`, so the position reports in UNDERLYING units
+— the units `amountAtDeposit` was recorded in, so a PnL comparison is no longer
+comparing shares against assets.
+
+**The withdraw's `no_onchain_balance` preflight ran AFTER `buildWithdraw`.** Its
+own comment says it exists to "fail with a clear, typed reason instead of
+submitting a doomed transaction" — but it sat ~80 lines below the call it was
+meant to precede. For any adapter that refuses an empty position while
+*building*, the guard was unreachable: `erc4626` throws `position_not_found`
+("no shares") there, so a drained 4626 vault reported a **missing** position
+rather than an empty one. Those are different recovery classes, and the first is
+not even true — the row exists. `compound-v3` reached the guard only because
+Comet's builder does not throw, which is why the same user situation produced
+two different error codes depending on the family. The preflight now sits above
+`buildWithdraw` and reads the address from `context.wallet`, so it needs nothing
+resolved downstream. Both Gate-4 cases now refuse an emptied position with
+`no_onchain_balance`.
+
+Neither was reachable from Gate 3, which never calls the executor, nor from a
+unit test, which has no real emptied position on a real chain to read.
 
 ### 13.8 What still needs a human, and what still needs money
 

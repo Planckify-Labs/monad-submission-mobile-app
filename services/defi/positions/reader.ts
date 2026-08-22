@@ -25,8 +25,12 @@ import {
 } from "viem/chains";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { AaveV3Deployments, readAaveV3Position } from "../adapters/aaveV3";
-import { getDefiAdapter } from "../registry";
-import type { DefiPosition, PositionReadContext } from "../types";
+import { getDefiAdapter, getDefiAdapterForTarget } from "../registry";
+import type {
+  DefiPosition,
+  DepositTarget,
+  PositionReadContext,
+} from "../types";
 
 export interface PositionReadInput {
   protocolSlug: string;
@@ -52,15 +56,55 @@ export interface PositionReadInput {
   chain?: ChainConfig;
 }
 
+/** Best-effort fetch of the authoritative on-chain target for a pool row. */
+async function fetchPoolTarget(poolId: string): Promise<DepositTarget | null> {
+  try {
+    const { strategiesApi } = await import("@/api/endpoints/strategies");
+    const opp = await strategiesApi.getPool(poolId).catch(() => null);
+    return opp?.depositTarget ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Read the current on-chain state of a position. Returns `null` when
- * the adapter can't resolve (e.g. Aave without an asset hint, or the
- * position is empty).
+ * Read the current on-chain state of a position.
+ *
+ * `null` means "could not read" — no adapter claims this position, or the read
+ * failed. It does NOT mean "empty": an adapter that resolves reports a real
+ * zero, and callers depend on that distinction. `withdraw`'s
+ * `no_onchain_balance` guard fires on `currentAmount <= 0n`, which a `null` can
+ * never satisfy, so an adapter returning `null` for a drained position silently
+ * disables the guard rather than tripping it.
  */
 export async function readPosition(
   input: PositionReadInput,
 ): Promise<DefiPosition | null> {
-  const adapter = getDefiAdapter(input.protocolSlug);
+  let adapter = getDefiAdapter(input.protocolSlug);
+  let prefetchedTarget: DepositTarget | null = null;
+
+  // Kind-routed families carry the DEFILLAMA PROJECT slug, which no adapter
+  // claims — `Erc4626Adapter` declares no `externalSlugs` and serves Sky,
+  // Morpho, Yearn and Euler alike. A slug-only lookup therefore missed every
+  // one of them and returned null here, which silently disabled the caller's
+  // guard rather than failing: `withdraw`'s `no_onchain_balance` preflight
+  // exists to stop a doomed MAX withdraw, and for these families it never ran.
+  //
+  // The user-visible symptom was two different codes for one situation —
+  // `compound-v3` (slug claimed) refused an emptied position with
+  // `no_onchain_balance`, while an ERC-4626 vault fell through to the
+  // adapter's own `position_not_found` ("erc4626: no shares"), which is a
+  // different recovery class and is not even true: the row exists, it is
+  // drained. Found by the Gate-4 fork case, 2026-08-22.
+  //
+  // Routing by the target's `kind` is exactly what the DEPOSIT path already
+  // does (`getDefiAdapterForTarget` in `agent-executors/defi/writes.ts`), so
+  // this makes the read agree with the write. Additive on purpose: a slug that
+  // already resolved keeps its adapter and its behaviour unchanged.
+  if (!adapter && input.poolId) {
+    prefetchedTarget = await fetchPoolTarget(input.poolId);
+    adapter = getDefiAdapterForTarget(input.protocolSlug, prefetchedTarget);
+  }
   if (!adapter) return null;
 
   // Aave needs the asset contract + chain to derive the aToken via
@@ -106,13 +150,10 @@ export async function readPosition(
     chain: input.chain,
   };
   if (input.poolId && adapter.targetKinds?.length) {
-    try {
-      const { strategiesApi } = await import("@/api/endpoints/strategies");
-      const opp = await strategiesApi.getPool(input.poolId).catch(() => null);
-      if (opp?.depositTarget) ctx.target = opp.depositTarget;
-    } catch {
-      // best-effort — adapter falls back to null / DB snapshot
-    }
+    // Reuse the target the adapter lookup above already fetched rather than
+    // asking the backend for the same row twice.
+    const target = prefetchedTarget ?? (await fetchPoolTarget(input.poolId));
+    if (target) ctx.target = target;
   }
 
   // Default — let the adapter handle it.

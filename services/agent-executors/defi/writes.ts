@@ -1031,6 +1031,62 @@ export const withdraw: MobileToolExecutor = (input, context) =>
         assertSafetyResult(await runSafetyPipeline(withdrawSafetyBase));
       }
 
+      // Pre-flight the on-chain balance. A MAX withdraw against a
+      // position with no live balance (stale DB row, deposit that never
+      // settled on-chain, wrong address) reverts with an opaque error.
+      // Read the live position first so we can fail with a clear,
+      // typed reason instead of submitting a doomed transaction. Only a
+      // positively-confirmed zero balance blocks — a read failure is
+      // non-fatal and falls through to the normal path. The balance is
+      // also handed to the safety pipeline below (`WithdrawBalanceCheck`)
+      // so a non-MAX over-request fails the same way, pre-signing.
+      //
+      // NOTE ON ORDER: this MUST stay above `buildWithdraw`. It used to sit
+      // ~80 lines BELOW it, so "read the live position first" was not what the
+      // code did, and the guard was unreachable for any adapter that refuses
+      // an empty position while BUILDING — `erc4626` throws
+      // `position_not_found` ("no shares") there, so a drained 4626 vault
+      // reported a missing position rather than an empty one, which is a
+      // different recovery class and is not even true. `compound-v3` reached
+      // the guard only because Comet's builder does not throw, which is why
+      // one situation produced two error codes depending on the family. Found
+      // by the Gate-4 fork case, 2026-08-22. Takes the address from
+      // `context.wallet` rather than the wallet client, so it needs nothing
+      // resolved downstream.
+      let liveBalance: bigint | undefined;
+      try {
+        const live = await readPosition({
+          protocolSlug,
+          chainId,
+          walletAddress: context.wallet.address,
+          assetSymbol,
+          assetContract: assetContract ?? undefined,
+          // Kind-routed EVM adapters have no fixed deployment, so they need
+          // the pool target AND a chain to read against.
+          poolId: position.poolId ?? undefined,
+          chain: chainConfig,
+        });
+        if (live && live.currentAmount <= 0n) {
+          if (__DEV__) {
+            console.warn("[defi/withdraw] no_onchain_balance — preflight", {
+              positionId,
+              protocolSlug,
+              chainId,
+            });
+          }
+          throw new DefiError("no_onchain_balance", positionId);
+        }
+        liveBalance = live?.currentAmount;
+      } catch (preflightErr) {
+        if (preflightErr instanceof DefiError) throw preflightErr;
+        if (__DEV__) {
+          console.warn(
+            "[defi/withdraw] balance preflight read failed (non-fatal)",
+            { positionId, error: preflightErr },
+          );
+        }
+      }
+
       let unsignedCall;
       try {
         unsignedCall = await adapter.buildWithdraw({
@@ -1098,49 +1154,6 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           });
         }
         throw new DefiError("wallet_cannot_execute");
-      }
-
-      // Pre-flight the on-chain balance. A MAX withdraw against a
-      // position with no live balance (stale DB row, deposit that never
-      // settled on-chain, wrong address) reverts with an opaque error.
-      // Read the live position first so we can fail with a clear,
-      // typed reason instead of submitting a doomed transaction. Only a
-      // positively-confirmed zero balance blocks — a read failure is
-      // non-fatal and falls through to the normal path. The balance is
-      // also handed to the safety pipeline below (`WithdrawBalanceCheck`)
-      // so a non-MAX over-request fails the same way, pre-signing.
-      let liveBalance: bigint | undefined;
-      try {
-        const live = await readPosition({
-          protocolSlug,
-          chainId,
-          walletAddress: walletClient.account.address,
-          assetSymbol,
-          assetContract: assetContract ?? undefined,
-          // Kind-routed EVM adapters have no fixed deployment, so they need
-          // the pool target AND a chain to read against.
-          poolId: position.poolId ?? undefined,
-          chain: chainConfig,
-        });
-        if (live && live.currentAmount <= 0n) {
-          if (__DEV__) {
-            console.warn("[defi/withdraw] no_onchain_balance — preflight", {
-              positionId,
-              protocolSlug,
-              chainId,
-            });
-          }
-          throw new DefiError("no_onchain_balance", positionId);
-        }
-        liveBalance = live?.currentAmount;
-      } catch (preflightErr) {
-        if (preflightErr instanceof DefiError) throw preflightErr;
-        if (__DEV__) {
-          console.warn(
-            "[defi/withdraw] balance preflight read failed (non-fatal)",
-            { positionId, error: preflightErr },
-          );
-        }
       }
 
       // ── Safety pipeline, on-device anchor (§11.1, §11 Layer 4) — reads

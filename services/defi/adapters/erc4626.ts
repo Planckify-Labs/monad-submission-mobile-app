@@ -30,6 +30,7 @@ import type {
   DefiPosition,
   DefiProtocolAdapter,
   DepositTarget,
+  PositionReadContext,
   UnsignedCall,
 } from "../types";
 
@@ -72,6 +73,15 @@ const ERC4626_ABI = [
     stateMutability: "view",
     inputs: [{ name: "owner", type: "address" }],
     outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    // Share balance → underlying, so a position reads in the same units the
+    // deposit was recorded in. EIP-4626 requires it on every vault.
+    name: "convertToAssets",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "shares", type: "uint256" }],
+    outputs: [{ name: "assets", type: "uint256" }],
   },
 ] as const;
 
@@ -174,10 +184,64 @@ export const Erc4626Adapter: DefiProtocolAdapter = {
     } as UnsignedCall;
   },
 
-  readPosition(): Promise<DefiPosition | null> {
-    // The vault address lives on the resolved target, not derivable from the
-    // wallet address, so a standalone read isn't possible. Positions opened
-    // through this adapter fall back to the backend snapshot (spec §14.5).
-    return Promise.resolve(null);
+  async readPosition(
+    walletAddress: string,
+    ctx?: PositionReadContext,
+  ): Promise<DefiPosition | null> {
+    // This used to `return null` unconditionally, on the reasoning that "the
+    // vault address is not derivable from the wallet address". That was true
+    // when it was written and stopped being true once `PositionReadContext`
+    // gained `target` — the withdraw path threads the vault in from the
+    // position's pinned `poolId`, exactly as `cometV3` receives its Comet.
+    //
+    // The stub was not merely incomplete, it silently disabled a guard.
+    // `withdraw` refuses an empty position via `live.currentAmount <= 0n`,
+    // which a null can never satisfy, so a MAX withdraw against a drained
+    // 4626 vault skipped the preflight and surfaced as the adapter's own
+    // `position_not_found` ("erc4626: no shares") — a different recovery class
+    // from `no_onchain_balance`, and not even accurate, since the position row
+    // exists and is simply empty. It also left `liveBalance` undefined, so
+    // `WithdrawBalanceCheck` had nothing to validate an over-request against.
+    // Found by the Gate-4 fork case, 2026-08-22.
+    const target = ctx?.target;
+    if (!target || target.kind !== "erc4626") return null;
+    const chain = ctx?.chain;
+    if (!chain) return null;
+    try {
+      const evm = assertEvmChain(chain);
+      const client = getPublicClient(evm.chain);
+      const shares = await client.readContract({
+        address: target.vault as Address,
+        abi: ERC4626_ABI,
+        functionName: "balanceOf",
+        args: [walletAddress as Address],
+      });
+      // Report in UNDERLYING units. Shares are not the position's value — an
+      // accruing vault's share price drifts from 1:1, and `amountAtDeposit`
+      // was recorded in underlying, so returning shares here would make every
+      // downstream PnL comparison wrong in a way that looks like yield.
+      const currentAmount =
+        shares === 0n
+          ? 0n
+          : await client.readContract({
+              address: target.vault as Address,
+              abi: ERC4626_ABI,
+              functionName: "convertToAssets",
+              args: [shares],
+            });
+      return {
+        protocolSlug: "erc4626",
+        namespace: "eip155",
+        chainId: evm.chain.id,
+        assetSymbol: ctx?.assetSymbol ?? "",
+        amountAtDeposit: 0n,
+        amountAtDepositUsd: 0,
+        currentAmount,
+        currentAmountUsd: 0, // priced upstream by positions/pnl.ts
+        pnlUsd: 0,
+      };
+    } catch {
+      return null;
+    }
   },
 };

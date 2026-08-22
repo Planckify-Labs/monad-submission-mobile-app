@@ -125,7 +125,7 @@ export const FORK_BLOCKS_RECENT: Readonly<Record<number, bigint>> = {
  * on Base (2s). Past that the fork is testing history, which is the one thing
  * a fork is supposed not to do.
  */
-const PIN_STALE_AFTER_BLOCKS: Readonly<Record<number, bigint>> = {
+export const PIN_STALE_AFTER_BLOCKS: Readonly<Record<number, bigint>> = {
   1: 7_200n,
   8453: 43_200n,
   // Arbitrum's ~0.25s blocks make a day ~345,600, and Polygon's ~2.1s ~41,000.
@@ -178,6 +178,27 @@ async function warnIfPinIsStale(
     // Upstream would not answer. Not worth failing a run over.
   }
 }
+
+/**
+ * Chains where DeFi is reachable by a real user today.
+ *
+ * The binding constraint is NOT "does the address book pin something here" —
+ * the book deliberately pins ahead of seeding so a pin can be reviewed before
+ * its chain goes live (runbook §11.5). It is "does the API serve a
+ * `Blockchain` row for it", because that is what puts the chain in
+ * `ExecutorContext.blockchains` and therefore what decides whether a deposit
+ * can be built at all.
+ *
+ * Verified against `api/src/scripts/prisma/seed.ts` on 2026-08-22: the seeded
+ * non-testnet EVM rows are Ethereum, Polygon, Arbitrum and Base.
+ *
+ * `forkCoverage.test.ts` requires a pin for every entry here. Chains pinned in
+ * the address book but NOT seeded (10, 56, 100, 43114, 59144, 534352) are out
+ * of scope on purpose: they are covered by the address-book drift check, and
+ * demanding a fork pin for a chain no user can reach would make this gate
+ * permanently red, which is how a gate becomes something people ignore.
+ */
+export const DEFI_LIVE_CHAINS: readonly number[] = [1, 137, 8453, 42161];
 
 export function forkRpcUrl(chainId: number): string | undefined {
   return process.env[`FORK_RPC_URL_${chainId}`]?.trim() || undefined;
@@ -416,7 +437,24 @@ async function startForkOnce(
 
 // ── Funding ────────────────────────────────────────────────────────────────
 
-const MAX_SLOT = 40;
+/**
+ * How many storage slots the balance probe walks.
+ *
+ * Was 40, which silently excluded an entire and very common token shape:
+ * OpenZeppelin's `ERC20Upgradeable` reserves a 50-slot `__gap` ahead of its
+ * own state, so `_balances` lands at **slot 51**. Every OZ-upgradeable token
+ * behind a proxy is therefore unfundable at 40 — including the bridged
+ * stablecoins that dominate L2 deposits. Arbitrum USDT
+ * (`0xFd086bC7…`, `_balances` confirmed at slot 51 on a fork, 2026-08-22) is
+ * the one that surfaced it, and it is exactly the asset the first Gate-4 case
+ * needed. Until then the failure read as "this token cannot be dealt", which
+ * looks like a property of the token rather than a limit of the probe.
+ *
+ * 128 covers the OZ layout with room for a second inherited gap. The cost is
+ * paid only on FAILURE — the probe short-circuits on the first hit, and hits
+ * are early for non-upgradeable tokens.
+ */
+const MAX_SLOT = 128;
 
 /**
  * Give an address an ERC-20 balance by writing the token's storage — the same

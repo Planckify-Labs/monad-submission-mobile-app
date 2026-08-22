@@ -129,6 +129,10 @@ export default defineConfig({
       // are set, so listing them here is safe: without a fork they report their
       // own gate and nothing else.
       "services/defi/__fork__/*.fork.test.ts",
+      // The execution-coverage gate. Deliberately NOT a `.fork.test.ts`: it
+      // needs no anvil, no fork RPC and no network, so it runs on every build
+      // and is what actually stops a new family shipping unrehearsed.
+      "services/defi/__fork__/forkCoverage.test.ts",
       "services/defi/slippage.test.ts",
       "services/defi/safety/safetyPipeline.test.ts",
       // Exit-terms consent gate (§11 Layer 3, §12 Q2).
