@@ -152,5 +152,5 @@ export const GATE4_BACKLOG: Readonly<Record<string, string>> = {
   "router-call":
     "Family withheld: the router-quote proxy has no live integration test (runbook §12.4).",
   "async-vault":
-    "Family withheld, and NOT for lack of infrastructure — runbook §11.3's row was corrected twice on 2026-08-22 and now lists six precise gaps (createPosition drops asyncPhase, no requestId extraction, defi_claim routes to a capability AsyncVaultAdapter does not expose, adapter unregistered, no resolver). A Gate-4 case cannot be written until a request can become durable.",
+    "In flight — 5a171b9 wired the claim path and registered the adapter (§7 requirements 1-3). Deliberately NOT restating the remaining gaps here: runbook §11.3's row is the live list and was already corrected twice on 2026-08-22, so a copy in this file would go stale a third time. A Gate-4 case needs the two-phase request→claim to be durable end to end, and is the right proof that it is.",
 };
