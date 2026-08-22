@@ -302,7 +302,6 @@ Read the reason before turning one on.
 | `async-vault` (ERC-7540) | §7: no resolver until the two-phase request→claim flow is proven end to end. The kind, validator, adapter and claim-watcher exist; the resolver is the last piece. |
 | Convex / Aura | Boosting is a two-leg flow (acquire the LP, then stake it) that one-shot `UnsignedCall` cannot express. Ships on the Tier-4 two-phase machinery. |
 | Avalon (Aave fork) | One `Pool` per market, so there is no single address to pin. Its book is empty on purpose. |
-| Curve classic pools | `curveLp.ts:lpTokenOf` returns `target.pool`, i.e. it assumes the pool IS its LP token. True for Curve NG, false for the classic pools (3pool mints a separate ERC-20). The resolver now refuses a pool that is not its own LP token, so classic pools fail closed to Manual. Supporting them means adding `lpToken` to the shared union — a change to both repos and the parity test. |
 | StakeWise, cbETH, LsETH, LBTC, Renzo | Each needs either a permissionless mint that does not exist (cbETH), a KYC-gated one (LsETH), a Bitcoin-side flow (LBTC), a per-vault entry contract that wants its own resolver (StakeWise), or an unreviewed dual-overload stake plus a mint cap (Renzo). Listed in `address-book/lst.ts` as `LST_VENUES_DEFERRED`. **Kelp and Mantle mETH have SHIPPED** — both were min-out venues, and in both cases the blocker turned out to be having a quote to floor against, not the min-out itself. |
 
 ### 11.3a Morpho Blue markets that stay Manual (by design)
@@ -1063,6 +1062,46 @@ and the resolvers light up with no further code change.
 > As of the drift fix above, those pins are also **verified on chain every drift
 > run**, ahead of the seed rather than after it.
 
+### 11.6e Curve classic pools: the "needs `lpToken` on the shared union" TODO, closed
+
+`§11.3`'s deferred-families table used to list Curve classic pools (3pool and
+its lineage) as withheld for exactly this: `curveLp.ts:lpTokenOf` returned
+`target.pool` unconditionally, which is right for Curve's NG generation and
+wrong for classic pools, whose LP token is a SEPARATE ERC-20 the pool contract
+cannot even read a `balanceOf` for. Landed 2026-08-21.
+
+**The source is the same MetaRegistry the family already trusts to find the
+pool.** `CurvePoolCandidateSource` (§11.6) already reads
+`AddressProvider.get_address(metaRegistryId)` to find a pool from two coins;
+`get_lp_token(pool)` on that SAME registry answers the receipt question with
+no new address-book entry and no new trust anchor. Verified against 3pool
+(`0xbEbc4478…`) on chain: `get_lp_token` returns `0x6c3F90f0…`, which reads
+back `symbol() == "3Crv"`.
+
+**Independent re-derivation, not resolver trust.** The Layer-1 validator does
+not accept the resolver's `lpToken` on faith — it asks the MetaRegistry the
+same question again and requires an exact match, the same pattern every other
+Layer-1 check in this family follows (Aave re-reads `getReserveData`, Comet
+re-reads `baseToken()`). A resolver bug or a stale cached target cannot smuggle
+a wrong receipt address past validation.
+
+**Three touch points share `target.pool` as a receipt-address default, and all
+three needed the fallback.** Beyond the adapter's `lpTokenOf`: the mobile
+safety provider's `readPositionDelta` (Layer 5 post-execution check) used
+`destinationOf`, which is correct as the `tx.to` for `add_liquidity` but wrong
+as the receipt for a classic pool; and the fork harness's `positionBalance`
+had the identical assumption. Missing either would not fail loudly — it would
+report "the deposit succeeded but the position did not grow" on a pool that
+actually worked, which is the wrong direction to be wrong in.
+
+Fork-proven with both generations side by side, plus a regression case that
+omits `lpToken` on a classic-pool target and asserts the MAX withdraw fails —
+proving the OLD behaviour is actually broken, not merely that the NEW code
+path works.
+
+  pnpm defi:dry-run --protocol curve-dex --min-tvl 1000000
+    -> 74/122 -> 91/124 (3pool alone: $160.5M)
+
 ### 11.6c Compound III: a resolver with a chain's markets half-pinned reads as a family half-working
 
 Measured 2026-08-21, chasing why `compound-v3` refused ~$824M of WBTC/wstETH
@@ -1482,7 +1521,6 @@ hashes. "The fork test was green" is not an answer to requirement 9.
 | Avantis `avUSDC` withdrawals **revert above 90% utilization** — `instant` is honest today (~9.4%) but the exit copy must not promise an unconditional MAX withdraw | `avantis` | Product |
 | Morpho oracle/IRM allowlist is empty | Morpho Blue direct markets — every one refuses by design until oracles are reviewed | Risk |
 | `BalancerQueries` not pinned | `balancer-lp` — cannot price `minimumBPT`, and a zero minimum is a silent sandwich | Engineer + Security |
-| Curve classic pools refuse | `curve-lp` on non-NG pools — needs `lpToken` on the shared union | Engineer |
 | Router-quote proxy not integration-tested against a live quote | `router-call` (Pendle) | Engineer |
 | Two-phase request/claim not proven end to end | Tier 4 (`async-vault`), Convex/Aura | Engineer |
 | DeFiLlama `/poolsOld` paywalled | Families with no on-chain registry source yet — set `DEFILLAMA_PRO_API_KEY` or add a source | Ops or Engineer |

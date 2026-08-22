@@ -15,13 +15,17 @@
  *   cToken        a separate receipt token with an exchange rate
  *   Morpho Blue   no receipt token at all — shares inside the singleton
  *
- * Curve is deliberately absent; see the note at the bottom of this file.
+ * Curve is a fourth: an NG pool is BOTH the market and the receipt, but a
+ * classic pool (3pool's lineage) mints a SEPARATE receipt the pool contract
+ * itself cannot even read a balance of. Both cases are proven below — see the
+ * note at the bottom of this file for how this family got here.
  */
 
 import type { Address, Hex } from "viem";
 import { beforeAll, describe, expect, it } from "vitest";
 import { CometV3Adapter } from "../adapters/cometV3";
 import { CompoundV2Adapter } from "../adapters/compoundV2";
+import { CurveLpAdapter } from "../adapters/curveLp";
 import { MorphoBlueAdapter } from "../adapters/morphoBlue";
 import type { DepositTarget } from "../types";
 import {
@@ -73,6 +77,24 @@ const MORPHO_MARKET = {
 
 const ONE_THOUSAND_USDC = 1_000_000_000n; // 6 dp
 const ONE_WBTC = 100_000_000n; // 8 dp
+const ONE_THOUSAND_DAI = 1_000n * 10n ** 18n; // 18 dp
+const ONE_THOUSAND_CRVUSD = 1_000n * 10n ** 18n; // 18 dp
+
+const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F" as Address;
+/**
+ * Curve 3pool (DAI/USDC/USDT) — the classic-generation case. The pool
+ * contract itself has no `balanceOf`; the LP token is a separate ERC-20
+ * fetched from Curve's own MetaRegistry (`get_lp_token`), added 2026-08-21.
+ */
+const CURVE_3POOL = "0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7" as Address;
+const CURVE_3CRV = "0x6c3F90f043a72FA612cbac8115EE7e52BDe6E490" as Address;
+/**
+ * Curve crvUSD/WETH — an NG pool, where the pool IS its own LP token. Proves
+ * the pre-existing shape still works with `lpToken` absent from the target.
+ */
+const CURVE_CRVUSD_WETH =
+  "0x4eBdF703948ddCEA3B11f675B4D1Fba9d2414A14" as Address;
+const CRVUSD = "0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E" as Address;
 
 const describeFork = canFork(ETHEREUM) ? describe : describe.skip;
 
@@ -192,6 +214,83 @@ describeFork("Tier 2 — fork execution on Ethereum", () => {
     });
   }, 240_000);
 
+  it("Curve NG — crvUSD/WETH/CRV, the pool IS its own LP token", async () => {
+    // No `lpToken` on the target — proves the pre-existing shape is untouched
+    // by the classic-pool addition below.
+    await roundTrip({
+      adapter: CurveLpAdapter,
+      target: {
+        kind: "curve-lp",
+        pool: CURVE_CRVUSD_WETH,
+        asset: CRVUSD,
+        index: 0,
+        nCoins: 3,
+        isNg: true,
+      },
+      asset: { symbol: "crvUSD", contract: CRVUSD, decimals: 18 },
+      amount: ONE_THOUSAND_CRVUSD,
+    });
+  }, 240_000);
+
+  it("Curve classic — 3pool mints a SEPARATE LP token (3Crv), fetched from the MetaRegistry", async () => {
+    // This is the case the file's header note tracked as a finding rather
+    // than an omission: `lpTokenOf` used to assume `pool` doubled as the
+    // receipt, which is false for 3pool. `target.lpToken` is what makes the
+    // MAX withdraw below burn the RIGHT token instead of reading a balance
+    // off a contract that has no `balanceOf` at all.
+    await roundTrip({
+      adapter: CurveLpAdapter,
+      target: {
+        kind: "curve-lp",
+        pool: CURVE_3POOL,
+        asset: DAI,
+        index: 0,
+        nCoins: 3,
+        isNg: false,
+        lpToken: CURVE_3CRV,
+      },
+      asset: { symbol: "DAI", contract: DAI, decimals: 18 },
+      amount: ONE_THOUSAND_DAI,
+    });
+  }, 240_000);
+
+  it("Curve classic — omitting lpToken on a classic pool is the bug this fixed", async () => {
+    // Regression guard for the exact failure the header note describes: with
+    // `lpToken` absent, `lpTokenOf` falls back to `pool`, which is 3pool
+    // itself — a contract with no `balanceOf`. The MAX withdraw path reads
+    // that balance to decide how much LP to burn, so it must fail rather than
+    // silently proceeding with a wrong (or zero) amount.
+    const holder = ctx.account.address;
+    await dealErc20(ctx, DAI, holder, ONE_THOUSAND_DAI * 2n);
+    const target: DepositTarget = {
+      kind: "curve-lp",
+      pool: CURVE_3POOL,
+      asset: DAI,
+      index: 0,
+      nCoins: 3,
+      isNg: false,
+      // lpToken deliberately omitted.
+    };
+    const deposit = await CurveLpAdapter.buildDeposit({
+      wallet: ctx.wallet,
+      chain: ctx.chain,
+      asset: { symbol: "DAI", contract: DAI, decimals: 18 },
+      amount: ONE_THOUSAND_DAI,
+      target,
+    } as never);
+    expect((await executeCall(ctx, deposit)).status).toBe("success");
+
+    await expect(
+      CurveLpAdapter.buildWithdraw({
+        wallet: ctx.wallet,
+        chain: ctx.chain,
+        asset: { symbol: "DAI", contract: DAI, decimals: 18 },
+        amount: "MAX",
+        target,
+      } as never),
+    ).rejects.toThrow();
+  }, 240_000);
+
   it("Morpho Blue — a params struct that does not hash to its marketId cannot supply", async () => {
     // The §5.2 hole this family exists to close: if a compromised API returned
     // a struct pointing somewhere else, the singleton must not accept it.
@@ -222,19 +321,21 @@ describeFork("Tier 2 — fork execution on Ethereum", () => {
 });
 
 /**
- * Curve is NOT fork-tested here, and that is a finding rather than an omission.
+ * Curve was NOT fork-tested for exactly the reason the two cases above now
+ * prove: `curveLp.ts:lpTokenOf` used to return `target.pool` unconditionally,
+ * which is right for Curve's NG generation and wrong for the classic pools —
+ * 3pool's LP token (3Crv) is a separate ERC-20, and the pool contract itself
+ * has no `balanceOf` at all.
  *
- * `curveLp.ts:lpTokenOf` returns `target.pool`, i.e. it assumes the pool
- * contract is also the LP token. That holds for Curve's NG generation and is
- * FALSE for the classic pools (3pool's LP token is a separate ERC-20). The
- * union carries no `lpToken`, so for a classic pool the adapter would read a
- * balance off the wrong contract — and `MAX` withdraw is exactly where it
- * surfaces.
+ * Writing a fork test around an NG pool alone would have passed and hidden
+ * that, which is why one case exists for each generation plus a regression
+ * guard that asserts the OLD behaviour (omit `lpToken`, fall back to `pool`)
+ * fails loudly on a classic pool rather than silently misreading a balance.
  *
- * Writing a fork test around an NG pool would pass and hide that. The fix
- * belongs upstream: the resolver must refuse a pool that is not its own LP
- * token (fail closed to Manual), or the union must carry the LP token. Until
- * one of those lands, Curve is not a family to enable.
+ * Fixed 2026-08-21: `lpToken` on the target, fetched from Curve's own
+ * MetaRegistry (`get_lp_token`) at resolve time and re-derived independently
+ * by the Layer-1 validator — see `curve.resolver.ts` and `validation.ts` in
+ * the backend repo.
  */
 describe("Tier 2 fork gate", () => {
   it("is skipped unless FORK_TESTS=1 and an RPC is configured", () => {

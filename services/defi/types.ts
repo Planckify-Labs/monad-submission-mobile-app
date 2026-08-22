@@ -67,6 +67,14 @@ export type DepositTarget =
       index: number;
       nCoins: 2 | 3 | 4;
       isNg: boolean;
+      /**
+       * The LP receipt token, when it is NOT the pool contract. Twin of the
+       * backend union member — see that file for the full rationale. Classic
+       * pools (3pool and its lineage) mint a separate ERC-20; the pool
+       * contract itself has no `balanceOf` at all, so `curveLp.ts:lpTokenOf`
+       * reads THIS when present.
+       */
+      lpToken?: Address;
     }
   // Solidly-fork LP (Aerodrome on Base, Velodrome on OP). Deposits go through
   // the Router's `addLiquidity`; `stable` picks the invariant (§6.1).

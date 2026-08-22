@@ -118,9 +118,14 @@ function singleSidedAmounts(target: CurveTarget, amount: bigint): bigint[] {
   return amounts;
 }
 
-/** The pool's LP token. On most Curve pools the pool contract IS the LP token. */
+/**
+ * The pool's LP token. NG-generation pools ARE their own LP token; classic
+ * pools (3pool and its lineage) mint a separate ERC-20 that the resolver
+ * fetched from Curve's own MetaRegistry and carries as `lpToken` — added
+ * 2026-08-21, see the field's doc comment in `types.ts`.
+ */
 function lpTokenOf(target: CurveTarget): Address {
-  return target.pool;
+  return target.lpToken ?? target.pool;
 }
 
 export const CurveLpAdapter: DefiProtocolAdapter = {

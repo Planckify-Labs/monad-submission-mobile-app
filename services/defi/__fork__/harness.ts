@@ -718,6 +718,13 @@ export async function positionBalance(
       return position[0];
     }
     case "curve-lp":
+      // Classic pools mint a SEPARATE LP token (§11.6c); NG pools are their
+      // own LP token, matching `curveLp.ts:lpTokenOf`'s fallback.
+      return erc20Balance(
+        ctx,
+        (target.lpToken ?? target.pool) as Address,
+        holder,
+      );
     case "solidly-lp":
       return erc20Balance(ctx, target.pool as Address, holder);
     default:

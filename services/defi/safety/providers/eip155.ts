@@ -517,11 +517,18 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
     const ctx = clientFor(chainId);
     if (!ctx) return 0n;
     // The receipt token differs per kind; for the share-bearing families the
-    // destination IS the receipt, which covers 4626, cToken and LP pools.
+    // destination IS the receipt, which covers 4626, cToken and most LP
+    // pools. `curve-lp` is the exception since 2026-08-21: a classic Curve
+    // pool mints a SEPARATE LP token, and the pool contract itself has no
+    // `balanceOf` at all — reading `destinationOf` there would silently
+    // report "no position change" after a successful deposit, exactly the
+    // failure mode this check exists to catch.
     const receipt =
       target.kind === "lst-stake"
         ? target.receipt
-        : destinationOf(target, chainId);
+        : target.kind === "curve-lp"
+          ? (target.lpToken ?? target.pool)
+          : destinationOf(target, chainId);
     if (!receipt) return 0n;
     try {
       return await ctx.client.readContract({
