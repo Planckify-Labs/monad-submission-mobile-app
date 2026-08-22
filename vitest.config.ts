@@ -137,6 +137,8 @@ export default defineConfig({
       "services/defi/safety/safetyPipeline.test.ts",
       // Exit-terms consent gate (§11 Layer 3, §12 Q2).
       "services/defi/safety/exitTerms.test.ts",
+      // Deposit-risk (impermanent-loss) disclosure copy.
+      "services/defi/safety/depositRisk.test.ts",
       // The executor's half of the pipeline: what it PUTS in the safety
       // context. The checks passing on a hand-built context is not evidence
       // the deposit path fills one correctly.
