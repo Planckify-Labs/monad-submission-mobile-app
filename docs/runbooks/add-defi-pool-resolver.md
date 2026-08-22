@@ -1153,6 +1153,73 @@ first run clean, no retry needed.
 widening to another chain's canonical v2 fork (if one exists worth pinning) is
 a book entry, not a code change, per §11.1.
 
+### 11.6g Tier 4 shipped: the wiring gap, the duplicate-vault trap, and the compliance gate
+
+§7's condition for registering an `async-vault` resolver — "the two-phase
+request/claim interface ships" — is met as of 2026-08-22, and Centrifuge is
+now the first protocol on it. Recorded here because three separate,
+non-obvious things had to be found in sequence, and none of them were where
+the runbook's own prior entries said to look.
+
+**1. The infra existed and was NOT wired together — checked wrong the first
+two times.** A grep for `*async*`/`*claim*` scoped to `mobile-app/services/defi/`
+said nothing existed; the truth was the DB schema, the claim-watcher worker
+(cron every 10 minutes), and all four two-phase adapter methods had ALL landed
+2026-08-15, in `api/src/strategies/workers/async-claim-watcher.processor.ts`
+and `services/defi/adapters/asyncVault.ts` — just never traced end to end.
+The real gap, found by tracing the actual data path: `createPosition` had no
+`asyncPhase`/`asyncRequestId` fields, so a requested deposit was written
+`asyncPhase: null` and the watcher's own `WHERE asyncPhase IN (...)` query
+would never have found it; `defi_claim` routed through `adapter.buildClaim?`,
+a capability name `AsyncVaultAdapter` never implemented. **Grep for a
+filename is not the same claim as "this is wired."**
+
+**2. Centrifuge's own indexer lists superseded vault contracts, with nothing
+in the response distinguishing them from the live one.** The resolver read
+0/18 against a vault already verified working in isolation. Two Ethereum
+entries for "JTRSY deRWA" share an identical `manager()`/`root()`/`poolId()`/
+`scId()`/`totalAssets()` — both fully live, both passing `supportsInterface`
+and `asset()` — and only ONE answers `true` on their own on-chain
+`VaultRegistry.isLinked()`. The fix is the same reordering §11.6b already
+established for Morpho/Yearn: check the address-backed identity (the
+registry) BEFORE the label, and use an EXACT label match only when the
+registry alone cannot disambiguate — `pickByExactLabel`, deliberately not the
+fuzzy `includes()` used elsewhere, because "JAAA" is a literal substring of
+"deJAAA" and both are real, distinct, currently-listed products.
+
+**3. The verification TOOLING had the exact same "tier flag" gap Tier 4 itself
+just closed.** After fixing #2, the dry run STILL read 0/18. The resolver
+worked correctly called in isolation via a standalone script; the dry-run
+script's own "force every tier flag on" block forced TIER1–3 but not TIER4,
+with a comment explaining why that used to be correct ("§7 forbids a
+resolver… forcing the flag would register nothing anyway") — which stopped
+being true the moment a real resolver was registered under it. This is the
+same class of bug as the egress-network / Yearn finding earlier in this
+session: a tool whose own assumptions went stale silently reproduced
+production's "nothing is registered," indistinguishable from a real bug.
+
+**4. Compliance-gated RWA funds correctly refuse ordinary addresses, and a
+fork test proving otherwise would only prove it hit a broken proxy.** First
+fork attempt used the default (old) `FORK_BLOCKS` pin and had `requestDeposit`
+"succeed" at 23,530 gas with zero events and no balance change —
+Centrifuge's V3 contracts deployed 2026, close enough to the pin that the
+vault's real implementation was not live behind its proxy yet.
+`FORK_BLOCKS_RECENT` is mandatory for this family, not optional. Retested
+against a recent block: the SAME call from a funded, ordinary wallet reverts
+with `TransferNotAllowed()` (`0x8cd22d19`, confirmed against
+`AsyncRequestManager.sol`'s own `_canTransfer` gate on GitHub) — Janus
+Henderson Treasury Fund enforces investor eligibility on chain, and no fork
+cheat code can fake a real KYC decision. **This is the correct outcome, not a
+bug to work around**, and it is exactly why runbook §12.3 requirement 9 needs
+a wallet Centrifuge has actually allowlisted for this pool before the family
+can go live — resolving is not shipping, and for a compliance-gated asset
+class "shipping" specifically requires a human who has cleared that
+protocol's own onboarding, which no amount of code can substitute for.
+
+  pnpm defi:dry-run --protocol centrifuge-protocol --min-tvl 500000
+    -> 9/18 resolved (Ethereum + Base; Arbitrum has none in the live feed
+       right now, not a resolver gap — CENTRIFUGE_ID_TO_CHAIN_ID pins it)
+
 ### 11.6c Compound III: a resolver with a chain's markets half-pinned reads as a family half-working
 
 Measured 2026-08-21, chasing why `compound-v3` refused ~$824M of WBTC/wstETH
