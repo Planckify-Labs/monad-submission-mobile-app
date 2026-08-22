@@ -1102,6 +1102,48 @@ path works.
   pnpm defi:dry-run --protocol curve-dex --min-tvl 1000000
     -> 74/122 -> 91/124 (3pool alone: $160.5M)
 
+### 11.6f Uniswap v2: a new kind that turned out to be an afternoon, not weeks
+
+`uniswap-v2` was in the onboarding queue tagged `LP pair — needs kind`, which
+§1's Step 0 table prices at "weeks" — a new `DepositTarget` kind, a family
+adapter, a Layer-1 validator, a Layer-4 decode case, a Layer-5 pause read, the
+union updated in both repos, a fork test. That estimate is right for a
+GENUINELY new AMM shape. It is not right when the shape already exists one
+repo away: Solidly (`solidly-lp`, Aerodrome/Velodrome) is Uniswap v2 with one
+extra parameter (`stable`) and an extra invariant branch. Strip both and the
+rest — Router `addLiquidity`/`removeLiquidity`, the pair as its own LP token,
+two-sided deposits needing two approvals — carries over exactly.
+
+**What actually differed, found by reading the real ABI rather than assuming
+parity:** Solidly's router exposes convenience `getReserves(tokenA, tokenB,
+stable, factory)` and `quoteAddLiquidity(...)` views; Uniswap v2's Router02
+has neither. Verified on chain 2026-08-22 rather than assumed: the adapter
+reads reserves from the PAIR directly (`pair.getReserves()`) and prices the
+pair with the router's `quote(amountA, reserveA, reserveB)` pure helper — a
+different data path to the same guarantee (no zero minimum ships, §12 Q4).
+
+**A latent Layer-5 bug in `solidly-lp` was found while wiring this, not
+before.** `readPositionDelta`'s per-kind receipt lookup fell through to
+`destinationOf` for every LP kind, which is the ROUTER (the correct `tx.to`
+for `addLiquidity`) — not the pool, which is the actual LP receipt. Curve's
+fix (§11.6e) only patched `curve-lp` specifically because that was the kind in
+hand at the time; `solidly-lp` carried the identical latent bug since it
+shipped, invisible because nothing had exercised this specific check against
+it end to end. Fixed for both `solidly-lp` and `uniswap-v2` together, once the
+pattern was visible across two kinds rather than one — the same "generalise on
+the SECOND occurrence" lesson §11.6a records for Kelp's shape config.
+
+  pnpm defi:dry-run --protocol uniswap-v2 --min-tvl 1000000
+    -> 74/80 resolved (WISE-WETH alone: $143.2M)
+
+Fork-proven as a full round trip (both legs deposited, both approvals present
+and scoped, MAX remove returns both legs) against the real WISE-WETH pool —
+first run clean, no retry needed.
+
+**Ethereum only for now.** `UNISWAP_V2_DEPLOYMENTS` pins just chain 1;
+widening to another chain's canonical v2 fork (if one exists worth pinning) is
+a book entry, not a code change, per §11.1.
+
 ### 11.6c Compound III: a resolver with a chain's markets half-pinned reads as a family half-working
 
 Measured 2026-08-21, chasing why `compound-v3` refused ~$824M of WBTC/wstETH

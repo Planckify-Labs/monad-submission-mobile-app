@@ -65,6 +65,7 @@ import { ScallopSuiAdapter } from "./adapters/scallopSui";
 import { SolanaJitoAdapter } from "./adapters/solanaJito";
 import { SolidlyLpAdapter } from "./adapters/solidlyLp";
 import { SuiLstAdapter } from "./adapters/suiLst";
+import { UniswapV2LpAdapter } from "./adapters/uniswapV2Lp";
 // SuilendSuiAdapter is implemented but NOT registered — Suilend's deposit AND
 // withdraw both assert a fresh reserve price (abort code 1), needing a Pyth
 // pull-oracle push in-tx (deferred). Registering it would badge Suilend
@@ -160,6 +161,10 @@ export function bootDefi(): void {
     // Solidly forks (Aerodrome / Velodrome).
     if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "solidly-lp")) {
       registerDefiAdapter(SolidlyLpAdapter);
+    }
+    // Uniswap v2 — the family Solidly forked from.
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "uniswap-v2")) {
+      registerDefiAdapter(UniswapV2LpAdapter);
     }
     // Liquid staking / restaking. Queue-exit venues ship deposit-only until
     // the Tier-4 request/claim machinery lands (§12 Q2).

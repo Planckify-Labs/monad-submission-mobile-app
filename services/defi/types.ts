@@ -88,6 +88,16 @@ export type DepositTarget =
     }
   // Balancer v3 / Beets. `poolId` is the Vault registration id; `asset` is the
   // single token joined with (§6.2).
+  // Uniswap v2 pairs. No `stable` field — every v2 pool is
+  // constant-product, unlike its Solidly descendants. Twin of the backend
+  // union member; see that file for the full rationale.
+  | {
+      kind: "uniswap-v2";
+      router: Address;
+      pool: Address;
+      token0: Address;
+      token1: Address;
+    }
   | { kind: "balancer-lp"; vault: Address; poolId: Hex; asset: Address }
   // Liquid staking / restaking (§6.4). `venue` selects the pinned entry
   // contract + stake shape from the address-book; `receipt` is the
@@ -178,6 +188,7 @@ export function targetUnderlying(target: DepositTarget): string | null {
   switch (target.kind) {
     // Both legs are deposited; token0 is the leg the identity read reports.
     case "solidly-lp":
+    case "uniswap-v2":
       return target.token0;
     case "router-call":
       return target.tokenIn;
@@ -208,6 +219,7 @@ export const EVM_TARGET_KINDS = [
   "compound-v2",
   "curve-lp",
   "solidly-lp",
+  "uniswap-v2",
   "balancer-lp",
   "lst-stake",
   "router-call",

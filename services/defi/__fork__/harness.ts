@@ -69,6 +69,17 @@ export const FORK_TESTS_ENABLED = process.env.FORK_TESTS?.trim() === "1";
 export const FORK_BLOCKS: Readonly<Record<number, bigint>> = {
   1: 23_000_000n,
   8453: 28_000_000n,
+  // Added 2026-08-22. Arbitrum and Polygon are SEEDED chains (api's
+  // `seed.ts` creates both `Blockchain` rows, `isTestnet: false`) with pinned
+  // addresses in both address books — so users can already reach them — and
+  // neither had a fork pin, which meant no case had ever executed against
+  // either. `forkCoverage.test.ts` is what now stops that recurring.
+  //
+  // These two have no LEGACY pin the way Ethereum and Base do, because no
+  // case predates them: they are pinned near the 2026-08-22 head rather than
+  // at some older block chosen for continuity with results nobody recorded.
+  42161: 497_000_000n,
+  137: 92_420_000n,
 };
 
 /**
@@ -102,6 +113,10 @@ export const FORK_BLOCKS: Readonly<Record<number, bigint>> = {
 export const FORK_BLOCKS_RECENT: Readonly<Record<number, bigint>> = {
   1: 25_803_000n,
   8453: 50_262_000n,
+  // Set 2026-08-22 against the then-current heads (Arbitrum 497,066,148 /
+  // Polygon 92,441,426), read from the chains themselves rather than assumed.
+  42161: 497_065_000n,
+  137: 92_441_000n,
 };
 
 /**
@@ -113,6 +128,12 @@ export const FORK_BLOCKS_RECENT: Readonly<Record<number, bigint>> = {
 const PIN_STALE_AFTER_BLOCKS: Readonly<Record<number, bigint>> = {
   1: 7_200n,
   8453: 43_200n,
+  // Arbitrum's ~0.25s blocks make a day ~345,600, and Polygon's ~2.1s ~41,000.
+  // The limit is "one day of THIS chain's blocks", not one shared number —
+  // 43,200 would call an Arbitrum pin stale eight times too early and read as
+  // a broken harness rather than an aged pin.
+  42161: 345_600n,
+  137: 41_000n,
 };
 
 /**
@@ -726,6 +747,9 @@ export async function positionBalance(
         holder,
       );
     case "solidly-lp":
+    case "uniswap-v2":
+      // Both are their own LP token — no separate-receipt complication like
+      // classic Curve.
       return erc20Balance(ctx, target.pool as Address, holder);
     default:
       throw new Error(

@@ -22,6 +22,7 @@ import type { Address } from "viem";
 import { beforeAll, describe, expect, it } from "vitest";
 import { LstStakeAdapter } from "../adapters/lstStake";
 import { SolidlyLpAdapter } from "../adapters/solidlyLp";
+import { UniswapV2LpAdapter } from "../adapters/uniswapV2Lp";
 import {
   approvalsOf,
   type DepositTarget,
@@ -58,6 +59,14 @@ const AERODROME_ROUTER =
   "0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43" as Address;
 const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as Address;
 const BASE_WETH = "0x4200000000000000000000000000000000000006" as Address;
+
+// Ethereum — Uniswap v2 (address-book dex.ts `UNISWAP_V2_DEPLOYMENTS[1]`).
+// WISE-WETH is the real DeFiLlama pool this family unlocks (~$143M).
+const UNISWAP_V2_ROUTER =
+  "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D" as Address;
+const WISE = "0x66a0f676479Cee1d7373f3DC2e2952778BfF5bd6" as Address;
+const ETH_WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" as Address;
+const WISE_WETH_PAIR = "0x21b8065d10f73EE2e260e5B47D3344d3Ced7596E" as Address;
 
 const TEN_ETH = 10n * 10n ** 18n;
 
@@ -218,6 +227,95 @@ describeBase("Tier 3 — Solidly LP on Base (Aerodrome)", () => {
       await erc20Balance(ctx, target.pool as Address, holder),
       "addLiquidity succeeded but no LP tokens arrived",
     ).toBeGreaterThan(before);
+  }, 300_000);
+});
+
+describeEth("Tier 3 — Uniswap v2 LP on Ethereum (WISE-WETH)", () => {
+  let ctx: ForkContext;
+
+  beforeAll(async () => {
+    ctx = await startFork(ETHEREUM);
+    await dealNative(ctx, ctx.account.address, 10n ** 20n);
+    return async () => {
+      await ctx.stop();
+    };
+  }, 180_000);
+
+  it("adds both legs, then a MAX remove returns both — no router quote helper to lean on", async () => {
+    // Unlike Solidly, Uniswap v2's Router02 has no `getReserves`/
+    // `quoteAddLiquidity` convenience — this proves the adapter's own path
+    // (reading the PAIR's `getReserves()` directly and pricing the pair with
+    // the router's `quote()` pure helper) actually produces a call the chain
+    // accepts, not just well-typed calldata.
+    const holder = ctx.account.address;
+    const wiseAmount = 1_000n * 10n ** 18n; // 1000 WISE
+    await dealErc20(ctx, WISE, holder, wiseAmount * 4n);
+    await dealErc20(ctx, ETH_WETH, holder, 10n ** 19n);
+
+    const target: DepositTarget = {
+      kind: "uniswap-v2",
+      router: UNISWAP_V2_ROUTER,
+      pool: WISE_WETH_PAIR,
+      token0: WISE,
+      token1: ETH_WETH,
+    };
+
+    const deposit = await UniswapV2LpAdapter.buildDeposit({
+      wallet: ctx.wallet,
+      chain: ctx.chain,
+      asset: { symbol: "WISE", contract: WISE, decimals: 18 },
+      amount: wiseAmount,
+      target,
+    } as never);
+
+    // Same regression class Solidly's test guards: a two-sided add needs
+    // TWO approvals, not one.
+    const approvals = approvalsOf(deposit);
+    expect(approvals).toHaveLength(2);
+    expect(new Set(approvals.map((a) => a.token.toLowerCase()))).toEqual(
+      new Set([WISE.toLowerCase(), ETH_WETH.toLowerCase()]),
+    );
+    for (const approval of approvals) {
+      expect(approval.spender.toLowerCase()).toBe(
+        UNISWAP_V2_ROUTER.toLowerCase(),
+      );
+      expect(approval.amount).toBeLessThan(2n ** 255n); // never infinite
+    }
+
+    const lpBefore = await erc20Balance(ctx, target.pool as Address, holder);
+    expect((await executeCall(ctx, deposit)).status).toBe("success");
+    const lpAfter = await erc20Balance(ctx, target.pool as Address, holder);
+    expect(
+      lpAfter,
+      "addLiquidity succeeded but no LP tokens arrived",
+    ).toBeGreaterThan(lpBefore);
+
+    const wiseBefore = await erc20Balance(ctx, WISE, holder);
+    const wethBefore = await erc20Balance(ctx, ETH_WETH, holder);
+
+    const withdraw = await UniswapV2LpAdapter.buildWithdraw({
+      wallet: ctx.wallet,
+      chain: ctx.chain,
+      asset: { symbol: "WISE", contract: WISE, decimals: 18 },
+      amount: "MAX",
+      target,
+    } as never);
+    // The LP token itself needs an approval to be burned by the router.
+    expect(approvalsOf(withdraw)).toHaveLength(1);
+    expect((await executeCall(ctx, withdraw)).status).toBe("success");
+
+    expect(
+      await erc20Balance(ctx, target.pool as Address, holder),
+      "MAX withdraw left a residual LP balance",
+    ).toBe(0n);
+    expect(
+      await erc20Balance(ctx, WISE, holder),
+      "remove_liquidity succeeded but WISE did not come back",
+    ).toBeGreaterThan(wiseBefore);
+    expect(
+      await erc20Balance(ctx, ETH_WETH, holder),
+      "remove_liquidity succeeded but WETH did not come back",
+    ).toBeGreaterThan(wethBefore);
   }, 300_000);
 });
 

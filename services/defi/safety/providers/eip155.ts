@@ -81,6 +81,8 @@ function destinationOf(
       return target.pool;
     case "solidly-lp":
       return target.router;
+    case "uniswap-v2":
+      return target.router;
     case "balancer-lp":
       return target.vault;
     case "morpho-blue":
@@ -260,6 +262,7 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
       case "router-call":
         return target.tokenIn;
       case "solidly-lp":
+      case "uniswap-v2":
       case "balancer-lp":
         return targetUnderlying(target);
       default:
@@ -455,6 +458,7 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
       case "morpho-blue":
       case "curve-lp":
       case "solidly-lp":
+      case "uniswap-v2":
       case "balancer-lp":
       case "router-call":
         return { kind: "instant" };
@@ -516,19 +520,29 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
   async readPositionDelta(target, owner, chainId) {
     const ctx = clientFor(chainId);
     if (!ctx) return 0n;
-    // The receipt token differs per kind; for the share-bearing families the
-    // destination IS the receipt, which covers 4626, cToken and most LP
-    // pools. `curve-lp` is the exception since 2026-08-21: a classic Curve
-    // pool mints a SEPARATE LP token, and the pool contract itself has no
-    // `balanceOf` at all — reading `destinationOf` there would silently
-    // report "no position change" after a successful deposit, exactly the
-    // failure mode this check exists to catch.
+    // The receipt token differs per kind; for the SINGLETON-destination
+    // families the destination IS the receipt (4626's vault, Comet's market,
+    // cToken), which is what `destinationOf` answers correctly. It is WRONG
+    // for every router-based LP kind: `destinationOf` there is the ROUTER
+    // (the tx.to for `addLiquidity`), never the receipt — the pool/pair is a
+    // SEPARATE contract the router deposits into, and for a classic Curve
+    // pool the receipt isn't even `pool` (§11.6c: a separate `lpToken`).
+    //
+    // Reading `destinationOf` here for an LP kind would read the router's
+    // ERC-20 balance — always zero — and silently report "no position
+    // change" after every successful deposit, which is exactly the failure
+    // mode this check exists to catch. Found while wiring `uniswap-v2`
+    // (2026-08-22): `solidly-lp` had carried the same latent bug since it
+    // shipped, invisible because nothing exercised this specific check
+    // against it end to end.
     const receipt =
       target.kind === "lst-stake"
         ? target.receipt
         : target.kind === "curve-lp"
           ? (target.lpToken ?? target.pool)
-          : destinationOf(target, chainId);
+          : target.kind === "solidly-lp" || target.kind === "uniswap-v2"
+            ? target.pool
+            : destinationOf(target, chainId);
     if (!receipt) return 0n;
     try {
       return await ctx.client.readContract({
