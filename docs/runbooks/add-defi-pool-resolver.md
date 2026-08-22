@@ -299,7 +299,7 @@ Read the reason before turning one on.
 |---|---|
 | `balancer-lp` (v3 only) | v2 shipped 2026-08-19. v3 has no `joinPool`/`exitPool`/`BalancerQueries` at all — liquidity moves through a Router — so v3 pools stay Manual until that path is built. The adapter refuses to build against a non-v2 Vault. |
 | `router-call` (Uniswap v3/v4) | A concentrated-liquidity position needs a tick range — a different product decision from "supply this asset". Pendle ships; Uniswap waits for that UX. |
-| `async-vault` (ERC-7540, `centrifuge-protocol` ~$1.19B) | **Checked 2026-08-22, and this row overstated it.** `asyncVault.ts`'s own header is more precise than this table was: the kind, validator and the encoders/readiness-read half of the adapter exist, but its own comment says outright that the pending-claims tracker (`StrategyPosition.asyncPhase`, a claim-watcher WORKER) does not — no such file exists anywhere in the repo (verified: nothing matches `*async*`/`*claim*` besides `asyncVault.ts` itself). That is a new DB column, a new backend worker, and new agent copy for a "requested, we'll notify you" state, not a resolver. Same shape as the Convex/Aura row above — Tier-4 two-phase machinery, not a resolver-only extraction. |
+| `async-vault` (ERC-7540, `centrifuge-protocol` ~$1.19B) | **Re-checked 2026-08-22 — my first correction here was ALSO wrong, in the opposite direction.** I searched only `mobile-app/services/defi/` for `*async*`/`*claim*` and concluded the claim-watcher did not exist; it does, at `api/src/strategies/workers/async-claim-watcher.processor.ts` — registered, injected into the scheduler, cron every 10 minutes (`strategies.module.ts`, `strategies.scheduler.ts`). The DB columns landed in migration `20260815000000_strategy_position_async_phase`. `asyncVault.ts` has all four two-phase methods (`buildRequestDeposit`/`buildClaimDeposit`/`buildRequestRedeem`/`buildClaimRedeem`) plus `readAsyncRequest`. `agent-executors/defi/writes.ts` already detects `adapter.buildRequestDeposit` by capability and returns the exact "requested… we'll notify you when it's ready to claim" copy §7 asks for. Both `FEATURE_DEFI_EVM_TIER4` flags exist (default off). **What is actually still missing**, precisely: (1) `createPosition`'s DTO/service/Prisma call has no `asyncPhase`/`asyncRequestId` fields, so a requested deposit is written with `asyncPhase: null` and the claim-watcher's `WHERE asyncPhase IN (...)` query will never find it — the request side reports the right copy to the user but never becomes durable; (2) no code path extracts the ERC-7540 `requestId` from the request tx to store it; (3) `defi_claim` (the existing claim tool) routes through `adapter.buildClaim?`, a different capability name than `AsyncVaultAdapter`'s `buildClaimDeposit`/`buildClaimRedeem` — there is no wired path to actually claim once a position becomes claimable; (4) the worker's own comment marks notification dispatch as a hook, not implemented; (5) `AsyncVaultAdapter` is not registered in `bootstrap.ts`; (6) still true from before: no resolver for any ERC-7540 protocol. |
 | Convex / Aura | Boosting is a two-leg flow (acquire the LP, then stake it) that one-shot `UnsignedCall` cannot express. Ships on the Tier-4 two-phase machinery. |
 | Avalon (Aave fork) | One `Pool` per market, so there is no single address to pin. Its book is empty on purpose. |
 | StakeWise, cbETH, LsETH, LBTC, Renzo | Each needs either a permissionless mint that does not exist (cbETH), a KYC-gated one (LsETH), a Bitcoin-side flow (LBTC), a per-vault entry contract that wants its own resolver (StakeWise), or an unreviewed dual-overload stake plus a mint cap (Renzo). Listed in `address-book/lst.ts` as `LST_VENUES_DEFERRED`. **Kelp and Mantle mETH have SHIPPED** — both were min-out venues, and in both cases the blocker turned out to be having a quote to floor against, not the min-out itself. |
@@ -378,6 +378,8 @@ that fails an earlier one cannot pass a later one.
 | `DRIFT_CHECKS=1 npx jest src/strategies/targets/address-book/address-book-drift` | Is every pinned address still the contract we think it is? | Per-chain RPC |
 | `DRIFT_CHECKS=1 npx jest src/strategies/targets/external-api-drift` | Do the third-party APIs the resolvers depend on still have the shape we send? | Network |
 | `FORK_TESTS=1 npx vitest run services/defi/__fork__` (mobile) | Does the calldata the DEVICE builds actually move the position? | anvil + an **archive** RPC |
+| `pnpm defi:fork` → `executor.fork.test.ts` (mobile) | Does the **tool call a user triggers** complete end to end — guards, approve, submit, position row, MAX withdraw? | anvil + an **archive** RPC. See [§13](#13-gate-4--rehearsing-the-whole-write-path-without-real-money) |
+| `npx vitest run services/defi/__fork__/forkCoverage.test.ts` | Is any execution shape or live chain unrehearsed? | nothing — runs on every build |
 
 Run the dry run first: a family whose pools all refuse has nothing for a fork
 test to execute. Run the drift checks nightly, not in CI — a failure there means
@@ -1400,6 +1402,11 @@ Passing here is necessary, not sufficient. It says the bytes are right and the
 position moves. It does not say the pinned addresses have been reviewed (§12 Q7)
 or that a family's economics suit the product.
 
+**Nor does it say the executor around those bytes works** — that is
+[§13](#13-gate-4--rehearsing-the-whole-write-path-without-real-money), added
+2026-08-22. Two chains users can already reach (Arbitrum, Polygon) had no fork
+pin at all until then, so the table above describes Ethereum and Base only.
+
 Three environment facts the harness encodes, each found by a failing run rather
 than by reading docs:
 
@@ -1528,13 +1535,22 @@ reverting. The sixth was a provenance gap (Avantis) since closed.
 All six are fixed; drift went 13 → 0. Findings, evidence and the corrections:
 **`docs/runbooks/defi-address-book-security-signoff.md`**.
 
-#### Requirement 9 — the end-to-end human test
+#### Requirement 9 — the end-to-end test
 
-Automated coverage stops at "the bytes are right". Nobody has confirmed a USER
-can complete the journey until a person does it on a real build, on mainnet,
-with their own funds. Small amounts, but real ones: a testnet fork cannot
-reproduce a paused market, a fee-on-transfer token, an approval that needs
-resetting to zero, or a wallet that simply has no gas.
+> **Substantially automated since 2026-08-22 — see
+> [§13](#13-gate-4--rehearsing-the-whole-write-path-without-real-money).**
+> Gate 4 runs the real `deposit` / `withdraw` executors against a fork, so the
+> guards, approve preamble, submit path, position registration and `MAX`
+> withdraw no longer need a person spending real funds to exercise them. What
+> remains below is the part Gate 4 genuinely cannot see: the agent's NL turn,
+> the rendered approval card, and wallet reality (no gas, biometrics,
+> backgrounding). §13.8 explains how to cover those on a fork-backed device
+> build rather than on mainnet.
+
+Automated coverage used to stop at "the bytes are right". Nobody has confirmed a
+USER can complete the journey until it is exercised on a real build: a fork
+cannot reproduce a paused market, a fee-on-transfer token, an approval that
+needs resetting to zero, or a wallet that simply has no gas.
 
 Run the whole loop for at least one pool in the family:
 
@@ -1572,3 +1588,154 @@ until requirement 5 lands — which now means: apply the three address
 corrections, resolve Radiant and Avantis, and get the sign-off log in
 `docs/runbooks/defi-address-book-security-signoff.md` §7 countersigned by a
 named human.
+
+---
+
+## 13. Gate 4 — rehearsing the whole write path without real money
+
+> **Added 2026-08-22.** This section exists to retire the part of §12.3
+> requirement 9 that was costing a person real funds on mainnet every time a
+> family was onboarded.
+
+### 13.1 What was actually missing
+
+Coverage was not thin — it was **discontinuous**. Two suites each covered half
+of a deposit and nothing covered the join:
+
+| Suite | Real executor | Real chain |
+|---|---|---|
+| `agent-executors/defi/depositSafetyContext.test.ts` | yes | no — stub adapter, stub clients |
+| `defi/__fork__/tier*.fork.test.ts` | no — calls `buildDeposit` directly | yes — anvil at a pinned block |
+
+So the ~1,900 lines of `agent-executors/defi/writes.ts` had never executed
+against real protocol state: `resolveAndGuard`'s tier/whitelist/APY-drift/pause
+guards, the safety pipeline at all three of its anchors, the allowance read and
+approve preamble, the phantom-failure-safe submit, the withdraw's live-balance
+preflight, and the `createPosition` registration a restart reads the position
+back from. That span is exactly what the human was covering by hand.
+
+**Gate 4 joins the two.** `defi/__fork__/executor.fork.test.ts` calls the same
+`deposit` / `withdraw` executors the agent dispatcher calls, with the tool-input
+shape the model emits, against anvil.
+
+### 13.2 It needed no production change
+
+`resolveChainClients` builds its viem clients from
+`ExecutorContext.blockchains[].rpcUrl`, `chainRpcUrl()` is just
+`rpcUrls.default.http[0]`, and `rpcFetchOptions()` returns `undefined` for any
+origin that is not a registered rpc-proxy. So handing the executor a
+`blockchains` row pointing at `http://127.0.0.1:<anvil>` is enough —
+`forkExecutorContext()` (`__fork__/executorContext.ts`) does exactly that and
+nothing else. Nothing is monkey-patched and no code branches on a test flag.
+
+The only stub is `strategiesApi`, and it is **stateful**: `createPosition`
+stores what the deposit really passed it and `getPosition` hands that same row
+to the withdraw, so the round trip is joined by the executor's own output rather
+than by a fixture. A deposit that registers a wrong pool id breaks the withdraw
+exactly as it would in production.
+
+### 13.3 The ladder, and what each rung cannot see
+
+| Gate | Question | Cost | Blind to |
+|---|---|---|---|
+| 1 `pnpm defi:dry-run` (api) | Does it resolve, and if not why? | seconds | everything on-device |
+| 2 `DRIFT_CHECKS=1` + §12.3 #5 sign-off | Is the pinned address the contract we believe? | minutes + a human | calldata |
+| 3 `pnpm defi:fork` (tier suites) | Do the adapter's bytes move the position? | ~30s/case | the entire executor |
+| 4 `pnpm defi:fork` (`executor.fork.test.ts`) | Does the tool call a user triggers complete end to end? | ~20s/case | UI, agent turn, wallet reality |
+
+Order matters: a family failing an earlier gate cannot pass a later one.
+
+### 13.4 Adding a protocol — the one step
+
+Append a row to `EXECUTOR_FORK_CASES` in `__fork__/executorCases.ts`:
+
+```ts
+{
+  name: "Compound III cUSDTv3 on Arbitrum (USDT)",
+  chainId: 42161,
+  protocolSlug: "compound-v3",        // must match the adapter's slug
+  assetContract: "0xFd086bC7…",       // read from the market, not a symbol table
+  amount: 1_000_000_000n,
+  target: { kind: "compound-v3", comet: "0xd98Be00b…", asset: "0xFd086bC7…" },
+  poolId: "fork-arbitrum-cusdtv3",
+  adapters: [CometV3Adapter],
+  approvalSpender: "0xd98Be00b…",
+  maxDust: 1_000n,
+}
+```
+
+Each case asserts, against a real fork:
+
+- the deposit returns `success` and the **position balance actually grew**;
+- `createPosition` was called with the right pool id, chain id, amount and the
+  **real** tx hash;
+- the approve was scoped to the exact amount and left **no standing allowance**;
+- a `"MAX"` withdraw empties the position (dust ≤ `maxDust`) **and** the
+  underlying is back in the wallet — a burn that sent funds elsewhere would pass
+  the dust assertion alone.
+
+### 13.5 The gate that makes this a rule
+
+`__fork__/forkCoverage.test.ts` runs on **every** build — no anvil, no fork RPC,
+no network — and fails when:
+
+- a chain in `DEFI_LIVE_CHAINS` has no `FORK_BLOCKS` / `FORK_BLOCKS_RECENT` /
+  `PIN_STALE_AFTER_BLOCKS` entry;
+- an EVM execution shape (`EVM_TARGET_KINDS`) has neither a Gate-4 case nor a
+  stated `GATE4_BACKLOG` reason;
+- a case names an unpinned chain, a duplicate pool id, an adapter whose slug does
+  not match, or a `maxDust` loose enough to hide real money.
+
+`GATE4_BACKLOG` is a **ratchet, not an exemption**. Requiring all twelve EVM
+kinds on day one would make the gate permanently red, which §11.5 is explicit
+about ("trains people to ignore red"). So the backlog starts full and the gate
+fails only on **drift** — a new execution shape landing with nobody having
+decided about it. A kind leaves the backlog by gaining a case, never by being
+deleted.
+
+**Verified to fail before being trusted** (2026-08-22): un-pinning Arbitrum and
+removing one backlog entry produced three named failures; a case pointing
+`cUSDTv3` at USDC's address was refused by Layer 1 in 1.2s, before any
+transaction, because the check read `comet.baseToken()` on the fork.
+
+### 13.6 Running it
+
+```bash
+FORK_TESTS=1 FORK_RPC_URL_42161=https://… pnpm defi:fork
+pnpm defi:fork:pins        # read heads from the chains; never invent a pin
+```
+
+One Alchemy key serves all four live chains as archive, including Arbitrum and
+Polygon (verified 2026-08-22).
+
+### 13.7 Two harness bugs this found
+
+**Arbitrum and Polygon had no fork pin at all.** Both are seeded, non-testnet
+`Blockchain` rows with pinned addresses in both books — users can reach them —
+and `FORK_BLOCKS` carried only Ethereum and Base. The chain most recently
+exercised in production by hand was the one chain no automated case had ever
+touched. `DEFI_LIVE_CHAINS` + the coverage gate is what stops that recurring.
+
+**`dealErc20` could not fund any OpenZeppelin-upgradeable token.** The balance
+probe walked 40 slots; `ERC20Upgradeable` reserves a 50-slot `__gap`, so
+`_balances` sits at **slot 51** (confirmed on a fork for Arbitrum USDT). Every
+bridged L2 stablecoin is this shape, i.e. most of what users actually deposit.
+The failure read as "this token cannot be dealt", which looks like a property of
+the token rather than a limit of the probe. `MAX_SLOT` is now 128.
+
+### 13.8 What still needs a human, and what still needs money
+
+Gate 4 does **not** retire requirement 9 entirely. Still uncovered:
+
+- the agent's NL → tool-call turn, and the approval card's rendered copy;
+- wallet reality: no gas, biometric prompts, backgrounding mid-signature.
+
+Two of those three are **device** concerns, not money concerns. §12.2's second
+option is the way to close them without funds: run
+`anvil --fork-url … --host 0.0.0.0`, insert an `rpc_providers` row in
+`rpc-proxy` for that chain at `priority: 0`, and fund the device wallet with the
+same storage-write trick. Real build, real backend, real agent, forked chain.
+
+Record the Gate-4 run (chain, pool, the two tx hashes) the same way §12.3 asks —
+"the fork test was green" is now a much stronger claim than it was, but it is
+still a claim someone has to make deliberately.
