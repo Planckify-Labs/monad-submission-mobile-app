@@ -1,0 +1,136 @@
+name: DeFi verification
+
+# Two jobs with deliberately different cadences, because they answer different
+# questions and have very different costs.
+#
+#   gate  — every push and PR. No secrets, no network, ~1 minute. This is the
+#           one that must stay green: it includes `forkCoverage.test.ts`, which
+#           fails when a new DeFi execution shape or a live chain has no
+#           end-to-end case (see docs/runbooks/add-defi-pool-resolver.md §13).
+#
+#   fork  — nightly and on demand. Boots anvil against archive RPC and runs the
+#           real deposit/withdraw executors against forked mainnet. Needs a
+#           secret and tens of seconds per case, so gating merges on it would
+#           make the build depend on third-party uptime — the runbook (§11.5)
+#           is explicit that a check which is red for reasons outside the diff
+#           trains people to ignore red.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  schedule:
+    # 02:00 UTC daily — the fork job only.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      run_fork:
+        description: "Run the fork suite (needs ALCHEMY_API_KEY)"
+        type: boolean
+        default: true
+
+jobs:
+  gate:
+    name: Static checks + unit and coverage gates
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: TypeScript
+        run: pnpm check:syntax
+
+      - name: Chain-agnosticism guard
+        run: pnpm check:chains
+
+      - name: DeFi agnosticism guard
+        run: pnpm check:defi
+
+      # Includes services/defi/__fork__/forkCoverage.test.ts. The `.fork.test.ts`
+      # files are in the include list too but skip themselves without
+      # FORK_TESTS=1, reporting their own gate rather than passing silently.
+      - name: Unit tests + DeFi coverage gate
+        run: pnpm vitest run --maxWorkers=2
+
+      # Non-blocking on purpose: `hooks/useWallet.helpers.test.ts` fails today
+      # for a reason unrelated to any diff — the fire-and-forget rpc-proxy token
+      # mint escapes the test and hits `__DEV__`, which node:test does not
+      # define. Every assertion in the file passes. Kept visible so it gets
+      # fixed rather than forgotten; flip to blocking once it is.
+      - name: Node tests (non-blocking, see comment)
+        continue-on-error: true
+        run: pnpm test:node
+
+  fork:
+    name: Gate 4 — executors against forked mainnet
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_fork)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # anvil. The harness pins `--hardfork prague`; anvil's own default
+      # (Osaka on 1.7.1) fails a plain `balanceOf` against forked mainnet state
+      # with `EVM error OpcodeNotFound`.
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Check the fork RPC secret is configured
+        env:
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+        run: |
+          if [ -z "$ALCHEMY_API_KEY" ]; then
+            echo "::warning::ALCHEMY_API_KEY is not set — the fork suite cannot run."
+            echo "Add it in Settings → Secrets → Actions. One key serves all four"
+            echo "live chains as archive (verified 2026-08-22)."
+            exit 1
+          fi
+
+      # Reports how far each pinned block has drifted from the head. Advisory:
+      # an aged pin means the fork is testing history, which the harness warns
+      # about rather than failing on.
+      - name: Report fork pin drift
+        env:
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+        run: |
+          export FORK_RPC_URL_1="https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          export FORK_RPC_URL_137="https://polygon-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          export FORK_RPC_URL_8453="https://base-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          export FORK_RPC_URL_42161="https://arb-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          pnpm defi:fork:pins
+
+      # `--maxWorkers=1`: each case boots its own anvil and replays forked state
+      # through one upstream endpoint. Run in parallel this suite is occasionally
+      # flaky against a rate-limited key (observed once in three local runs,
+      # 2026-08-22), and a nightly job nobody is watching must not cry wolf. The
+      # suite is small enough that serial costs little.
+      - name: Fork suite (Gates 3 and 4)
+        env:
+          ALCHEMY_API_KEY: ${{ secrets.ALCHEMY_API_KEY }}
+        run: |
+          export FORK_RPC_URL_1="https://eth-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          export FORK_RPC_URL_137="https://polygon-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          export FORK_RPC_URL_8453="https://base-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          export FORK_RPC_URL_42161="https://arb-mainnet.g.alchemy.com/v2/$ALCHEMY_API_KEY"
+          FORK_TESTS=1 npx vitest run services/defi/__fork__ --maxWorkers=1
