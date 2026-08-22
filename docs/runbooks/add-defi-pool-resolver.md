@@ -31,6 +31,12 @@
 >   addresses in 125**, all invisible to the test suite — procedure, evidence
 >   and the standing record live in
 >   [`defi-address-book-security-signoff.md`](./defi-address-book-security-signoff.md).
+> - **A pool still shows Manual after all this?** Check
+>   [`defi-manual-reasons-reference.md`](./defi-manual-reasons-reference.md)
+>   first — it catalogues every already-investigated "why is this Manual"
+>   circumstance (KYC gate, not permissionless, wrong product behind a shared
+>   slug, chain not seeded, needs a new execution shape) with on-chain evidence
+>   and first-party sources, so the same investigation isn't repeated.
 > - **What is still blocking**: §12.4.
 >
 > ### Pinning a new address? [§11.5c Step 5](#step-5--security-sign-off-on-every-address-you-pinned-mandatory) is not optional.
