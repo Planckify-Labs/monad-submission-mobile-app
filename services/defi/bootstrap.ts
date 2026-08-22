@@ -20,6 +20,7 @@ import {
   defiEvmFamilyEnabled,
   FEATURE_DEFI_EVM_TIER2,
   FEATURE_DEFI_EVM_TIER3,
+  FEATURE_DEFI_EVM_TIER4,
   FEATURE_DEFI_PHASE_2,
   FEATURE_DEFI_PHASE_3,
   FEATURE_DEFI_SUI_ADAPTERS,
@@ -34,6 +35,7 @@ import {
   AaveV3EthereumAdapter,
   AaveV3EthereumSepoliaAdapter,
 } from "./adapters/aaveV3";
+import { AsyncVaultAdapter } from "./adapters/asyncVault";
 import { BalancerLpAdapter } from "./adapters/balancerLp";
 import { CometV3Adapter } from "./adapters/cometV3";
 import { CompoundV2Adapter } from "./adapters/compoundV2";
@@ -179,6 +181,21 @@ export function bootDefi(): void {
     // Router-based join/exit ships as separate work.
     if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER3, "balancer-lp")) {
       registerDefiAdapter(BalancerLpAdapter);
+    }
+  }
+
+  // ERC-7540 async vaults (docs/defi-evm-protocol-expansion-spec.md §7). The
+  // adapter has carried the two-phase request/claim methods since it was
+  // written; what was missing was the durable request tracker
+  // (`StrategyPosition.asyncPhase` + `async-claim-watcher.processor.ts`,
+  // landed on the backend) and the claim wiring on this side — both now in
+  // place. Registering the adapter does not by itself register a resolver:
+  // no `async-vault` target exists yet for any protocol, so this flag alone
+  // changes nothing until a resolver ships (§7, "no resolver until the
+  // two-phase flow is proven end to end").
+  if (FEATURE_DEFI_EVM_TIER4) {
+    if (defiEvmFamilyEnabled(FEATURE_DEFI_EVM_TIER4, "async-vault")) {
+      registerDefiAdapter(AsyncVaultAdapter);
     }
   }
 

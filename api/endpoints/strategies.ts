@@ -148,6 +148,14 @@ export const strategiesApi = {
     openTxHash?: string;
     goal?: string;
     targetDate?: string;
+    /**
+     * ERC-7540 async vaults only (docs/defi-evm-protocol-expansion-spec.md
+     * §7). Set by the executor from `adapter.buildRequestDeposit`
+     * capability-detection — never pass this for an ordinary sync deposit.
+     */
+    asyncPhase?: "deposit_requested" | "redeem_requested";
+    asyncRequestId?: string;
+    asyncRequestedRaw?: string;
   }) => {
     return api
       .post("strategies/positions", { json: payload })
@@ -157,6 +165,20 @@ export const strategiesApi = {
   getPosition: async (id: string) => {
     return api
       .get(`strategies/positions/${encodeURIComponent(id)}`)
+      .json<TStrategyPosition>();
+  },
+
+  /**
+   * Record a successful ERC-7540 claim (§7). Call after
+   * `buildClaimDeposit`/`buildClaimRedeem` confirms on chain — this is what
+   * clears `asyncPhase`, which is what removes the position from
+   * `async-claim-watcher.processor.ts`'s pending scan.
+   */
+  claimAsyncPosition: async (id: string, claimTxHash: string) => {
+    return api
+      .post(`strategies/positions/${encodeURIComponent(id)}/claim`, {
+        json: { claim_tx_hash: claimTxHash },
+      })
       .json<TStrategyPosition>();
   },
 

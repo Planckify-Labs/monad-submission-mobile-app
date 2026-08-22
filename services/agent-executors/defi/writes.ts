@@ -17,7 +17,13 @@
  * `ToolResult.error` so the agent never sees raw text.
  */
 
-import { type Address, erc20Abi, formatUnits, parseAbi } from "viem";
+import {
+  type Address,
+  decodeEventLog,
+  erc20Abi,
+  formatUnits,
+  parseAbi,
+} from "viem";
 import { strategiesApi } from "@/api/endpoints/strategies";
 import type { TOpportunity, TUserStrategy } from "@/api/types/strategy";
 import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
@@ -42,6 +48,7 @@ import {
   runSafetyPipeline,
 } from "@/services/defi/safety/registry";
 import type { SafetyContext } from "@/services/defi/safety/types";
+import type { PositionReadContext } from "@/services/defi/types";
 import {
   approvalsOf,
   type DepositTarget,
@@ -707,6 +714,58 @@ export const deposit: MobileToolExecutor = (input, context) =>
         console.warn("[defi/deposit] protocol tx submitted", { hash });
       }
 
+      // 2b. ERC-7540 `requestId`, read from the request tx's own emitted
+      // event rather than simulated or guessed. `requestDeposit`/
+      // `requestRedeem` RETURN the id, but a signed-and-broadcast
+      // transaction has no return value to read — only logs. The standard
+      // event carries it as an indexed topic (`DepositRequest(controller,
+      // owner, requestId, sender, assets)` / `RedeemRequest` mirrors it), so
+      // this decodes the receipt rather than defaulting to the spec's
+      // 0-partition convention, which would silently mis-track any vault
+      // that DOES partition requests.
+      let asyncRequestId: string | undefined;
+      if (isAsyncDeposit) {
+        try {
+          const receipt = await publicClient.getTransactionReceipt({ hash });
+          const eventAbi = parseAbi([
+            "event DepositRequest(address indexed controller, address indexed owner, uint256 indexed requestId, address sender, uint256 assets)",
+            "event RedeemRequest(address indexed controller, address indexed owner, uint256 indexed requestId, address sender, uint256 shares)",
+          ]);
+          for (const log of receipt.logs) {
+            try {
+              const decoded = decodeEventLog({
+                abi: eventAbi,
+                data: log.data,
+                topics: log.topics,
+              });
+              if (
+                decoded.eventName === "DepositRequest" ||
+                decoded.eventName === "RedeemRequest"
+              ) {
+                asyncRequestId = decoded.args.requestId.toString();
+                break;
+              }
+            } catch {
+              // Not this event — the receipt has other logs too (Transfer,
+              // Approval, …); keep scanning.
+            }
+          }
+        } catch (err) {
+          if (__DEV__) {
+            console.warn(
+              "[defi/deposit] could not read requestId from receipt — " +
+                "position will still be tracked with requestId undefined; " +
+                "the claim path falls back to ERC-7540's request-id-0 default " +
+                "(most vaults, including Centrifuge, don't partition requests)",
+              { hash, error: err },
+            );
+          }
+        }
+        if (__DEV__) {
+          console.warn("[defi/deposit] async requestId", { asyncRequestId });
+        }
+      }
+
       // 3. USD value snapshot for `StrategyPosition.amountAtDepositUsd`.
       //
       // Previously called `exchangeRateApi.getLatestExchangeRate({...,
@@ -750,6 +809,18 @@ export const deposit: MobileToolExecutor = (input, context) =>
           openTxHash: hash,
           goal,
           targetDate,
+          // §7 requirement 2 — this is what makes the request DURABLE. Set
+          // from `isAsyncDeposit` (capability-detected above), never from
+          // anything the model could assert: a normal sync deposit must
+          // never carry an asyncPhase, or the claim-watcher would park a
+          // settled position waiting for a settlement that already happened.
+          ...(isAsyncDeposit
+            ? {
+                asyncPhase: "deposit_requested" as const,
+                asyncRequestId,
+                asyncRequestedRaw: amountRaw.toString(),
+              }
+            : {}),
         });
         if (__DEV__) {
           console.warn("[defi/deposit] position row created", {
@@ -1296,20 +1367,6 @@ export const claim: MobileToolExecutor = (input, context) =>
         }
         throw new DefiError("protocol_not_found", position.protocolSlug);
       }
-      if (!adapter.buildClaim) {
-        if (__DEV__) {
-          console.warn(
-            "[defi/claim] no_claimable_balance — adapter has no buildClaim primitive",
-            {
-              protocolSlug: position.protocolSlug,
-            },
-          );
-        }
-        throw new DefiError(
-          "no_claimable_balance",
-          `${position.protocolSlug}: no claim primitive`,
-        );
-      }
 
       const blockchain = context.blockchains.find(
         (b) => b.chainId === position.chainId,
@@ -1328,6 +1385,170 @@ export const claim: MobileToolExecutor = (input, context) =>
       }
       const chainConfig = buildChainConfigFromBlockchain(blockchain);
       const decimals = decimalsForSymbol(position.assetSymbol);
+
+      // ERC-7540 async vaults (§7) claim through a DIFFERENT capability pair
+      // than the generic reward/matured-withdrawal `buildClaim` below —
+      // `buildClaimDeposit`/`buildClaimRedeem`, because which one applies
+      // depends on which REQUEST is settling, not just on the protocol. A
+      // position only reaches this branch once the backend watcher has
+      // independently confirmed the vault reports a non-zero claimable
+      // amount (`asyncPhase` flips to `*_claimable` there, never on the
+      // device's own say-so) — this executor still re-reads that amount
+      // itself rather than trusting the cached position, since a stale
+      // "claimable" read would burn against a number the chain no longer
+      // honours.
+      const isAsyncClaim =
+        position.asyncPhase === "deposit_claimable" ||
+        position.asyncPhase === "redeem_claimable";
+      if (isAsyncClaim) {
+        if (
+          typeof adapter.buildClaimDeposit !== "function" ||
+          typeof adapter.buildClaimRedeem !== "function" ||
+          typeof adapter.readAsyncRequest !== "function"
+        ) {
+          throw new DefiError(
+            "no_claimable_balance",
+            `${position.protocolSlug}: adapter is missing the async claim capability`,
+          );
+        }
+        if (!position.poolId) {
+          throw new DefiError(
+            "position_not_found",
+            `${positionId}: async position has no poolId to re-resolve a target from`,
+          );
+        }
+        // Re-fetch the authoritative depositTarget by poolId — the same
+        // pattern `withdraw` uses (§4.2, §7): the model never supplies an
+        // address, and a claim is a `tx.to` for the user's settled funds
+        // exactly as much as a deposit is.
+        const opportunity = await strategiesApi
+          .getPool(position.poolId)
+          .catch(() => null);
+        const claimTarget = opportunity?.depositTarget;
+        if (!claimTarget || claimTarget.kind !== "async-vault") {
+          throw new DefiError(
+            "protocol_not_found",
+            `${position.protocolSlug}: pool ${position.poolId} no longer resolves an async-vault target`,
+          );
+        }
+
+        const claimCtx: PositionReadContext = {
+          target: claimTarget,
+          assetContract: position.assetContract ?? undefined,
+          assetSymbol: position.assetSymbol,
+          assetDecimals: decimals,
+          chain: chainConfig,
+        };
+        const requestState = await adapter.readAsyncRequest(
+          context.wallet.address,
+          claimCtx,
+        );
+        if (!requestState || requestState.claimable <= 0n) {
+          // The chain disagrees with the backend's last observation — refuse
+          // rather than build a claim for zero, which is the same
+          // "never trust a cache for a fund-moving amount" rule every other
+          // write in this file follows.
+          throw new DefiError(
+            "no_claimable_balance",
+            `${position.protocolSlug}: vault reports nothing claimable right now`,
+          );
+        }
+
+        const claimBuildArgs = {
+          wallet: context.wallet,
+          chain: chainConfig,
+          asset: {
+            symbol: position.assetSymbol,
+            contract: position.assetContract ?? undefined,
+            decimals,
+          },
+          amount: requestState.claimable,
+          target: claimTarget,
+        };
+        let claimUnsignedCall;
+        try {
+          claimUnsignedCall =
+            position.asyncPhase === "deposit_claimable"
+              ? await adapter.buildClaimDeposit(claimBuildArgs as never)
+              : await adapter.buildClaimRedeem(claimBuildArgs as never);
+        } catch (buildErr) {
+          if (__DEV__) {
+            console.error("[defi/claim] async buildClaim* threw", {
+              protocolSlug: position.protocolSlug,
+              asyncPhase: position.asyncPhase,
+              error: buildErr,
+            });
+          }
+          throw buildErr;
+        }
+        if (claimUnsignedCall.kind !== "evm-call") {
+          throw new DefiError(
+            "unsupported_chain",
+            `unsigned call kind "${claimUnsignedCall.kind}"`,
+          );
+        }
+        const { walletClient: asyncWalletClient } = resolveChainClients(
+          position.chainId,
+          context,
+        );
+        if (!asyncWalletClient || !asyncWalletClient.account) {
+          throw new DefiError("wallet_cannot_execute");
+        }
+        let asyncHash: `0x${string}`;
+        try {
+          asyncHash = await asyncWalletClient.sendTransaction({
+            to: claimUnsignedCall.to,
+            data: claimUnsignedCall.data,
+            value: claimUnsignedCall.value ?? 0n,
+            account: asyncWalletClient.account,
+            chain: asyncWalletClient.chain,
+          });
+        } catch (err) {
+          const c = classifyDefiError(err);
+          throw new DefiError(c === "unknown" ? "claim_failed" : c);
+        }
+        // Record the claim BEFORE reporting success to the agent — this is
+        // what clears `asyncPhase` server-side and removes the position from
+        // the watcher's scan (§7 requirement 2's other half). A failure here
+        // is logged, not thrown: the on-chain claim already succeeded, and
+        // the watcher will simply keep polling a vault that now reports
+        // nothing claimable rather than lose track of the position.
+        try {
+          await strategiesApi.claimAsyncPosition(positionId, asyncHash);
+        } catch (recordErr) {
+          if (__DEV__) {
+            console.error(
+              "[defi/claim] claimAsyncPosition failed after a successful on-chain claim",
+              { positionId, hash: asyncHash, error: recordErr },
+            );
+          }
+        }
+        return {
+          status: "success" as const,
+          tx_hash: asyncHash,
+          tx_confirmed: false,
+          data: {
+            position_id: positionId,
+            protocol_slug: position.protocolSlug,
+            chain_id: position.chainId,
+          },
+        };
+      }
+
+      if (!adapter.buildClaim) {
+        if (__DEV__) {
+          console.warn(
+            "[defi/claim] no_claimable_balance — adapter has no buildClaim primitive",
+            {
+              protocolSlug: position.protocolSlug,
+            },
+          );
+        }
+        throw new DefiError(
+          "no_claimable_balance",
+          `${position.protocolSlug}: no claim primitive`,
+        );
+      }
 
       let unsignedCall;
       try {

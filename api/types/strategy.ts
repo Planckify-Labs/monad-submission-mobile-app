@@ -82,6 +82,18 @@ export interface TStrategyPosition {
    *  of the cache or the position predates pool-level routing and has no
    *  match. */
   currentApy: number | null;
+  /**
+   * ERC-7540 async vaults only (docs/defi-evm-protocol-expansion-spec.md
+   * §7). `null` for every synchronous position — which is every family but
+   * async-vault. Drives the "pending settlement" / "ready to claim" card
+   * state instead of showing the position as an ordinary settled deposit.
+   */
+  asyncPhase:
+    | "deposit_requested"
+    | "deposit_claimable"
+    | "redeem_requested"
+    | "redeem_claimable"
+    | null;
 }
 
 export type AssetPreference = "stable" | "eth_lst" | "multi";
