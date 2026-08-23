@@ -1,14 +1,30 @@
 /**
- * Raydium legacy AMM v4 adapter — ONE `DefiProtocolAdapter` covering
- * Raydium's original constant-product program
- * (`675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8`), dispatched by
- * `DepositTarget.kind === "raydium-amm-v4-pool"` (`{pool, mintA, mintB}`).
- * Unlike `raydiumCpmm.ts`'s CPMM program, every AMM v4 pool is permanently
- * linked to an OpenBook (Serum v3) market — deposit/withdraw route through
- * that market's own accounts too, not just the AMM pool's. This is a
- * native Solana program (single-byte instruction tags), NOT an Anchor
- * program — no 8-byte discriminator on either the pool account or the
- * instruction data.
+ * Raydium legacy AMM adapter — ONE `DefiProtocolAdapter` covering TWO
+ * sibling native-Solana programs that turn out to share byte-identical
+ * add/removeLiquidity instructions: the original constant-product AMM v4
+ * (`675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8`, `DepositTarget.kind ===
+ * "raydium-amm-v4-pool"`) and the legacy Stable Swap AMM, "version 5"
+ * (`5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h`, `kind ===
+ * "raydium-stable-pool"`), both `{pool, mintA, mintB}`. Every pool of
+ * either kind is permanently linked to an OpenBook (Serum v3) market —
+ * deposit/withdraw route through that market's own accounts too, not just
+ * the AMM pool's. This is a native Solana program (single-byte instruction
+ * tags), NOT an Anchor program — no 8-byte discriminator on either the pool
+ * account or the instruction data.
+ *
+ * **Why one adapter, not two.** Verified 2026-08-23 straight from the
+ * `raydium-sdk-v2` tarball's `liquidity/instruction.ts`:
+ * `makeAddLiquidityInstruction`/`removeLiquidityInstruction` are the SAME
+ * functions for both programs — same instruction tags (`3`/`4`), same
+ * account order — with exactly ONE difference: a StablePool inserts one
+ * extra account (`modelDataAccount`) between the quote vault and the
+ * OpenBook market accounts (a single `pool,pool` placeholder pair in that
+ * slot for AMM v4's removeLiquidity only — see `VARIANTS.stable.hasModelData`
+ * below). The stable curve itself (`liquidity/stable.ts`'s lookup-table
+ * model) only matters for SWAP pricing — add/removeLiquidity needs none of
+ * that math, so this adapter needs no new math either, just one more
+ * account and a different byte-offset table for the pool's own account
+ * layout (`LiquidityStateV5` vs `V4`).
  *
  * No SDK dependency, same methodology as `raydiumCpmm.ts`: hand-built from
  * the `@raydium-io/raydium-sdk-v2` tarball's
@@ -47,12 +63,26 @@
  *     since it is literally what Serum itself picked and persisted when
  *     the market was created.
  *
- * **Only "Amm" + OpenBook-linked pools** — the resolver (`raydium-amm-v4
- * .resolver.ts`) filters to Raydium API's `pooltype: ["Amm",
- * "OpenBookMarket"]` before ever emitting this kind, excluding the rarer
- * `StablePool` variant (its own curve + an extra `modelDataAccount`, not
- * verified here) and the ~2% of "Amm"-tagged rows without a live OpenBook
- * link. This adapter always assumes the plain Amm+OpenBookMarket shape.
+ * **StablePool specifics, verified 2026-08-23 against a live USDC/USDT
+ * pool** (`2EXiumdi14E9b8Fy62QcA5Uh6WdHS2b38wtSxp72Mibj`): the live account's
+ * data length (1232 bytes) matched the `LiquidityStateV5` layout's computed
+ * span EXACTLY (no slack), and every decoded field cross-validated —
+ * `modelDataAccount` decoded to the SDK's own separately-hardcoded global
+ * constant (`CDSr3ssLcRB6XYPJwAfFt18MZvEZp4LjHcvzBVZ45duo`), and
+ * `baseMint`/`quoteMint` decoded to USDT/USDC exactly. The stable
+ * `authority` PDA is NOT `PDA(["amm authority"], STABLE_PROGRAM_ID)` — that
+ * seed guess did not match the SDK's separately-hardcoded constant
+ * (`3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv`). Verified a different,
+ * stronger way instead: read BOTH vault token accounts' `owner` field AND
+ * the LP mint's `mintAuthority` field live — all three independently agree
+ * with the hardcoded constant, so it is pinned as a verified constant (same
+ * trust model as `raydiumCpmm.ts`'s authority) rather than derived.
+ *
+ * **Only "Amm"/OpenBook-linked pools and "StablePool" pools** — the
+ * resolvers (`raydium-amm-v4.resolver.ts`, `raydium-stable.resolver.ts`)
+ * filter to exactly one program id each via Raydium API's `pooltype`,
+ * excluding CLMM/Concentrated (different program, not built) and the ~2%
+ * of "Amm"-tagged rows without a live OpenBook link.
  *
  * **No internal zap — both legs required, MAX-only withdraw.** Same
  * deliberate design as `raydiumCpmm.ts`/`uniswapV2Lp.ts` — see their
@@ -94,15 +124,34 @@ import type {
 const SLUG = "raydium-amm-v4";
 const CLUSTER = "mainnet-beta" as const;
 
+type Variant = "v4" | "stable";
+
+// ── Per-variant program id + authority + LiquidityState offset table.
+// AMM v4's authority is PDA(["amm authority"]) under its own program,
+// independently cross-checked against the SDK's separately-hardcoded
+// constant at module load. The stable authority did NOT match that same
+// seed under the stable program id, so it is pinned as a verified constant
+// instead (three independent live reads agree — both vault owners AND the
+// LP mint's mintAuthority — see header). ───────────────────────────────────
 const AMM_V4_PROGRAM_ID = new PublicKey(
   "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8",
 );
-// PDA(["amm authority"]) — a single global authority shared by every AMM v4
-// pool. Independently cross-checked against the SDK's separately-hardcoded
-// constant at module load — see header.
 const [AMM_V4_AUTHORITY] = PublicKey.findProgramAddressSync(
   [Buffer.from("amm authority")],
   AMM_V4_PROGRAM_ID,
+);
+const STABLE_PROGRAM_ID = new PublicKey(
+  "5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h",
+);
+const STABLE_AUTHORITY = new PublicKey(
+  "3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv",
+);
+// The stable curve's single, global lookup-table account (`MODEL_DATA_
+// PUBKEY` in the SDK) — also present as a field ON the pool account itself
+// (`modelDataAccount`, read live below), which is what this adapter uses;
+// this constant only documents the value both are expected to equal.
+const STABLE_MODEL_DATA = new PublicKey(
+  "CDSr3ssLcRB6XYPJwAfFt18MZvEZp4LjHcvzBVZ45duo",
 );
 
 const IX_ADD_LIQUIDITY = 3;
@@ -121,6 +170,81 @@ const A_OPEN_ORDERS = 496;
 const A_MARKET_ID = 528;
 const A_MARKET_PROGRAM_ID = 560;
 const A_TARGET_ORDERS = 592;
+
+// ── LiquidityStateV5 (StablePool) byte offsets — different field mix ahead
+// of the same trailing pubkey block (an extra `accountType`/`abortTrade
+// Factor`/`priceTick*` handful of u64 fields V4 doesn't have), so the
+// offsets are NOT V4's plus a constant shift. Verified live against
+// `2EXiumdi14E9b8Fy62QcA5Uh6WdHS2b38wtSxp72Mibj` — see header. ─────────────
+const S_BASE_VAULT = 368;
+const S_QUOTE_VAULT = 400;
+const S_BASE_MINT = 432;
+const S_QUOTE_MINT = 464;
+const S_LP_MINT = 496;
+const S_MODEL_DATA_ACCOUNT = 528;
+const S_OPEN_ORDERS = 560;
+const S_MARKET_ID = 592;
+const S_MARKET_PROGRAM_ID = 624;
+const S_TARGET_ORDERS = 656;
+
+interface VariantConfig {
+  programId: PublicKey;
+  authority: PublicKey;
+  hasModelData: boolean;
+  offsets: {
+    baseVault: number;
+    quoteVault: number;
+    baseMint: number;
+    quoteMint: number;
+    lpMint: number;
+    modelDataAccount: number | null;
+    openOrders: number;
+    marketId: number;
+    marketProgramId: number;
+    targetOrders: number;
+  };
+}
+
+const VARIANTS: Record<Variant, VariantConfig> = {
+  v4: {
+    programId: AMM_V4_PROGRAM_ID,
+    authority: AMM_V4_AUTHORITY,
+    hasModelData: false,
+    offsets: {
+      baseVault: A_BASE_VAULT,
+      quoteVault: A_QUOTE_VAULT,
+      baseMint: A_BASE_MINT,
+      quoteMint: A_QUOTE_MINT,
+      lpMint: A_LP_MINT,
+      modelDataAccount: null,
+      openOrders: A_OPEN_ORDERS,
+      marketId: A_MARKET_ID,
+      marketProgramId: A_MARKET_PROGRAM_ID,
+      targetOrders: A_TARGET_ORDERS,
+    },
+  },
+  stable: {
+    programId: STABLE_PROGRAM_ID,
+    authority: STABLE_AUTHORITY,
+    hasModelData: true,
+    offsets: {
+      baseVault: S_BASE_VAULT,
+      quoteVault: S_QUOTE_VAULT,
+      baseMint: S_BASE_MINT,
+      quoteMint: S_QUOTE_MINT,
+      lpMint: S_LP_MINT,
+      modelDataAccount: S_MODEL_DATA_ACCOUNT,
+      openOrders: S_OPEN_ORDERS,
+      marketId: S_MARKET_ID,
+      marketProgramId: S_MARKET_PROGRAM_ID,
+      targetOrders: S_TARGET_ORDERS,
+    },
+  },
+};
+
+function variantFor(kind: DepositTarget["kind"]): Variant {
+  return kind === "raydium-stable-pool" ? "stable" : "v4";
+}
 
 // ── MarketStateLayoutV3 (OpenBook/Serum v3) byte offsets — same
 // cross-check (span 381, within the account's 388-byte data). ─────────────
@@ -149,8 +273,12 @@ function requireAmmV4Target(target: DepositTarget | undefined): {
   pool: PublicKey;
   mintA: PublicKey;
   mintB: PublicKey;
+  variant: Variant;
 } {
-  if (target?.kind !== "raydium-amm-v4-pool") {
+  if (
+    target?.kind !== "raydium-amm-v4-pool" &&
+    target?.kind !== "raydium-stable-pool"
+  ) {
     throw new DefiError(
       "deposit_failed",
       "raydium-amm-v4: a resolved pool target is required",
@@ -160,6 +288,7 @@ function requireAmmV4Target(target: DepositTarget | undefined): {
     pool: new PublicKey(target.pool),
     mintA: new PublicKey(target.mintA),
     mintB: new PublicKey(target.mintB),
+    variant: variantFor(target.kind),
   };
 }
 
@@ -169,6 +298,7 @@ interface AmmV4PoolState {
   baseMint: PublicKey;
   quoteMint: PublicKey;
   lpMint: PublicKey;
+  modelDataAccount: PublicKey | null;
   openOrders: PublicKey;
   marketId: PublicKey;
   marketProgramId: PublicKey;
@@ -178,26 +308,49 @@ interface AmmV4PoolState {
 async function readPoolState(
   connection: Connection,
   pool: PublicKey,
+  variant: Variant,
 ): Promise<AmmV4PoolState> {
+  const cfg = VARIANTS[variant];
   const info = await connection.getAccountInfo(pool);
   if (!info) {
     throw new DefiError("network_error", "raydium-amm-v4: pool not found");
   }
+  if (!info.owner.equals(cfg.programId)) {
+    throw new DefiError(
+      "deposit_failed",
+      "raydium-amm-v4: pool is not owned by the expected program",
+    );
+  }
   const d = info.data;
-  if (d.length < A_TARGET_ORDERS + 32) {
+  if (d.length < cfg.offsets.targetOrders + 32) {
     throw new DefiError("network_error", "raydium-amm-v4: pool data too small");
   }
   const pk = (offset: number) => new PublicKey(d.subarray(offset, offset + 32));
+  const modelDataAccount =
+    cfg.offsets.modelDataAccount !== null
+      ? pk(cfg.offsets.modelDataAccount)
+      : null;
+  if (
+    modelDataAccount &&
+    !modelDataAccount.equals(STABLE_MODEL_DATA) &&
+    typeof __DEV__ !== "undefined" &&
+    __DEV__
+  ) {
+    console.warn(
+      "[raydiumAmmV4] pool's modelDataAccount does not match the known constant",
+    );
+  }
   return {
-    baseVault: pk(A_BASE_VAULT),
-    quoteVault: pk(A_QUOTE_VAULT),
-    baseMint: pk(A_BASE_MINT),
-    quoteMint: pk(A_QUOTE_MINT),
-    lpMint: pk(A_LP_MINT),
-    openOrders: pk(A_OPEN_ORDERS),
-    marketId: pk(A_MARKET_ID),
-    marketProgramId: pk(A_MARKET_PROGRAM_ID),
-    targetOrders: pk(A_TARGET_ORDERS),
+    baseVault: pk(cfg.offsets.baseVault),
+    quoteVault: pk(cfg.offsets.quoteVault),
+    baseMint: pk(cfg.offsets.baseMint),
+    quoteMint: pk(cfg.offsets.quoteMint),
+    lpMint: pk(cfg.offsets.lpMint),
+    modelDataAccount,
+    openOrders: pk(cfg.offsets.openOrders),
+    marketId: pk(cfg.offsets.marketId),
+    marketProgramId: pk(cfg.offsets.marketProgramId),
+    targetOrders: pk(cfg.offsets.targetOrders),
   };
 }
 
@@ -272,13 +425,19 @@ async function readVaultBalances(
 async function buildAmmV4Deposit(
   connection: Connection,
   owner: PublicKey,
-  target: { pool: PublicKey; mintA: PublicKey; mintB: PublicKey },
+  target: {
+    pool: PublicKey;
+    mintA: PublicKey;
+    mintB: PublicKey;
+    variant: Variant;
+  },
   asset: { contract?: string },
   amount: bigint,
   tier: BuildDepositArgs["tier"],
 ): Promise<UnsignedCall> {
-  const { pool, mintA, mintB } = target;
-  const poolState = await readPoolState(connection, pool);
+  const { pool, mintA, mintB, variant } = target;
+  const cfg = VARIANTS[variant];
+  const poolState = await readPoolState(connection, pool, variant);
   if (!poolState.baseMint.equals(mintA) || !poolState.quoteMint.equals(mintB)) {
     throw new DefiError(
       "deposit_failed",
@@ -350,16 +509,27 @@ async function buildAmmV4Deposit(
   data.writeBigUInt64LE(otherAmountMin, off);
 
   const depositIx = new TransactionInstruction({
-    programId: AMM_V4_PROGRAM_ID,
+    programId: cfg.programId,
     keys: [
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: pool, isSigner: false, isWritable: true },
-      { pubkey: AMM_V4_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: cfg.authority, isSigner: false, isWritable: false },
       { pubkey: poolState.openOrders, isSigner: false, isWritable: false },
       { pubkey: poolState.targetOrders, isSigner: false, isWritable: true },
       { pubkey: poolState.lpMint, isSigner: false, isWritable: true },
       { pubkey: poolState.baseVault, isSigner: false, isWritable: true },
       { pubkey: poolState.quoteVault, isSigner: false, isWritable: true },
+      // StablePool inserts its curve lookup-table account here, between the
+      // quote vault and the market — absent for plain AMM v4 (see header).
+      ...(poolState.modelDataAccount
+        ? [
+            {
+              pubkey: poolState.modelDataAccount,
+              isSigner: false,
+              isWritable: true,
+            },
+          ]
+        : []),
       { pubkey: poolState.marketId, isSigner: false, isWritable: false },
       { pubkey: userBaseAta, isSigner: false, isWritable: true },
       { pubkey: userQuoteAta, isSigner: false, isWritable: true },
@@ -379,7 +549,12 @@ async function buildAmmV4Deposit(
 async function buildAmmV4Withdraw(
   connection: Connection,
   owner: PublicKey,
-  target: { pool: PublicKey; mintA: PublicKey; mintB: PublicKey },
+  target: {
+    pool: PublicKey;
+    mintA: PublicKey;
+    mintB: PublicKey;
+    variant: Variant;
+  },
   amount: bigint | "MAX",
   tier: BuildWithdrawArgs["tier"],
 ): Promise<UnsignedCall> {
@@ -389,8 +564,9 @@ async function buildAmmV4Withdraw(
       "raydium-amm-v4: partial withdraw needs an LP amount, use MAX for a full exit",
     );
   }
-  const { pool, mintA, mintB } = target;
-  const poolState = await readPoolState(connection, pool);
+  const { pool, mintA, mintB, variant } = target;
+  const cfg = VARIANTS[variant];
+  const poolState = await readPoolState(connection, pool, variant);
   if (!poolState.baseMint.equals(mintA) || !poolState.quoteMint.equals(mintB)) {
     throw new DefiError(
       "deposit_failed",
@@ -463,21 +639,31 @@ async function buildAmmV4Withdraw(
   data.writeBigUInt64LE(quoteAmountMin, off);
 
   const withdrawIx = new TransactionInstruction({
-    programId: AMM_V4_PROGRAM_ID,
+    programId: cfg.programId,
     keys: [
       { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
       { pubkey: pool, isSigner: false, isWritable: true },
-      { pubkey: AMM_V4_AUTHORITY, isSigner: false, isWritable: false },
+      { pubkey: cfg.authority, isSigner: false, isWritable: false },
       { pubkey: poolState.openOrders, isSigner: false, isWritable: true },
       { pubkey: poolState.targetOrders, isSigner: false, isWritable: true },
       { pubkey: poolState.lpMint, isSigner: false, isWritable: true },
       { pubkey: poolState.baseVault, isSigner: false, isWritable: true },
       { pubkey: poolState.quoteVault, isSigner: false, isWritable: true },
-      // v4-specific placeholder pair (withdrawQueue/lpVault slots, unused by
-      // this instruction — the SDK pushes `poolId` itself twice here, see
-      // header/`removeLiquidityInstruction`'s version===4 branch).
-      { pubkey: pool, isSigner: false, isWritable: true },
-      { pubkey: pool, isSigner: false, isWritable: true },
+      // AMM v4 pushes a `poolId,poolId` placeholder pair here (unused
+      // withdrawQueue/lpVault slots); StablePool pushes its single curve
+      // lookup-table account instead — see header/`buildAmmV4Deposit`.
+      ...(poolState.modelDataAccount
+        ? [
+            {
+              pubkey: poolState.modelDataAccount,
+              isSigner: false,
+              isWritable: true,
+            },
+          ]
+        : [
+            { pubkey: pool, isSigner: false, isWritable: true },
+            { pubkey: pool, isSigner: false, isWritable: true },
+          ]),
       { pubkey: poolState.marketProgramId, isSigner: false, isWritable: false },
       { pubkey: poolState.marketId, isSigner: false, isWritable: true },
       { pubkey: market.baseVault, isSigner: false, isWritable: true },
@@ -502,13 +688,19 @@ async function buildAmmV4Withdraw(
 
 async function readAmmV4Position(
   walletAddress: string,
-  target: DepositTarget & { kind: "raydium-amm-v4-pool" },
+  target: DepositTarget & {
+    kind: "raydium-amm-v4-pool" | "raydium-stable-pool";
+  },
 ): Promise<DefiPosition | null> {
   const connection = makeConnection(undefined);
   const pool = new PublicKey(target.pool);
   const owner = new PublicKey(walletAddress);
 
-  const poolState = await readPoolState(connection, pool);
+  const poolState = await readPoolState(
+    connection,
+    pool,
+    variantFor(target.kind),
+  );
   const userLpAta = getAssociatedTokenAddressSync(poolState.lpMint, owner);
   const liquidity = await connection
     .getTokenAccountBalance(userLpAta)
@@ -538,7 +730,7 @@ export const RaydiumAmmV4Adapter: DefiProtocolAdapter = {
   chainId: CLUSTER,
   displayName: "Raydium",
   staticSafetyScore: 50,
-  targetKinds: ["raydium-amm-v4-pool"],
+  targetKinds: ["raydium-amm-v4-pool", "raydium-stable-pool"],
 
   async buildDeposit({
     wallet,
@@ -583,11 +775,18 @@ export const RaydiumAmmV4Adapter: DefiProtocolAdapter = {
     walletAddress: string,
     ctx?: PositionReadContext,
   ): Promise<DefiPosition | null> {
-    if (ctx?.target?.kind !== "raydium-amm-v4-pool") return null;
+    if (
+      ctx?.target?.kind !== "raydium-amm-v4-pool" &&
+      ctx?.target?.kind !== "raydium-stable-pool"
+    ) {
+      return null;
+    }
     try {
       return await readAmmV4Position(
         walletAddress,
-        ctx.target as DepositTarget & { kind: "raydium-amm-v4-pool" },
+        ctx.target as DepositTarget & {
+          kind: "raydium-amm-v4-pool" | "raydium-stable-pool";
+        },
       );
     } catch (err) {
       devWarn("readPosition", err);

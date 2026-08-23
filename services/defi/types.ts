@@ -323,7 +323,16 @@ export type DepositTarget =
   // through the pool's linked OpenBook (Serum v3) market account — see
   // `adapters/raydiumAmmV4.ts`'s header. `mintA`/`mintB` mirror the
   // program's own `baseMint`/`quoteMint` naming.
-  | { kind: "raydium-amm-v4-pool"; pool: string; mintA: string; mintB: string };
+  | { kind: "raydium-amm-v4-pool"; pool: string; mintA: string; mintB: string }
+  // Raydium legacy Stable Swap AMM (program version 5) — a SEPARATE program
+  // (`5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h`) from AMM v4, but the
+  // deposit/withdraw instructions are byte-identical to `"raydium-amm-v4
+  // -pool"` (same tags, same account order) plus ONE extra `modelDataAccount`
+  // reference — same adapter, dispatched by kind. Own curve (a lookup-table
+  // model, `services/defi/adapters/raydiumAmmV4.ts`'s header) only matters
+  // for SWAP pricing, not for add/removeLiquidity, so it needs no new math
+  // here. Still OpenBook-market-linked, same as AMM v4.
+  | { kind: "raydium-stable-pool"; pool: string; mintA: string; mintB: string };
 
 export type DepositTargetKind = DepositTarget["kind"];
 
@@ -357,6 +366,7 @@ export function targetUnderlying(target: DepositTarget): string | null {
     // Raydium's own on-chain leg ordering.
     case "raydium-cpmm-pool":
     case "raydium-amm-v4-pool":
+    case "raydium-stable-pool":
       return target.mintA;
     case "router-call":
       return target.tokenIn;

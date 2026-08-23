@@ -2142,3 +2142,101 @@ SYRUPUSDC, XBTC, and the four non-Earn WSOL rows — none of them `poolMeta
 === "Earn"`, so the skip-guard in §14.5 refused every one before a candidate
 was even requested, exactly as designed. The 7 that resolved are exactly the
 7 live Earn vaults.
+
+### 14.7 Raydium legacy Stable Swap AMM ("version 5"), 2026-08-23
+
+Closes the one loose end §11.6a's Raydium write-up (and this file's earlier
+Raydium sessions) left explicitly unbuilt: `raydium-amm`'s rarer third
+program, the legacy Stable Swap AMM (constant-*sum*-ish curve for pegged
+pairs), program id `5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h`. New kind
+`raydium-stable-pool`, `{ pool, mintA, mintB }` — same shape as
+`raydium-amm-v4-pool`. Both repos typecheck clean, all 8 new/updated
+resolver tests pass, and deposit + withdraw are live-`simulateTransaction`-
+verified against a real mainnet pool (below).
+
+**Why this is a same-adapter extension, not a new one.** Read straight from
+the `raydium-sdk-v2` tarball's `liquidity/instruction.ts`:
+`makeAddLiquidityInstruction`/`removeLiquidityInstruction` are the exact
+same functions AMM v4 already uses — same instruction tags (`3`/`4`), same
+account order — with exactly one difference: a StablePool inserts one extra
+account, `modelDataAccount`, between the quote vault and the market
+accounts (a `pool,pool` placeholder pair sits in that slot for AMM v4's
+`removeLiquidity` only). The stable curve's own math (`liquidity/stable.ts`,
+a 50,000-element lookup table) only matters for *swap* pricing — it is
+never touched by add/removeLiquidity, so no new math shipped, just one more
+account and a second `LiquidityStateV5` byte-offset table on the existing
+`raydiumAmmV4.ts` adapter (parameterized by a `Variant` — `"v4" | "stable"`
+— rather than a second file, since the instruction-building code really is
+byte-identical between the two).
+
+**Verified live against a real pool**
+(`2EXiumdi14E9b8Fy62QcA5Uh6WdHS2b38wtSxp72Mibj`, USDT/USDC, program-owner
+confirmed):
+
+- The account's raw data length (1232 bytes) matched the computed
+  `LiquidityStateV5` span **exactly**, no slack — the strongest signal this
+  session had that the offset table is right (same bar as AMM v4's own
+  728-byte match).
+- `modelDataAccount`, read live off the pool account, decoded to the SDK's
+  own separately-hardcoded global constant
+  (`CDSr3ssLcRB6XYPJwAfFt18MZvEZp4LjHcvzBVZ45duo`) — two independent sources
+  agreeing.
+- The stable `authority` PDA is **not** `PDA(["amm authority"],
+  STABLE_PROGRAM_ID)` — that seed, which works for AMM v4, does not match
+  the SDK's separately-hardcoded stable authority constant
+  (`3uaZBfHPfmpAHW7dsimC1SnyR61X4bJqQZKWmRSCXJxv`). Verified a different,
+  arguably stronger way instead: read the `owner` field of BOTH vault token
+  accounts and the LP mint's `mintAuthority` live — all three independently
+  agree with the hardcoded constant, so it is pinned as a verified constant
+  rather than a derived PDA.
+
+**Finding a funded test wallet was the actual bottleneck, not the code.**
+`getTokenLargestAccounts` is disabled on this session's Alchemy tier for
+any mint (confirmed on both the giant USDC mint and this pool's own niche
+LP mint — same `-32001` either way), and `getProgramAccounts`/
+`getParsedProgramAccounts` scans were rate-limited (`429`) rather than
+disabled. Querying the **pool's own** signature history for add/remove-
+liquidity instructions was a dead end too — this pool has tens of
+thousands of transactions (mostly swaps; a from-genesis walk didn't finish
+in 40,000 signatures), and the ~9 deposit/withdraw events found in the
+first ~2,500 had all since fully exited. The fix: query the **LP mint's**
+own signature history instead of the pool's — mint/burn events are a much
+higher fraction of a small mint's tx history than of the pool account's
+(which every swap also touches) — found a real, currently-funded LP holder
+in the first 13 signatures checked. General lesson for the next protocol
+needing a live-funded test wallet: query the receipt/LP-token mint's
+history, not the pool's, when the pool sees meaningfully more swap volume
+than LP churn.
+
+**Simulation results** (`simulateTransaction`, `sigVerify: false`,
+impersonating the real holder found above — no private key needed):
+
+- **Withdraw** (MAX, real balance): `err: null`, full success — real LP
+  burn, real token transfers, logs show `withdraw:2970 … lp_mint_supply:
+  96237156329 …` all the way through.
+- **Deposit**: reached the same depth — pool read, PnL/ratio computation,
+  exact LP-output computation (`out_coin:1043021, out_pc:1000000,
+  out_lp:486234`) — and only failed at the final SPL-token transfer CPI
+  with `insufficient funds`, because this specific LP-holder wallet (found
+  via LP-mint history, not chosen for stablecoin balance) doesn't happen to
+  hold spare USDC/USDT. That is a test-wallet-funding limit of the
+  verification script, not a defect: the program validated every account
+  in the list and ran its real business logic to completion before the
+  balance check, which is the same "reached deep into the program, only
+  the last step needs real funds" evidence this codebase's other adapters
+  have shipped on.
+
+**Registry routing**: registered as a third resolver on the same
+`raydium-amm` alias, after `RaydiumCpmmResolver` and `RaydiumAmmV4Resolver`
+— the three never compete, each filters to its own `programId` and returns
+`null` immediately for any other program's candidates.
+
+**Also fixed in passing**: `unionParity.test.ts`'s "covers every EVM kind"
+check had a pre-existing gap — `kamino-kvault`, `raydium-cpmm-pool` and
+`raydium-amm-v4-pool` were added to the `DepositTarget` union in the
+2026-08-23 Kamino/Raydium session but never added to that test's `nonEvm`
+set, so the test was failing on `main` before this session touched
+anything (confirmed via a clean `git stash`-free run). Fixed alongside
+adding `raydium-stable-pool` to the same set — worth remembering that
+`pnpm test` should have caught this and evidently wasn't run to completion
+before that session's commit.

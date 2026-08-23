@@ -103,6 +103,10 @@ describe("DepositTarget union parity (spec §8.7)", () => {
       "solana-reserve",
       "solana-lst-stake",
       "jupiter-lend-vault",
+      "kamino-kvault",
+      "raydium-cpmm-pool",
+      "raydium-amm-v4-pool",
+      "raydium-stable-pool",
     ]);
     const declared = kinds(mobileUnion).filter((k) => !nonEvm.has(k));
     const evmListed = [
