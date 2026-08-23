@@ -1,6 +1,6 @@
 /**
  * Scallop adapter — a `DefiProtocolAdapter` for the Sui Intent Engine
- * (spec §4.4). Mirrors `solanaJito.ts` (the "supply to earn yield"
+ * (spec §4.4). Mirrors `solanaLst.ts` (the "supply to earn yield"
  * exemplar): `namespace:"sui"`, `chainId:"mainnet"`, `kind:"stablecoin_lending"`,
  * returning a `{ kind:"sui-ptb", transactionBlockBase64 }` UnsignedCall.
  *

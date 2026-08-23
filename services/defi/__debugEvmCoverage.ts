@@ -1,22 +1,21 @@
 /**
  * ⚠️ TEMPORARY DEBUG HELPER — DELETE ME.
  *
- * Dumps the EVM slice of a `defi_list_opportunities` result to the Metro
+ * Dumps a namespace slice of a `defi_list_opportunities` result to the Metro
  * console, split into what the agent can execute in-app vs what stays Manual,
- * so the output can be copy-pasted into a chat for analysis.
+ * so the output can be copy-pasted into a chat for analysis. `logEvmCoverage`
+ * and `logSolanaCoverage` are thin wrappers over the same generic reporter.
  *
  * Lives in `services/` on purpose: `pnpm check:chains` forbids
- * `namespace === "eip155"` under `components/`, `hooks/` and `app/`, and this
- * genuinely needs to filter by namespace. Chain-agnostic code should never do
- * this — that is why the helper is temporary.
+ * `namespace === "eip155" | "solana" | "sui"` under `components/`, `hooks/`
+ * and `app/`, and this genuinely needs to filter by namespace. Chain-agnostic
+ * code should never do this — that is why the helper is temporary.
  *
- * To remove: delete this file, its import, and the single call in
+ * To remove: delete this file, its import, and the calls in
  * `components/home/TakumiAgent/StructuredUI/cards/OpportunityListCard.tsx`.
  */
 
 import type { RawOpportunity } from "./opportunityDisplay";
-
-const EVM_NAMESPACE = "eip155";
 
 interface ProtocolBucket {
   slug: string;
@@ -31,10 +30,17 @@ interface ProtocolBucket {
 }
 
 function isEvmRow(row: RawOpportunity): boolean {
-  if (row.namespace) return row.namespace === EVM_NAMESPACE;
+  if (row.namespace) return row.namespace === "eip155";
   // Older rows may omit namespace; every non-EVM chain in the directory has a
   // null chainId, so a numeric one is a reliable fallback discriminator.
   return Number.isFinite(Number(row.chain_id)) && Number(row.chain_id) > 0;
+}
+
+function isSolanaRow(row: RawOpportunity): boolean {
+  // Every Solana opportunity is freshly resolved (§14 of the pool-resolver
+  // runbook) and always carries `namespace` — no legacy fallback needed,
+  // unlike the EVM predicate above.
+  return row.namespace === "solana";
 }
 
 function num(v: unknown): number {
@@ -56,13 +62,18 @@ function line(b: ProtocolBucket): string {
   return `  ${b.slug.padEnd(24)} ${String(`${b.inApp}/${total}`).padEnd(7)} ${chains.padEnd(22)} apy=${b.bestApy.toFixed(2)}%  tvl=${fmtUsd(b.tvl)}  [${assets}]`;
 }
 
-export function logEvmCoverage(rows: readonly RawOpportunity[]): void {
+/** Shared reporter — `label` names the namespace in the printed banner. */
+function logCoverage(
+  rows: readonly RawOpportunity[],
+  label: string,
+  isMatch: (row: RawOpportunity) => boolean,
+): void {
   if (!__DEV__) return;
 
-  const evm = rows.filter(isEvmRow);
+  const matched = rows.filter(isMatch);
   const byProtocol = new Map<string, ProtocolBucket>();
 
-  for (const row of evm) {
+  for (const row of matched) {
     const slug = row.protocol_slug ?? "(unknown)";
     let b = byProtocol.get(slug);
     if (!b) {
@@ -104,12 +115,12 @@ export function logEvmCoverage(rows: readonly RawOpportunity[]): void {
 
   const out: string[] = [];
   out.push("");
-  out.push("═══════════ EVM DEFI COVERAGE (copy-paste this) ═══════════");
+  out.push(`═══════════ ${label} DEFI COVERAGE (copy-paste this) ═══════════`);
   out.push(
-    `rows: ${rows.length} total · ${evm.length} EVM · ${rows.length - evm.length} non-EVM (skipped)`,
+    `rows: ${rows.length} total · ${matched.length} ${label} · ${rows.length - matched.length} non-${label} (skipped)`,
   );
   out.push(
-    `protocols: ${all.length} EVM · pools: ${poolsIn} agent-executable / ${poolsMan} manual`,
+    `protocols: ${all.length} ${label} · pools: ${poolsIn} agent-executable / ${poolsMan} manual`,
   );
   out.push(
     "format: <slug> <inApp/total pools> <chains> apy=best tvl=sum [assets]",
@@ -142,8 +153,16 @@ export function logEvmCoverage(rows: readonly RawOpportunity[]): void {
     for (const s of b.manualSamples) out.push(`       manual: ${s}`);
   }
 
-  out.push("═══════════ END EVM DEFI COVERAGE ═══════════");
+  out.push(`═══════════ END ${label} DEFI COVERAGE ═══════════`);
   out.push("");
 
   console.log(out.join("\n"));
+}
+
+export function logEvmCoverage(rows: readonly RawOpportunity[]): void {
+  logCoverage(rows, "EVM", isEvmRow);
+}
+
+export function logSolanaCoverage(rows: readonly RawOpportunity[]): void {
+  logCoverage(rows, "SOLANA", isSolanaRow);
 }

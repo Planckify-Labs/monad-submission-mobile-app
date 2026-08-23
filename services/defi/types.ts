@@ -284,7 +284,16 @@ export type DepositTarget =
       coinTypeB: string;
       tickSpacing: number;
     }
-  | { kind: "solana-reserve"; program: string; reserve: string; mint: string };
+  | { kind: "solana-reserve"; program: string; reserve: string; mint: string }
+  // Solana liquid staking — one kind, dispatched by `venue` to the config in
+  // `adapters/solana/lst.config.ts` (mirrors "sui-lst"). The venue names its
+  // own program/pool/state coordinates; the target only carries identity.
+  | { kind: "solana-lst-stake"; venue: string; poolMint: string }
+  // Jupiter Lend Earn — single-asset vault family, mirrors "erc4626": one
+  // kind, dispatched by the underlying asset mint. Deposit/withdraw are
+  // built via the official `@jup-ag/lend` SDK (no public PDA seeds to
+  // hand-roll against — see `adapters/jupiterLend.ts`'s header).
+  | { kind: "jupiter-lend-vault"; asset: string };
 
 export type DepositTargetKind = DepositTarget["kind"];
 

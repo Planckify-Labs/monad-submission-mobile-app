@@ -59,6 +59,11 @@ import { useUserStrategy } from "@/hooks/queries/useStrategy";
 import { useAddWalletPrompt } from "@/hooks/useAddWalletPrompt";
 import { useWallet } from "@/hooks/useWallet";
 import type { Namespace } from "@/services/chains/types";
+// ⚠️ TEMPORARY DEBUG — delete with services/defi/__debugEvmCoverage.ts
+import {
+  logEvmCoverage,
+  logSolanaCoverage,
+} from "@/services/defi/__debugEvmCoverage";
 import {
   type DisplayPool,
   groupOpportunities,
@@ -66,8 +71,6 @@ import {
   prettyProtocol,
   type RawOpportunity,
 } from "@/services/defi/opportunityDisplay";
-// ⚠️ TEMPORARY DEBUG — delete with services/defi/__debugEvmCoverage.ts
-import { logEvmCoverage } from "@/services/defi/__debugEvmCoverage";
 import { protocolAppUrl } from "@/services/defi/protocolLinks";
 import { getChainFamilyLabel } from "@/services/walletKit/chainInfo";
 import { ownedNamespaces } from "@/services/walletPresence";
@@ -758,8 +761,9 @@ const OpportunityListCard: React.FC<
     const all = output?.data?.opportunities ?? [];
     const mainnet = all.filter((r) => !isTestnetRow(r));
     const visible = !__DEV__ && mainnet.length > 0 ? mainnet : all;
-    // ⚠️ TEMPORARY DEBUG — dumps EVM in-app vs Manual coverage to Metro.
+    // ⚠️ TEMPORARY DEBUG — dumps in-app vs Manual coverage to Metro.
     logEvmCoverage(all as RawOpportunity[]);
+    logSolanaCoverage(all as RawOpportunity[]);
     return groupOpportunities(visible as RawOpportunity[]);
   }, [output]);
 

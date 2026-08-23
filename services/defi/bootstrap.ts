@@ -52,6 +52,7 @@ import { EmberSuiAdapter } from "./adapters/emberSui";
 import { Erc4626Adapter } from "./adapters/erc4626";
 import { EthenaEthereumAdapter } from "./adapters/ethena";
 import { GmxV2ArbitrumAdapter } from "./adapters/gmxV2";
+import { JupiterLendAdapter } from "./adapters/jupiterLend";
 import { KaiSuiAdapter } from "./adapters/kaiSui";
 import { LidoHoleskyAdapter, LidoMainnetAdapter } from "./adapters/lido";
 import { LstStakeAdapter } from "./adapters/lstStake";
@@ -68,7 +69,7 @@ import { MorphoBlueAdapter } from "./adapters/morphoBlue";
 import { NaviSuiAdapter } from "./adapters/naviSui";
 import { RouterCallAdapter } from "./adapters/routerCall";
 import { ScallopSuiAdapter } from "./adapters/scallopSui";
-import { SolanaJitoAdapter } from "./adapters/solanaJito";
+import { SolanaLstAdapter } from "./adapters/solanaLst";
 import { SolidlyLpAdapter } from "./adapters/solidlyLp";
 import { SuiLstAdapter } from "./adapters/suiLst";
 import { SuilendSuiAdapter } from "./adapters/suilendSui";
@@ -115,7 +116,8 @@ export function bootDefi(): void {
   // ── Phase 2 ──────────────────────────────────────────────────────
   if (FEATURE_DEFI_PHASE_2) {
     registerDefiAdapter(MorphoFlagshipUsdcBaseAdapter);
-    registerDefiAdapter(SolanaJitoAdapter);
+    registerDefiAdapter(SolanaLstAdapter);
+    registerDefiAdapter(JupiterLendAdapter);
     registerDefiAdapter(MapleSyrupUsdcEthereumAdapter);
     registerDefiAdapter(MapleSyrupUsdcBaseAdapter);
   }

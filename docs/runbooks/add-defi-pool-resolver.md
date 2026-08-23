@@ -1863,3 +1863,282 @@ same storage-write trick. Real build, real backend, real agent, forked chain.
 Record the Gate-4 run (chain, pool, the two tx hashes) the same way §12.3 asks —
 "the fork test was green" is now a much stronger claim than it was, but it is
 still a claim someone has to make deliberately.
+
+## 14. Solana protocol expansion — the onboarding pass, 2026-08-22
+
+Solana had almost no coverage going into this pass: one bespoke adapter
+(`SolanaJitoAdapter`, LST staking) and **zero** resolvers registered anywhere
+in `api/src/strategies/targets/` for any Solana protocol. Unlike EVM
+(ERC-4626) or Sui (a handful of bespoke vault frameworks), Solana has no vault
+standard at all — every protocol here is its own Anchor or native program, so
+"resolver-only" isn't an option; each family needs verified account
+layouts, same as Sui phase 3.
+
+### 14.1 The bug this pass found: Jito was never actually "in-app"
+
+`SolanaJitoAdapter` shipped a complete `buildDeposit`/`buildWithdraw`/
+`readPosition` since Phase 2, registered under `slug: "jito-solana"`. No
+resolver ever claimed a Solana slug, so `depositTarget` was never set, so
+`in_app` was always false — **the exact Lido bug** (§11.6a: "an adapter with
+no resolver is invisible"), just never diagnosed on this chain. Jito is the
+single largest Solana pool in the catalog (~$947M measured 2026-08-22) and
+had been rendering as a manual deep-link the entire time.
+
+The fix generalises rather than patches: `SolanaJitoAdapter` is retired in
+favour of one config-driven `SolanaLstAdapter` (`services/defi/adapters/
+solanaLst.ts`), dispatched by a new `{ kind: "solana-lst-stake", venue,
+poolMint }` target — the same "one kind, config-driven, dispatched by venue"
+shape as `sui-lst` (`adapters/sui/lst.config.ts` / `SuiLstAdapter`). A
+`SolanaLstResolver` (`api/src/strategies/targets/solana-lst.resolver.ts`)
+claims the real DeFiLlama project slugs. Backward compatibility: `"jito-
+solana"` (the retired adapter's own slug, never a DeFiLlama name) stays in
+the new adapter's `externalSlugs` so pre-existing Jito position rows keep
+resolving.
+
+### 14.2 What shipped, and how each was verified
+
+| Venue | TVL (measured 2026-08-22) | Shape | Verification |
+|---|---|---|---|
+| Jito (JitoSOL) | ~$947M | SPL Stake Pool `DepositSol`(14)/`WithdrawSol`(16), canonical `solana-program/stake-pool` deployment | Already-shipped account list; program id from jito.network docs |
+| JupSOL | ~$489M | Same SPL Stake Pool instructions, Sanctum "SPL Multi" deployment (`SPMBzsVUuoHA4Jm6KunbsotaahvVikZs1JyTW6iJvbn`) | `instruction.rs` for `deposit_sol`/`withdraw_sol` diffed **byte-for-byte** against upstream `solana-program/stake-pool` (only cosmetic comment/import-path diffs elsewhere in the file) — confirms identical account order and discriminators despite Sanctum's fork being multi-tenant. `pool_mint` read live off the on-chain `StakePool` account and matched the publicly-known JupSOL mint |
+| dSOL | ~$265M | Same shape, Sanctum "SPL" single-tenant deployment (`SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY`) | Same instruction diff; `pool_mint` read live and matched the known dSOL mint |
+| Marinade (mSOL) | ~$222M | Bespoke Anchor program (NOT a Stake Pool fork) — `deposit` + `liquid_unstake` | Every account is a PDA (`findProgramAddressSync`) or `createWithSeed` derivation off the pinned `State` account, per seed constants read directly from `marinade-finance/liquid-staking-program`'s `state/mod.rs`/`liq_pool.rs`. Cross-checked three ways: the derived `reserve_pda` matched docs.marinade.finance's published "Reserve SOL account" exactly; `msol_mint` and `treasury_msol_account`, read live off mainnet `State` account bytes at hand-computed Borsh offsets, both matched the same docs page exactly |
+
+All four: deposit + withdraw both wired (Jito's withdraw was already live;
+JupSOL/dSOL reuse it verbatim; Marinade's `liquid_unstake` is the DEX-shaped
+instant exit — same "costs slippage, not time" classification §11.3b already
+uses for LST `exit: "dex"`, not a queued redemption).
+
+**A number that first looked untrustworthy turned out to be an offset that
+was right and a scale that was wrong.** Marinade's `state.msol_price` (the
+mSOL/SOL exchange rate) at first read as an implausible 6.0 SOL per mSOL,
+which is exactly the failure this runbook warns about elsewhere: a
+plausible-looking wrong number is worse than an obvious crash, because
+nothing catches it. Rather than ship it, the fix was to verify the layout
+independently of the arithmetic: `stake_system.stake_list.account`,
+`validator_system.validator_list.account` and `liq_pool.msol_leg` are each
+independently re-derivable via `PublicKey.createWithSeed`/PDA, so decoding
+the `State` account field-by-field and checking each of those three against
+its own derivation (all matched exactly) pinned every byte offset through
+`LiqPool` — including `msol_price` at 512. The offset was correct all along.
+The bug was the DENOMINATOR: this codebase's other Solana amounts scale by
+1e9, but Marinade's own `State::PRICE_DENOMINATOR` is `0x1_0000_0000` (2^32).
+Rescaled, the field reads 1.4019 SOL/mSOL — corroborated independently by
+`total_active_balance / msol_supply` (≈1.388; the small remaining gap is
+`total_virtual_staked_lamports()`'s reserve/ticket adjustments, which
+`msol_price` already bakes in and the simple ratio doesn't). `readPosition`
+now uses the real rate; deposit and withdraw never needed it. Lesson for the
+next non-EVM account layout: verify structure via independently-derivable
+fields BEFORE trusting a final computed value, and check the protocol's own
+scale constant before assuming "everything is 1e9."
+
+### 14.3 Explicitly refused or deferred, and why
+
+| Protocol | TVL | Reason |
+|---|---|---|
+| Kamino Lend | ~$1.47B | 145 pools across **isolated markets** (Ethena, SOL/BTC, Figure, Maple, OnRe…) — the Morpho-Blue-shaped "multi-market bespoke" case. An official SDK exists (`@kamino-finance/klend-sdk`) but matching `poolMeta` to the right on-chain market still needs its own resolver logic. Correctly the one **not** to start with, same lesson as `fluid-dex` in the EVM queue (§11.5c) |
+| Save (Solend rebrand) | ~$95M, 78 pools | Deposit is one instruction, but withdraw needs `RefreshReserve`+`RefreshObligation`+withdraw (3 ix) plus a one-time `InitObligation` before first deposit. Its program id (`So1endDq2YkqhipRh3WViPa8hdiSpxWy6z3Z6tMCpAo`) had only one strong primary source in this pass — needs a second independent confirmation before it can be pinned, per the §11.5c Step 5 bar |
+| Sanctum Infinity (INF) | ~$183M | Deposit takes **any** accepted LST (not SOL), mints a basket token priced by a weighting curve — no single input asset to key a resolver on |
+| Jupiter Lend Earn | ~$1.03B, 79 pools | Not attempted this pass despite an official `@jup-ag/lend` SDK with ready `getDepositIx`/`getWithdrawIx` builders — lowest apparent risk of anything surveyed, good candidate for the next pass |
+| Raydium AMM, Kamino Liquidity, Orca DEX | ~$2.5B + $87M + $262M | LP/AMM position — same non-goal as EVM concentrated liquidity (Uniswap v3/v4, §11.3): needs a range/product decision, not a supply-side adapter |
+| Drift perps, Jupiter perps | — | Leveraged/perp positions — out of scope by §1 |
+| MarginFi, Meteora, Francium | — | Absent from DeFiLlama `/pools` entirely under any project slug as of 2026-08-22 — nothing to resolve against |
+
+### 14.3a A withdraw unit-conversion bug this pass's fix made LIVE for the first time
+
+`amount_raw` for `defi_withdraw` is documented (`agent-api`'s tool schema) as
+"decimal-string amount in the **position asset's** smallest unit" — for a
+SOL deposit into an LST venue, that's SOL, matching what `readPosition`
+reports back (`current_amount_raw` is the SOL-equivalent, not the receipt-
+token balance). The only other WORKING LST withdraw in the codebase
+(`sui/lstRate.ts`'s `suiToLst`) converts that underlying-asset amount into
+the receipt-token amount via a live on-chain rate before building the
+redeem call, then clamps to the held balance. EVM's `LstStakeAdapter.
+buildWithdraw` always throws (§7 two-phase machinery isn't built for it
+yet), so it's not a working counter-example.
+
+The original `solanaJito.ts` did NOT do this conversion — a non-`"MAX"`
+`amount` was passed straight through as `poolTokens` (the receipt-token
+amount) with no SOL→receipt conversion at all. Because Jito had no resolver
+until this pass (§14.1), that branch was **dead code**: a Jito position
+could never exist in-app, so a partial withdraw against one could never be
+requested. Generalizing the adapter to JupSOL/dSOL/Marinade — and, more
+importantly, giving all four a resolver so they finally show "Deposit
+in-app" — makes this exact bug **live** for real user withdrawals for the
+first time, in the direction that matters: since a receipt token is worth
+*more* than 1 SOL, treating a requested SOL amount as if it were already a
+receipt-token amount over-withdraws (burns more of the receipt than asked),
+not under.
+
+Fixed before shipping: both `buildSplStakePoolWithdraw` and
+`buildMarinadeWithdraw` now convert a non-`"MAX"` `amount` from SOL into the
+receipt-token amount via a live on-chain rate, floor-divided (matching
+`suiToLst`'s precedent — the realised amount is approximate once the tx
+lands regardless), then clamp to the held balance so a request for ≥ the
+position is a full exit rather than an over-withdraw attempt. If the rate
+can't be read, both **fail closed** (`network_error`) rather than fall back
+to treating `amount` as already-receipt-token units — there is no "safe"
+guessed direction here (that fallback would ALSO over-withdraw), so a read
+failure refuses instead of risking it.
+
+**The withdraw conversion does NOT reuse `readPosition`'s rate source for
+Marinade.** `state.msol_price` (§14.2) is fine for display — it agreed with
+the program's own precise formula to 7 significant figures when checked live
+— but Marinade's own source comments it "For FE. Don't use it for token
+amount calculation," directly above the field. For the withdraw conversion
+(money-moving), `buildMarinadeWithdraw` instead computes
+`total_virtual_staked_lamports() / msol_supply` — the exact formula
+`calc.rs`'s `msol_to_sol` uses on-chain — from five more `State` fields
+(`total_active_balance`, `available_reserve_balance`,
+`circulating_ticket_balance`, `delayed_unstake_cooling_down`,
+`emergency_cooling_down`), all decoded and sanity-checked live (each landed
+on a plausible value — `min_deposit`/`min_withdraw` ≈0, `staking_sol_cap` at
+the uncapped `u64::MAX` sentinel, `emergency_cooling_down` at 0 — and the
+resulting rate cross-validated against `msol_price` rather than trusted on
+its own). The SPL-Stake-Pool shape has no such distinction: its pool account
+carries only the one on-chain rate (`total_lamports`/`pool_token_supply`),
+which both `readPosition` and the withdraw conversion use identically —
+there is no separate "for FE" field to avoid there.
+
+### 14.4 What "docks" the same way as before
+
+No new mechanism was invented: `DepositTarget` gained one kind
+(`solana-lst-stake`), one resolver was registered
+(`registerResolver(SolanaLstResolver)`), one adapter was registered
+(`registerDefiAdapter(SolanaLstAdapter)`), and `services/defi/
+unionParity.test.ts`'s hand-maintained non-EVM allowlist gained one entry.
+Adding Save/Kamino later is the same shape: a venue row (or a new resolver
+file, if the market-matching logic doesn't fit the existing venue-table
+pattern) plus registration — never a branch in shared code.
+
+### 14.5 Jupiter Lend Earn, 2026-08-23 — the first Solana protocol needing a real dependency
+
+Jupiter Lend Earn (~$1.03B, 7 live single-asset vaults: USDC, WSOL, USDT,
+EURC, USDS, USDG, JupUSD) shipped this pass, one kind
+(`jupiter-lend-vault`) mirroring `erc4626`'s "single kind, dispatched by
+asset" shape (`services/defi/adapters/jupiterLend.ts`,
+`api/src/strategies/targets/jupiter-lend.resolver.ts`).
+
+**Why this one couldn't be hand-rolled like the LST family.** Marinade's
+program source is public on GitHub, so every account was either a pinned
+constant or a PDA/`createWithSeed` derivation verified against that source.
+Jupiter Lend's program is closed-source — only an Anchor IDL and reference
+CPI snippets are public (`jup-ag/jupiter-lend`'s `references/earn/
+{deposit,withdraw}.rs`), and neither publishes the PDA seeds for the 9+
+protocol accounts (`lending`, `lending_admin`, `f_token_mint`, `vault`,
+`rate_model`, `liquidity`, …). Hand-rolling would mean guessing seeds, which
+this runbook refuses to do. The only non-guessing path was the official
+`@jup-ag/lend` SDK, which resolves those accounts internally.
+
+**Adding the dependency was a deliberate, checked decision, not a default.**
+`@jup-ag/lend` pulls `@coral-xyz/anchor` and `bn.js` — and `bn.js` is one of
+the three packages CLAUDE.md documents as having *already* force-closed this
+app via the frozen-`Object.prototype` bug. Before writing any adapter code:
+`pnpm why bn.js` confirmed the new dependency resolves to the SAME
+already-hoisted, already-warmed copy (no duplicate instance at a second
+`node_modules` path — the exact trap that bit this repo before), and `pnpm
+check:protofreeze` (the automated scanner built for this exact incident
+class) passed clean with the new dependency installed — no new
+`Object.prototype`-shadowing export anywhere in the tree. Both are strong
+signals, not a runtime guarantee: **this still needs an EAS build + a real
+on-device `adb shell am force-stop` retest before it ships**, because Fast
+Refresh hides exactly this class of bug and none of the automated checks
+run on Hermes.
+
+**The discriminator that keeps Borrow rows out.** Same DeFiLlama project
+slug (`jupiter-lend`) carries both the Earn vaults and Jupiter's Borrow
+isolated-market rows (JLP/USDC, WSOL/USDC, JupSOL/WSOL, …) — 79 total rows,
+only 7 of them real Earn deposits. This is the identical "borrow-side row
+shares a slug" trap §11.5c and Sky's ilk rows already describe, and
+DeFiLlama's own `poolMeta` field cleanly distinguishes them: exactly `"Earn"`
+for the 7 real vaults, `"<symbol>/<pairedAsset>"` for every Borrow row.
+Verified live 2026-08-23 that a `WSOL`-symbol Borrow row's TVL (~$110M)
+does NOT match the real jlWSOL vault's on-chain `totalAssets` (~$215M) —
+concrete proof they're different products, not just a naming coincidence.
+The resolver refuses anything not tagged `poolMeta === "Earn"` before
+requesting a candidate.
+
+**No off-chain exchange-rate risk here, unlike the LST family.** Jupiter's
+`withdraw(assets: u64)` is asset-denominated on-chain (confirmed from the
+IDL args and the reference source, not assumed) — the program converts to
+shares internally, the same way ERC-4626's `withdraw()` does. `amount_raw`'s
+documented contract ("the position asset's smallest unit") is satisfied with
+zero conversion math on our side, so there is no SOL↔receipt-token rate to
+get wrong the way §14.3a's Jito/JupSOL/dSOL/Marinade bug required fixing.
+
+### 14.6 Measured: `pnpm defi:dry-run --chain solana`, 2026-08-23
+
+Same tool §11.5c's EVM numbers and §11.6b's Sui numbers come from, run
+against every Solana pool actually seeded in the DB (not a hand-rolled
+script) — this is the real coverage log, not a description of one:
+
+```
+Resolving 44 pools (read-only; nothing is signed or written)
+
+CHAIN       PROJECT               SYMBOL          TVL         OUTCOME
+--------------------------------------------------------------------------------------------------------------
+Solana      jito-liquid-staking   JITOSOL         $929.2M     ✓ solana-lst-stake → (kind-specific)
+Solana      jupiter-staked-sol    JUPSOL          $478.9M     ✓ solana-lst-stake → (kind-specific)
+Solana      jupiter-lend          USDC            $437.0M     ✓ jupiter-lend-vault → (kind-specific)
+Solana      drift-staked-sol      DSOL            $260.0M     ✓ solana-lst-stake → (kind-specific)
+Solana      marinade-liquid-staki…MSOL            $217.4M     ✓ solana-lst-stake → (kind-specific)
+Solana      jupiter-lend          JLP             $118.7M     · manual (refused — fail-closed)
+Solana      jupiter-lend          WSOL            $110.2M     · manual (refused — fail-closed)
+Solana      jupiter-lend          JUPSOL          $97.5M      · manual (refused — fail-closed)
+Solana      jupiter-lend          JUPUSD          $62.8M      ✓ jupiter-lend-vault → (kind-specific)
+Solana      jupiter-lend          WSOL            $21.0M      · manual (refused — fail-closed)
+Solana      jupiter-lend          WSOL            $19.9M      ✓ jupiter-lend-vault → (kind-specific)
+Solana      jupiter-lend          USDT            $18.5M      ✓ jupiter-lend-vault → (kind-specific)
+Solana      jupiter-lend          JUPSOL          $9.4M       · manual (refused — fail-closed)
+Solana      jupiter-lend          DFDVSOL         $8.7M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JUPSOL          $7.2M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JLP             $6.6M       · manual (refused — fail-closed)
+Solana      jupiter-lend          PST             $6.3M       · manual (refused — fail-closed)
+Solana      jupiter-lend          DFDVSOL         $6.2M       · manual (refused — fail-closed)
+Solana      jupiter-lend          SPYX            $5.5M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JLP             $5.5M       · manual (refused — fail-closed)
+Solana      jupiter-lend          PST             $5.4M       · manual (refused — fail-closed)
+Solana      jupiter-lend          CBBTC           $5.2M       · manual (refused — fail-closed)
+Solana      jupiter-lend          INF             $4.9M       · manual (refused — fail-closed)
+Solana      jupiter-lend          EURC            $4.8M       ✓ jupiter-lend-vault → (kind-specific)
+Solana      jupiter-lend          INF             $4.5M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JITOSOL         $4.4M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JUPSOL          $4.2M       · manual (refused — fail-closed)
+Solana      jupiter-lend          USDS            $4.2M       ✓ jupiter-lend-vault → (kind-specific)
+Solana      jupiter-lend          WSOL            $3.3M       · manual (refused — fail-closed)
+Solana      jupiter-lend          USDG            $3.3M       ✓ jupiter-lend-vault → (kind-specific)
+Solana      jupiter-lend          JLJUPUSD        $2.6M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JITOSOL         $2.5M       · manual (refused — fail-closed)
+Solana      jupiter-lend          WSOL            $2.5M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JLP             $1.9M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JUP             $1.9M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JUPSOL          $1.7M       · manual (refused — fail-closed)
+Solana      jupiter-lend          LBTC            $1.6M       · manual (refused — fail-closed)
+Solana      jupiter-lend          SPYX            $1.6M       · manual (refused — fail-closed)
+Solana      jupiter-lend          WSOL            $1.5M       · manual (refused — fail-closed)
+Solana      jupiter-lend          NVDAX           $1.2M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JUPSOL          $1.2M       · manual (refused — fail-closed)
+Solana      jupiter-lend          SYRUPUSDC       $1.1M       · manual (refused — fail-closed)
+Solana      jupiter-lend          XBTC            $1.1M       · manual (refused — fail-closed)
+Solana      jupiter-lend          JUPSOL          $1.0M       · manual (refused — fail-closed)
+
+Summary by project
+  jupiter-lend               7/40  resolved
+  jito-liquid-staking        1/1   resolved
+  jupiter-staked-sol         1/1   resolved
+  drift-staked-sol           1/1   resolved
+  marinade-liquid-staking    1/1   resolved
+
+  resolved             11
+  refused              33
+```
+
+Every LST venue is 1/1 — one pool each, cleanly resolved. `jupiter-lend` is
+7/40 (this run's live pool count differed slightly from §14.5's 79-row
+snapshot two days earlier — DeFiLlama's set drifts run to run; the ratio and
+which rows refuse is what matters), and every refusal is a Borrow row: JLP,
+JUPSOL, DFDVSOL, PST, SPYX, CBBTC, INF, JITOSOL, JLJUPUSD, JUP, LBTC, NVDAX,
+SYRUPUSDC, XBTC, and the four non-Earn WSOL rows — none of them `poolMeta
+=== "Earn"`, so the skip-guard in §14.5 refused every one before a candidate
+was even requested, exactly as designed. The 7 that resolved are exactly the
+7 live Earn vaults.
