@@ -7,7 +7,8 @@
  * 3pool, Morpho Steakhouse USDC (Ethereum).
  *
  * Phase 2 (FEATURE_DEFI_PHASE_2 — default ON): Morpho Flagship USDC
- * Base, Jito SOL, Maple syrupUSDC (EVM mainnet + Base).
+ * Base, Jito SOL, Jupiter Lend Earn, Kamino Lend, Maple syrupUSDC
+ * (EVM mainnet + Base).
  *
  * Phase 3 (FEATURE_DEFI_PHASE_3 — default ON): Yearn v3 USDC,
  * EigenLayer (Eth/Holesky), Ethena sUSDe, GMX v2 Arbitrum.
@@ -54,6 +55,8 @@ import { EthenaEthereumAdapter } from "./adapters/ethena";
 import { GmxV2ArbitrumAdapter } from "./adapters/gmxV2";
 import { JupiterLendAdapter } from "./adapters/jupiterLend";
 import { KaiSuiAdapter } from "./adapters/kaiSui";
+import { KaminoKvaultAdapter } from "./adapters/kaminoKvault";
+import { KaminoLendAdapter } from "./adapters/kaminoLend";
 import { LidoHoleskyAdapter, LidoMainnetAdapter } from "./adapters/lido";
 import { LstStakeAdapter } from "./adapters/lstStake";
 import {
@@ -67,6 +70,8 @@ import {
 } from "./adapters/morpho";
 import { MorphoBlueAdapter } from "./adapters/morphoBlue";
 import { NaviSuiAdapter } from "./adapters/naviSui";
+import { RaydiumAmmV4Adapter } from "./adapters/raydiumAmmV4";
+import { RaydiumCpmmAdapter } from "./adapters/raydiumCpmm";
 import { RouterCallAdapter } from "./adapters/routerCall";
 import { ScallopSuiAdapter } from "./adapters/scallopSui";
 import { SolanaLstAdapter } from "./adapters/solanaLst";
@@ -118,6 +123,24 @@ export function bootDefi(): void {
     registerDefiAdapter(MorphoFlagshipUsdcBaseAdapter);
     registerDefiAdapter(SolanaLstAdapter);
     registerDefiAdapter(JupiterLendAdapter);
+    // Kamino Lend — routed by `DepositTarget.kind === "solana-reserve"`. See
+    // adapters/kaminoLend.ts's header for the scope limit (single-reserve,
+    // no-debt obligations only) and verification story.
+    registerDefiAdapter(KaminoLendAdapter);
+    // Kamino kvault ("Earn" share vaults, behind DeFiLlama's `sentora`
+    // project on Solana) — routed by `DepositTarget.kind ===
+    // "kamino-kvault"`. Withdraw scoped to the vault's own uninvested
+    // buffer only; see adapters/kaminoKvault.ts's header.
+    registerDefiAdapter(KaminoKvaultAdapter);
+    // Raydium CPMM — routed by `DepositTarget.kind === "raydium-cpmm-pool"`.
+    // No zap (both legs required, MAX-only withdraw) — see
+    // adapters/raydiumCpmm.ts's header. Legacy AMM v4 not yet built.
+    registerDefiAdapter(RaydiumCpmmAdapter);
+    // Raydium legacy AMM v4 — routed by `DepositTarget.kind ===
+    // "raydium-amm-v4-pool"`. OpenBook-market-linked constant-product,
+    // majority of real "Standard" raydium-amm TVL — see
+    // adapters/raydiumAmmV4.ts's header.
+    registerDefiAdapter(RaydiumAmmV4Adapter);
     registerDefiAdapter(MapleSyrupUsdcEthereumAdapter);
     registerDefiAdapter(MapleSyrupUsdcBaseAdapter);
   }

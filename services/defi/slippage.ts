@@ -104,3 +104,28 @@ export function applySlippage(expected: bigint, bps: number): bigint {
 export function minOutFor(expected: bigint, ctx: SlippageContext = {}): bigint {
   return applySlippage(expected, slippageBpsFor(ctx));
 }
+
+/**
+ * The upper-bound counterpart of `applySlippage`, for protocols whose
+ * instruction is "exact output, max input" rather than "exact input, min
+ * output" — e.g. Raydium CPMM's `deposit(lpAmount, amountMaxA, amountMaxB)`
+ * takes the LP amount to mint as the driving input and caps how much of each
+ * token the program may pull to mint it, the inverse of Uniswap v2's
+ * `addLiquidity`. `expected` MUST come from the protocol's own live reserves
+ * at build time, same rule as `applySlippage`.
+ */
+export function applyMaxSlippage(expected: bigint, bps: number): bigint {
+  if (expected <= 0n) {
+    throw new DefiError(
+      "slippage_too_high",
+      "protocol preview returned no expected input; refusing an unbounded maximum",
+    );
+  }
+  const budget = BigInt(Math.round(bps));
+  return (expected * (BPS_DENOMINATOR + budget)) / BPS_DENOMINATOR;
+}
+
+/** Convenience: quote → enforced maximum in one call. */
+export function maxInFor(expected: bigint, ctx: SlippageContext = {}): bigint {
+  return applyMaxSlippage(expected, slippageBpsFor(ctx));
+}

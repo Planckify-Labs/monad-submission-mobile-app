@@ -18,6 +18,32 @@
  *     `StakePool` account (not pinned) — they're each pool's own arbitrary
  *     accounts set at creation, not derivable from a fixed seed.
  *
+ *     **12 more venues added 2026-08-23** (phantom/dfdv/hylo/bonk/helius/
+ *     bybit/thevault/doublezero/blazestake/jpool/binance/jagpool) — all real
+ *     `solana-program/stake-pool` deployments (either the canonical `"Spl"`
+ *     program or one of the two already-pinned Sanctum forks), not new
+ *     programs. Each `(program, stakePool)` pair was cross-checked two ways
+ *     before pinning: (1) `igneous-labs/sanctum-lst-list`'s published
+ *     `sanctum-lst-list.toml` names the pool + its `Spl`/`SanctumSpl`/
+ *     `SanctumSplMulti` program tag per mint — verified self-consistent
+ *     because it reproduces the ALREADY-shipped Jito/JupSOL/dSOL rows
+ *     byte-for-byte; (2) a live `getAccountInfo` on every new `stakePool`
+ *     confirmed the account's `owner` matches the claimed program AND its
+ *     on-chain `pool_mint` field (offset 162, same as the read path below)
+ *     matches the mint the venue is supposed to be. Every one of the 12
+ *     matched on both counts, and each pool's live `total_lamports` lines up
+ *     with the TVL the DeFiLlama listing reports for that same venue — no
+ *     mismatches, no ambiguity, no manual disambiguation needed.
+ *
+ *     **13th venue, `solstrategies` (stkeSOL), added 2026-08-23** — absent
+ *     from the Sanctum list, so verified independently: its DeFiLlama
+ *     `yield-server` adaptor (`src/adaptors/stkesol-by-sol-strategies/
+ *     index.js`) names the stake pool
+ *     `StKeDUdSu7jMSnPJ1MPqDnk3RdEwD2QbJaisHMebGhw`, and a live
+ *     `getAccountInfo` confirmed its `owner` is this same canonical `Spl`
+ *     program and its on-chain `pool_mint` (offset 162) matches the
+ *     adaptor's own `STKESOL_MINT` constant exactly.
+ *
  *   - `"marinade"` — Marinade's bespoke Anchor program (NOT a Stake Pool
  *     fork). `state`/`msolMint` are pinned from
  *     docs.marinade.finance/developers/contract-addresses; every other
@@ -49,7 +75,24 @@
  * "mint" identity for native SOL).
  */
 
-export type SolanaLstVenue = "jito" | "jupsol" | "dsol" | "marinade";
+export type SolanaLstVenue =
+  | "jito"
+  | "jupsol"
+  | "dsol"
+  | "marinade"
+  | "phantom"
+  | "dfdv"
+  | "hylo"
+  | "bonk"
+  | "helius"
+  | "bybit"
+  | "thevault"
+  | "doublezero"
+  | "blazestake"
+  | "jpool"
+  | "binance"
+  | "jagpool"
+  | "solstrategies";
 
 export type SolanaLstShape = "spl-stake-pool" | "marinade";
 
@@ -129,6 +172,142 @@ export const SOLANA_LST_CONFIGS: Record<SolanaLstVenue, SolanaLstConfig> = {
     // on-chain `state.min_deposit` check is the real gate.
     minDepositLamports: 0n,
   },
+  // ── 12 more spl-stake-pool venues, added 2026-08-23 — see the header for
+  // the two-way verification (Sanctum list + live getAccountInfo) each one
+  // passed. Program id per pool's `program` tag in sanctum-lst-list.toml:
+  //   "Spl"             -> SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy (Jito's)
+  //   "SanctumSpl"      -> SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY (dSOL's)
+  //   "SanctumSplMulti" -> SPMBzsVUuoHA4Jm6KunbsotaahvVikZs1JyTW6iJvbn (JupSOL's)
+  phantom: {
+    venue: "phantom",
+    shape: "spl-stake-pool",
+    displayName: "Phantom Staked SOL",
+    symbol: "PSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "pSPcvR8GmG9aKDUbn9nbKYjkxt9hxMS7kF1qqKJaPqJ",
+    defillamaSlug: "phantom-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  dfdv: {
+    venue: "dfdv",
+    shape: "spl-stake-pool",
+    displayName: "DeFi Development Corp Staked SOL",
+    symbol: "dfdvSOL",
+    program: "SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY",
+    stakePool: "pyZMBjpWsVjKANAYK5mpNbKiws2krjRPZ2N2UYCSnbP",
+    defillamaSlug: "dfdv-staked-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  hylo: {
+    venue: "hylo",
+    shape: "spl-stake-pool",
+    displayName: "Hylo Staked SOL",
+    symbol: "hyloSOL",
+    program: "SPMBzsVUuoHA4Jm6KunbsotaahvVikZs1JyTW6iJvbn",
+    stakePool: "hy1oDeVCVRDGkxS26qLVDvRhDpZGfWJ6w9AMvwMegwL",
+    defillamaSlug: "hylo-lsts",
+    minDepositLamports: 10_000_000n,
+  },
+  bonk: {
+    venue: "bonk",
+    shape: "spl-stake-pool",
+    displayName: "bonkSOL",
+    symbol: "bonkSOL",
+    program: "SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY",
+    stakePool: "ArAQfbzsdotoKB5jJcZa3ajQrrPcWr2YQoDAEAiFxJAC",
+    defillamaSlug: "bonk-staked-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  helius: {
+    venue: "helius",
+    shape: "spl-stake-pool",
+    displayName: "Helius Staked SOL",
+    symbol: "hSOL",
+    program: "SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY",
+    stakePool: "3wK2g8ZdzAH8FJ7PKr2RcvGh7V9VYson5hrVsJM5Lmws",
+    defillamaSlug: "helius-staked-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  bybit: {
+    venue: "bybit",
+    shape: "spl-stake-pool",
+    displayName: "BybitSOL",
+    symbol: "bbSOL",
+    program: "SP12tWFxD9oJsVWNavTTBZvMbA6gkAmxtVgxdqvyvhY",
+    stakePool: "2aMLkB5p5gVvCwKkdSo5eZAL1WwhZbxezQr1wxiynRhq",
+    defillamaSlug: "bybit-staked-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  thevault: {
+    venue: "thevault",
+    shape: "spl-stake-pool",
+    displayName: "The Vault",
+    symbol: "vSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "Fu9BYC6tWBo1KMKaP3CFoKfRhqv9akmy3DuYwnCyWiyC",
+    defillamaSlug: "the-vault-liquid-staking",
+    minDepositLamports: 10_000_000n,
+  },
+  doublezero: {
+    venue: "doublezero",
+    shape: "spl-stake-pool",
+    displayName: "DoubleZero Staked SOL",
+    symbol: "dzSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "3fV1sdGeXaNEZj6EPDTpub82pYxcRXwt2oie6jkSzeWi",
+    defillamaSlug: "doublezero-staked-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  blazestake: {
+    venue: "blazestake",
+    shape: "spl-stake-pool",
+    displayName: "BlazeStake Staked SOL",
+    symbol: "bSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "stk9ApL5HeVAwPLr3TLhDXdZS8ptVu7zp6ov8HFDuMi",
+    defillamaSlug: "blazestake",
+    minDepositLamports: 10_000_000n,
+  },
+  jpool: {
+    venue: "jpool",
+    shape: "spl-stake-pool",
+    displayName: "JPool",
+    symbol: "JSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "CtMyWsrUtAwXWiGr9WjHT5fC3p3fgV8cyGpLTo2LJzG1",
+    defillamaSlug: "jpool",
+    minDepositLamports: 10_000_000n,
+  },
+  binance: {
+    venue: "binance",
+    shape: "spl-stake-pool",
+    displayName: "Binance Staked SOL",
+    symbol: "BNSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "Hr9pzexrBge3vgmBNRR8u42CNQgBXdHm4UkUN2DH4a7r",
+    defillamaSlug: "binance-staked-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  jagpool: {
+    venue: "jagpool",
+    shape: "spl-stake-pool",
+    displayName: "JagPool Staked SOL",
+    symbol: "jagSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "jagEdDepWUgexiu4jxojcRWcVKKwFqgZBBuAoGu2BxM",
+    defillamaSlug: "jagpool-staked-sol",
+    minDepositLamports: 10_000_000n,
+  },
+  solstrategies: {
+    venue: "solstrategies",
+    shape: "spl-stake-pool",
+    displayName: "SOL Strategies Staked SOL",
+    symbol: "stkeSOL",
+    program: "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy",
+    stakePool: "StKeDUdSu7jMSnPJ1MPqDnk3RdEwD2QbJaisHMebGhw",
+    defillamaSlug: "stkesol-by-sol-strategies",
+    minDepositLamports: 10_000_000n,
+  },
 };
 
 export const SOLANA_LST_VENUES = Object.keys(
@@ -140,7 +319,7 @@ export const SOLANA_LST_SLUGS: string[] = SOLANA_LST_VENUES.map(
 );
 
 export function isSolanaLstVenue(v: string): v is SolanaLstVenue {
-  return v === "jito" || v === "jupsol" || v === "dsol" || v === "marinade";
+  return (SOLANA_LST_VENUES as string[]).includes(v);
 }
 
 export function getSolanaLstConfig(venue: SolanaLstVenue): SolanaLstConfig {

@@ -1,9 +1,10 @@
 /**
- * Solana liquid-staking adapter — ONE `DefiProtocolAdapter` covering Jito,
- * JupSOL, dSOL and Marinade, dispatched by `DepositTarget.kind ===
- * "solana-lst-stake"` and routed to the right venue by `target.venue`
- * (mirrors `SuiLstAdapter` — space-docking, never a slug branch in shared
- * code). Config: `adapters/solana/lst.config.ts`.
+ * Solana liquid-staking adapter — ONE `DefiProtocolAdapter` covering every
+ * venue in `SOLANA_LST_CONFIGS` (Jito, JupSOL, dSOL, Marinade, plus 12 more
+ * `spl-stake-pool` venues added 2026-08-23), dispatched by
+ * `DepositTarget.kind === "solana-lst-stake"` and routed to the right venue
+ * by `target.venue` (mirrors `SuiLstAdapter` — space-docking, never a slug
+ * branch in shared code). Config: `adapters/solana/lst.config.ts`.
  *
  * Replaces the old single-venue `solanaJito.ts` — same hand-rolled SPL Stake
  * Pool instructions (no `@solana/spl-stake-pool` dependency), now

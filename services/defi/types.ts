@@ -293,7 +293,37 @@ export type DepositTarget =
   // kind, dispatched by the underlying asset mint. Deposit/withdraw are
   // built via the official `@jup-ag/lend` SDK (no public PDA seeds to
   // hand-roll against — see `adapters/jupiterLend.ts`'s header).
-  | { kind: "jupiter-lend-vault"; asset: string };
+  | { kind: "jupiter-lend-vault"; asset: string }
+  // Kamino kvault (the "Earn" product behind DeFiLlama's "sentora" project on
+  // Solana — a SEPARATE program from Kamino Lend/"kamino-lend": share-vault
+  // deposit/redeem, no Obligation). `vault` + `mint` are resolved server-side
+  // from a small pinned venue table (only 2 known instances); every other
+  // account (tokenVault, sharesMint, active reserves…) is read LIVE off the
+  // vault account by the adapter, hand-rolled the same way as
+  // `"solana-reserve"` — see `adapters/kaminoKvault.ts`'s header. Withdraw is
+  // scoped to the vault's own uninvested buffer only (refuses rather than
+  // reaching into an invested klend reserve) — mirrors the
+  // single-reserve-scope discipline in `adapters/kaminoLend.ts`.
+  | { kind: "kamino-kvault"; vault: string; mint: string }
+  // Raydium CPMM — the newer, self-contained (no OpenBook dependency)
+  // constant-product AMM program. Mirrors `"uniswap-v2"`: the pool IS the LP
+  // mint's controller, both legs are required (no internal zap — see
+  // `adapters/raydiumCpmm.ts`'s header for why, same reasoning as
+  // `uniswapV2Lp.ts`), withdraw is MAX-only. DeFiLlama's `raydium-amm`
+  // project bundles this AND legacy AMM v4 AND concentrated pools under one
+  // slug distinguished only by `poolMeta`, not by program — this kind covers
+  // ONLY the CPMM program (`CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C`);
+  // legacy AMM v4 (OpenBook-linked, still the majority of real "Standard"
+  // TVL) is a separate, not-yet-built kind.
+  | { kind: "raydium-cpmm-pool"; pool: string; mintA: string; mintB: string }
+  // Raydium legacy AMM v4 — the OpenBook-market-linked constant-product
+  // program (the majority of DeFiLlama's real "Standard" `raydium-amm`
+  // TVL). Same "both legs required, no zap, MAX-only withdraw" design as
+  // `"raydium-cpmm-pool"`, but the deposit/withdraw instructions ALSO route
+  // through the pool's linked OpenBook (Serum v3) market account — see
+  // `adapters/raydiumAmmV4.ts`'s header. `mintA`/`mintB` mirror the
+  // program's own `baseMint`/`quoteMint` naming.
+  | { kind: "raydium-amm-v4-pool"; pool: string; mintA: string; mintB: string };
 
 export type DepositTargetKind = DepositTarget["kind"];
 
@@ -323,6 +353,11 @@ export function targetUnderlying(target: DepositTarget): string | null {
     case "turbos-clmm-pool":
     case "bluefin-spot-pool":
       return target.coinTypeA;
+    // Same "both legs deposited, report the primary leg" shape — mintA is
+    // Raydium's own on-chain leg ordering.
+    case "raydium-cpmm-pool":
+    case "raydium-amm-v4-pool":
+      return target.mintA;
     case "router-call":
       return target.tokenIn;
     case "scallop-market":
@@ -333,6 +368,7 @@ export function targetUnderlying(target: DepositTarget): string | null {
     case "current-market":
       return target.coinType;
     case "solana-reserve":
+    case "kamino-kvault":
       return target.mint;
     default:
       return null;
