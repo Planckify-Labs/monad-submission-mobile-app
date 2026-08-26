@@ -57,6 +57,7 @@ import { JupiterLendAdapter } from "./adapters/jupiterLend";
 import { KaiSuiAdapter } from "./adapters/kaiSui";
 import { KaminoKvaultAdapter } from "./adapters/kaminoKvault";
 import { KaminoLendAdapter } from "./adapters/kaminoLend";
+import { KaminoLiquidityAdapter } from "./adapters/kaminoLiquidity";
 import { LidoHoleskyAdapter, LidoMainnetAdapter } from "./adapters/lido";
 import { LstStakeAdapter } from "./adapters/lstStake";
 import {
@@ -132,6 +133,13 @@ export function bootDefi(): void {
     // "kamino-kvault"`. Withdraw scoped to the vault's own uninvested
     // buffer only; see adapters/kaminoKvault.ts's header.
     registerDefiAdapter(KaminoKvaultAdapter);
+    // Kamino kliquidity (managed CLMM vault) — routed by
+    // `DepositTarget.kind === "kamino-liquidity-strategy"`. Deposit AND
+    // MAX-only withdraw, Orca-backed + PROPORTION_BASED + no-active-reward
+    // strategies only — see adapters/kaminoLiquidity.ts's header for the
+    // verification story and why Raydium/Meteora-backed and rewarded
+    // strategies stay unbuilt.
+    registerDefiAdapter(KaminoLiquidityAdapter);
     // Raydium CPMM — routed by `DepositTarget.kind === "raydium-cpmm-pool"`.
     // No zap (both legs required, MAX-only withdraw) — see
     // adapters/raydiumCpmm.ts's header. Legacy AMM v4 not yet built.

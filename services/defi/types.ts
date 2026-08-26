@@ -332,7 +332,23 @@ export type DepositTarget =
   // model, `services/defi/adapters/raydiumAmmV4.ts`'s header) only matters
   // for SWAP pricing, not for add/removeLiquidity, so it needs no new math
   // here. Still OpenBook-market-linked, same as AMM v4.
-  | { kind: "raydium-stable-pool"; pool: string; mintA: string; mintB: string };
+  | { kind: "raydium-stable-pool"; pool: string; mintA: string; mintB: string }
+  // Kamino kliquidity — Kamino's managed CLMM vault product ("yvaults" on
+  // -chain), wrapping an auto-rebalancing Orca Whirlpool / Raydium CLMM /
+  // Meteora DLMM position behind a share vault. `strategy` is the on-chain
+  // `WhirlpoolStrategy` account; `mintA`/`mintB` mirror the strategy's own
+  // token ordering. The resolver claims strategies on every underlying DEX
+  // and both share-calculation methods (see
+  // `kamino-liquidity.resolver.ts`'s header) — `adapters/kaminoLiquidity.ts`
+  // is what actually restricts execution to a verified subset (Orca-backed,
+  // `PROPORTION_BASED` only, deposit + withdraw both two-sided and
+  // oracle-free — see its header), failing closed to Manual for the rest.
+  | {
+      kind: "kamino-liquidity-strategy";
+      strategy: string;
+      mintA: string;
+      mintB: string;
+    };
 
 export type DepositTargetKind = DepositTarget["kind"];
 
@@ -367,6 +383,7 @@ export function targetUnderlying(target: DepositTarget): string | null {
     case "raydium-cpmm-pool":
     case "raydium-amm-v4-pool":
     case "raydium-stable-pool":
+    case "kamino-liquidity-strategy":
       return target.mintA;
     case "router-call":
       return target.tokenIn;
