@@ -25,8 +25,14 @@ import {
   parseAbi,
 } from "viem";
 import { strategiesApi } from "@/api/endpoints/strategies";
+import type { TBlockchain } from "@/api/types/blockchain";
 import type { TOpportunity, TUserStrategy } from "@/api/types/strategy";
-import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
+import type { ChainConfig } from "@/constants/configs/chainConfig";
+import type { TWallet } from "@/constants/types/walletTypes";
+import {
+  buildChainConfigFromBlockchain,
+  resolveNamespace,
+} from "@/hooks/useWallet.helpers";
 import { toChainTag } from "@/services/analytics/chainTag";
 import { track } from "@/services/analytics/posthog";
 import { decimalsForSymbol } from "@/services/defi/assetDecimals";
@@ -43,6 +49,7 @@ import {
 import { releaseSubmission } from "@/services/defi/safety/checks/layer4-execution";
 import { takeExitConsent } from "@/services/defi/safety/exitConsent";
 import { setEvmChainResolver } from "@/services/defi/safety/providers/eip155";
+import { setSolanaChainResolver } from "@/services/defi/safety/providers/solana";
 import {
   assertSafetyResult,
   runSafetyPipeline,
@@ -54,8 +61,10 @@ import {
   type DepositTarget,
   NATIVE_ASSET_SENTINEL,
   targetUnderlying,
+  type UnsignedCall,
 } from "@/services/defi/types";
 import { getDefaultTokens } from "@/services/tokens/tokenList";
+import { walletKitRegistry } from "@/services/walletKit/registry";
 import { resolveChainClients } from "../chainRouter";
 import {
   ExecutorError,
@@ -124,22 +133,114 @@ function assertNoLlmSuppliedTarget(input: ToolInput): void {
 }
 
 /**
- * Point the eip155 safety provider at the chains the backend has published.
+ * Point the eip155 + solana safety providers at the chains the backend has
+ * published.
  *
- * Chains are data (the API's blockchain rows), not a bundled constant, so the
- * provider is handed a resolver rather than looking one up. Rebinding per
- * invocation keeps it in step with a chain list that can change under us.
+ * Chains are data (the API's blockchain rows), not a bundled constant, so
+ * each provider is handed a resolver rather than looking one up. Rebinding
+ * per invocation keeps it in step with a chain list that can change under
+ * us. The eip155 side keys on numeric `chainId`; Solana rows carry
+ * `chainId: null` (`api/types/blockchain.ts`'s own documented convention —
+ * "EVM numeric chainId, or `null` for non-EVM networks"), so the Solana
+ * resolver instead matches on the `cluster` string the safety pipeline uses
+ * as ITS `chainId` for Solana targets (see `resolveSolanaChain` below,
+ * which is the one place that string gets minted).
  */
 function bindSafetyChainResolver(context: {
-  blockchains: { chainId?: number | null }[];
+  blockchains: TBlockchain[];
 }): void {
   setEvmChainResolver((chainId) => {
     const blockchain = context.blockchains.find((b) => b.chainId === chainId);
-    return blockchain
-      ? buildChainConfigFromBlockchain(
-          blockchain as Parameters<typeof buildChainConfigFromBlockchain>[0],
-        )
-      : null;
+    return blockchain ? buildChainConfigFromBlockchain(blockchain) : null;
+  });
+  setSolanaChainResolver((cluster) => {
+    const blockchain = context.blockchains.find((b) => {
+      if (resolveNamespace(b) !== "solana") return false;
+      const config = buildChainConfigFromBlockchain(b);
+      return (
+        config.namespace === "solana" && config.cluster === String(cluster)
+      );
+    });
+    return blockchain ? buildChainConfigFromBlockchain(blockchain) : null;
+  });
+}
+
+/**
+ * Resolve the Solana blockchain row + `ChainConfig` for a DeFi write.
+ *
+ * This is deliberately NOT `resolveChainId` + `context.blockchains.find(b =>
+ * b.chainId === chainId)` — that pair is EVM-only machinery (`resolveChainId`
+ * requires a positive integer; Solana rows carry `chainId: null`, so no
+ * numeric match can ever succeed for them). This was the real, structural
+ * reason a Solana `defi_deposit`/`defi_withdraw` never reached ANY of this
+ * file's logic in any prior session, independent of the `unsigned call kind
+ * "solana-ix"` gates further down — those gates were unreachable dead code
+ * on top of an already-unreachable chain lookup. Mirrors the SAME
+ * namespace + `isTestnet` lookup `services/agent-executors/wallet/
+ * solana.ts`'s `getActiveSolanaChain`/`resolveSolanaNativeMeta` already use
+ * for the working `send_sol`/`get_wallet_spl_tokens` tools, rather than
+ * inventing a second convention.
+ *
+ * The safety pipeline's `chainId: number | string` field takes the
+ * resulting `cluster` string ("mainnet-beta" / "devnet") for Solana
+ * targets — matching `DefiOpportunity.chainId`'s own documented union
+ * ("EVM number or Solana cluster string").
+ */
+function resolveSolanaChain(context: { blockchains: TBlockchain[] }): {
+  chainConfig: Extract<ChainConfig, { namespace: "solana" }>;
+  chainId: string;
+} {
+  const isTestnetWanted = false; // agent-driven writes only ever target mainnet
+  const blockchain = context.blockchains.find(
+    (b) =>
+      resolveNamespace(b) === "solana" &&
+      b.isActive &&
+      (b.isTestnet ?? false) === isTestnetWanted,
+  );
+  if (!blockchain) {
+    throw new DefiError(
+      "unsupported_chain",
+      "no active Solana mainnet blockchain row in context",
+    );
+  }
+  const chainConfig = buildChainConfigFromBlockchain(blockchain);
+  if (chainConfig.namespace !== "solana") {
+    throw new DefiError(
+      "unsupported_chain",
+      "solana blockchain row resolved to a non-solana chain config",
+    );
+  }
+  return { chainConfig, chainId: chainConfig.cluster };
+}
+
+/**
+ * Sign and submit a `solana-ix` `UnsignedCall` — the missing half of the
+ * Solana DeFi write path (see this file's header note). Reuses
+ * `SolanaWalletKit.sendAnchorInstruction`, the SAME generic
+ * sign-arbitrary-instructions primitive already used by the TakumiPay
+ * on-chain settlement rail (`wallet/solanaTakumiPay.ts`'s
+ * `executeBookingSol`/`depositPointsSol`) — not a new signing path.
+ * Presence-checked (optional capability, chain-extension discipline): if a
+ * future Solana wallet-kit build ever omits it, this fails closed with a
+ * curated reason rather than silently no-op'ing.
+ */
+async function submitSolanaCall(
+  wallet: TWallet,
+  chainConfig: ChainConfig,
+  call: Extract<UnsignedCall, { kind: "solana-ix" }>,
+): Promise<string> {
+  const kit = walletKitRegistry.get("solana");
+  if (!kit || typeof kit.sendAnchorInstruction !== "function") {
+    throw new DefiError(
+      "wallet_cannot_execute",
+      "solana wallet kit does not expose sendAnchorInstruction",
+    );
+  }
+  return kit.sendAnchorInstruction({
+    wallet,
+    chain: chainConfig,
+    instructions: call.instructions,
+    additionalSigners: call.additionalSigners,
   });
 }
 
@@ -300,7 +401,10 @@ export const deposit: MobileToolExecutor = (input, context) =>
       // Reject any LLM-supplied address BEFORE anything else (spec §8).
       assertNoLlmSuppliedTarget(input);
 
-      const chainId = resolveChainId(input, context);
+      // `chainId` resolution is namespace-dependent (see `resolveSolanaChain`'s
+      // header) and can't happen until the adapter's namespace is known below
+      // — deferred rather than called eagerly here like the EVM-only version
+      // used to.
       const protocolSlug = requireString(input, "protocol_slug");
       const assetSymbol = requireString(input, "asset_symbol");
       const amountRaw = requireBigInt(input, "amount_raw");
@@ -323,7 +427,6 @@ export const deposit: MobileToolExecutor = (input, context) =>
 
       if (__DEV__) {
         console.warn("[defi/deposit] ENTER", {
-          chainId,
           protocolSlug,
           poolId,
           assetSymbol,
@@ -371,12 +474,13 @@ export const deposit: MobileToolExecutor = (input, context) =>
         throw new DefiError("protocol_not_found", protocolSlug);
       }
 
-      // EVM-only deposit executor. Sui/Solana venues deposit through their own
-      // path (the Sui Intent Engine's defi_intent_preview/execute), so fail
-      // closed with a curated reason instead of handing a non-EVM adapter an EVM
-      // chain config (which throws a raw "requires sui namespace"). The agent's
-      // recovery is to route the Sui pool through defi_intent_preview.
-      if (adapter.namespace !== "eip155") {
+      // Sui venues still deposit through their own path (the Sui Intent
+      // Engine's defi_intent_preview/execute) — fail closed with a curated
+      // reason rather than handing a Sui adapter an EVM chain config. Solana
+      // is now wired through this SAME executor (see `resolveSolanaChain` /
+      // `submitSolanaCall` above and this file's header note) rather than
+      // being refused here.
+      if (adapter.namespace !== "eip155" && adapter.namespace !== "solana") {
         if (__DEV__) {
           console.warn("[defi/deposit] non-EVM venue routed to EVM executor", {
             protocolSlug,
@@ -389,20 +493,31 @@ export const deposit: MobileToolExecutor = (input, context) =>
         );
       }
 
-      const blockchain = context.blockchains.find((b) => b.chainId === chainId);
-      if (!blockchain) {
-        if (__DEV__) {
-          console.warn(
-            "[defi/deposit] unsupported_chain — no blockchain row in context",
-            {
-              chainId,
-              available: context.blockchains.map((b) => b.chainId),
-            },
-          );
+      let chainId: number | string;
+      let chainConfig: ChainConfig;
+      if (adapter.namespace === "solana") {
+        const solana = resolveSolanaChain(context);
+        chainConfig = solana.chainConfig;
+        chainId = solana.chainId;
+      } else {
+        chainId = resolveChainId(input, context);
+        const blockchain = context.blockchains.find(
+          (b) => b.chainId === chainId,
+        );
+        if (!blockchain) {
+          if (__DEV__) {
+            console.warn(
+              "[defi/deposit] unsupported_chain — no blockchain row in context",
+              {
+                chainId,
+                available: context.blockchains.map((b) => b.chainId),
+              },
+            );
+          }
+          throw new DefiError("unsupported_chain", `chainId=${chainId}`);
         }
-        throw new DefiError("unsupported_chain", `chainId=${chainId}`);
+        chainConfig = buildChainConfigFromBlockchain(blockchain);
       }
-      const chainConfig = buildChainConfigFromBlockchain(blockchain);
       const decimals = decimalsForSymbol(assetSymbol);
 
       // ── Safety pipeline, anchor 1 of 2 (§11.1, §11.4) ──────────────────
@@ -518,10 +633,143 @@ export const deposit: MobileToolExecutor = (input, context) =>
         });
       }
 
+      if (unsignedCall.kind === "solana-ix") {
+        // ── Safety pipeline, anchor 2 of 2 (§11.1, §11 Layer 4) ──────────
+        if (depositTarget) {
+          assertSafetyResult(
+            await runSafetyPipeline({
+              ...safetyBase,
+              stage: "submit",
+              call: unsignedCall,
+            }),
+          );
+        }
+        // No ERC-20-style approval preamble here: every Solana adapter in
+        // this file embeds the SPL transfer directly in the deposit
+        // instruction itself (`approvalsOf` is a no-op for a `solana-ix`
+        // call by construction — see its own definition in
+        // `services/defi/types.ts`).
+        if (depositTarget) {
+          const preflight = await runSafetyPipeline({
+            ...safetyBase,
+            stage: "broadcast",
+            call: unsignedCall,
+          });
+          if (!preflight.ok) {
+            releaseSubmission(safetyBase.submissionKey ?? "");
+          }
+          assertSafetyResult(preflight);
+        }
+
+        let signature: string;
+        try {
+          if (__DEV__) {
+            console.warn("[defi/deposit] submitting solana-ix", {
+              instructionCount: unsignedCall.instructions.length,
+            });
+          }
+          signature = await submitSolanaCall(
+            context.wallet,
+            chainConfig,
+            unsignedCall,
+          );
+        } catch (err) {
+          // Same phantom-failure posture as `submitEvmCall`: a broadcast
+          // error is never assumed to mean nothing happened, so the
+          // idempotency key is released for a genuine retry but the error
+          // itself still propagates rather than being swallowed.
+          releaseSubmission(safetyBase.submissionKey ?? "");
+          throw err;
+        }
+        if (__DEV__) {
+          console.warn("[defi/deposit] solana-ix submitted", { signature });
+        }
+
+        // Backend-facing numeric chainId — `TStrategyPosition`/`TOpportunity`
+        // type this field as a plain `number` (unlike `Blockchain.chainId`,
+        // which is `null` for non-EVM rows per its own doc comment); this
+        // codebase's own Solana coverage tooling already reports Solana rows
+        // as chainId `0` in `OpportunityCache` — reused here rather than
+        // inventing a second convention.
+        const SOLANA_BACKEND_CHAIN_ID = 0;
+
+        let amountAtDepositUsd = 0;
+        try {
+          const [price] = await strategiesApi.getAssetPrices([
+            { chainId: SOLANA_BACKEND_CHAIN_ID, assetSymbol, assetContract },
+          ]);
+          const humanAmount = parseFloat(formatUnits(amountRaw, decimals));
+          const computed = humanAmount * (price?.usd ?? 0);
+          amountAtDepositUsd = Number.isFinite(computed) ? computed : 0;
+        } catch (priceErr) {
+          if (__DEV__) {
+            console.warn(
+              "[defi/deposit] asset price fetch failed (best-effort)",
+              { assetSymbol, error: priceErr },
+            );
+          }
+        }
+
+        try {
+          await strategiesApi.createPosition({
+            protocolSlug,
+            chainId: SOLANA_BACKEND_CHAIN_ID,
+            namespace: adapter.namespace,
+            assetSymbol,
+            assetContract,
+            poolId,
+            amountAtDeposit: amountRaw.toString(),
+            amountAtDepositUsd,
+            openTxHash: signature,
+            goal,
+            targetDate,
+            ...(isAsyncDeposit
+              ? {
+                  asyncPhase: "deposit_requested" as const,
+                  asyncRequestedRaw: amountRaw.toString(),
+                }
+              : {}),
+          });
+        } catch (err) {
+          if (__DEV__) {
+            console.error("[defi/deposit] createPosition api failed", {
+              protocolSlug,
+              signature,
+              error: err,
+            });
+          }
+        }
+
+        track("defi_deposit_completed", {
+          chain: toChainTag(adapter.namespace),
+          protocol_slug: protocolSlug,
+          chain_id: SOLANA_BACKEND_CHAIN_ID,
+          asset_symbol: assetSymbol,
+          amount: parseFloat(formatUnits(amountRaw, decimals)),
+          amount_usd: amountAtDepositUsd,
+        });
+
+        return {
+          status: "success" as const,
+          tx_confirmed: !isAsyncDeposit,
+          data: {
+            protocol_slug: protocolSlug,
+            chain_id: chainId,
+            amount_raw: amountRaw.toString(),
+            signature,
+            ...(isAsyncDeposit
+              ? {
+                  settlement: "pending" as const,
+                  async_phase: "deposit_requested" as const,
+                  note: "Deposit requested. This pool settles off-chain, so the position becomes claimable once the protocol fulfils the request. We'll notify you when it's ready to claim.",
+                }
+              : {}),
+          },
+        };
+      }
+
       if (unsignedCall.kind !== "evm-call") {
-        // Solana / Sui submission goes through the wallet kit's
-        // namespace-specific path; the agent-executor pipeline is
-        // EVM-first for v1.
+        // Sui submission goes through its own path (the Sui Intent Engine).
         if (__DEV__) {
           console.warn(
             "[defi/deposit] unsupported_chain — non-EVM unsigned call",
@@ -534,8 +782,12 @@ export const deposit: MobileToolExecutor = (input, context) =>
         );
       }
 
+      // `chainId` is guaranteed numeric here: the solana-ix branch above
+      // always returns, and Sui non-evm-call kinds already threw, so
+      // reaching this point means `unsignedCall.kind === "evm-call"` and
+      // `chainId` came from the `resolveChainId` (EVM) branch above.
       const { walletClient, publicClient } = resolveChainClients(
-        chainId,
+        chainId as number,
         context,
       );
       if (!walletClient || !walletClient.account) {
@@ -778,7 +1030,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
       let amountAtDepositUsd = 0;
       try {
         const [price] = await strategiesApi.getAssetPrices([
-          { chainId, assetSymbol, assetContract },
+          { chainId: chainId as number, assetSymbol, assetContract },
         ]);
         const humanAmount = parseFloat(formatUnits(amountRaw, decimals));
         const computed = humanAmount * (price?.usd ?? 0);
@@ -799,7 +1051,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
       try {
         await strategiesApi.createPosition({
           protocolSlug,
-          chainId,
+          chainId: chainId as number,
           namespace: adapter.namespace,
           assetSymbol,
           assetContract,
@@ -963,20 +1215,39 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       // on LP/router exits (§12 Q4), never to gate the exit itself.
       const strategy = await strategiesApi.getStrategy().catch(() => null);
 
-      const blockchain = context.blockchains.find((b) => b.chainId === chainId);
-      if (!blockchain) {
-        if (__DEV__) {
-          console.warn(
-            "[defi/withdraw] unsupported_chain — no blockchain row in context",
-            {
-              chainId,
-              available: context.blockchains.map((b) => b.chainId),
-            },
-          );
+      // Solana positions carry the SAME numeric sentinel `chainId` deposit
+      // just started writing (see `deposit`'s `SOLANA_BACKEND_CHAIN_ID`
+      // note) — it does not identify a row in `Blockchain` (whose `chainId`
+      // is `null` for non-EVM networks), so the lookup for a Solana adapter
+      // has to go by namespace instead, same as `deposit`'s own fix.
+      let chainConfig: ChainConfig;
+      // The safety pipeline's `chainId` (used for the Solana provider's own
+      // chain-resolver lookup, `bindSafetyChainResolver`'s doc comment) is
+      // the CLUSTER string for Solana, distinct from `chainId` above (the
+      // numeric backend sentinel `position.chainId` carries).
+      let pipelineChainId: number | string = chainId;
+      if (adapter.namespace === "solana") {
+        const solana = resolveSolanaChain(context);
+        chainConfig = solana.chainConfig;
+        pipelineChainId = solana.chainId;
+      } else {
+        const blockchain = context.blockchains.find(
+          (b) => b.chainId === chainId,
+        );
+        if (!blockchain) {
+          if (__DEV__) {
+            console.warn(
+              "[defi/withdraw] unsupported_chain — no blockchain row in context",
+              {
+                chainId,
+                available: context.blockchains.map((b) => b.chainId),
+              },
+            );
+          }
+          throw new DefiError("unsupported_chain", `chainId=${chainId}`);
         }
-        throw new DefiError("unsupported_chain", `chainId=${chainId}`);
+        chainConfig = buildChainConfigFromBlockchain(blockchain);
       }
-      const chainConfig = buildChainConfigFromBlockchain(blockchain);
       const decimals = decimalsForSymbol(assetSymbol);
 
       // ── Safety pipeline (§11) — same runner deposit uses, action-scoped.
@@ -1005,7 +1276,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           vault: "0x0000000000000000000000000000000000000000",
           asset: withdrawUnderlyingExpected as `0x${string}`,
         },
-        chainId,
+        chainId: pipelineChainId,
         wallet: context.wallet.address,
         requestedAmount: amountRaw,
         underlyingExpected: withdrawUnderlyingExpected,
@@ -1057,7 +1328,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       try {
         const live = await readPosition({
           protocolSlug,
-          chainId,
+          chainId: pipelineChainId,
           walletAddress: context.wallet.address,
           assetSymbol,
           assetContract: assetContract ?? undefined,
@@ -1087,9 +1358,24 @@ export const withdraw: MobileToolExecutor = (input, context) =>
         }
       }
 
+      // ERC-7540-style exit (§7): a redeem is a REQUEST an off-chain
+      // fulfilment later makes claimable, exactly the same "ask by
+      // capability, never by kind" rule `deposit`'s `isAsyncDeposit` already
+      // follows. This branch did not exist before 2026-08-27 — `withdraw`
+      // unconditionally called `adapter.buildWithdraw`, which is why every
+      // adapter that implements ONLY `buildRequestRedeem`/`buildClaimRedeem`
+      // (Kyros's `jito-vault-deposit`, and — already registered and live —
+      // Centrifuge's `AsyncVaultAdapter`, "7540-both" flavor) had a withdraw
+      // that was guaranteed to fail: `AsyncVaultAdapter.buildWithdraw`
+      // deliberately throws `"async-vault: use buildRequestRedeem /
+      // buildClaimRedeem"` (its own header comment says so), so every real
+      // Centrifuge withdraw attempt hit that throw. Fixing this for Solana
+      // fixes that pre-existing EVM bug too, not just Kyros.
+      const isAsyncWithdraw = typeof adapter.buildRequestRedeem === "function";
+
       let unsignedCall;
       try {
-        unsignedCall = await adapter.buildWithdraw({
+        const withdrawBuildArgs = {
           wallet: context.wallet,
           chain: chainConfig,
           asset: {
@@ -1101,7 +1387,11 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           target: withdrawTarget,
           poolId: position.poolId ?? undefined,
           tier: strategy ? toTierKey(strategy.tier) : undefined,
-        });
+        };
+        unsignedCall = isAsyncWithdraw
+          ? // biome-ignore lint/style/noNonNullAssertion: guarded by isAsyncWithdraw
+            await adapter.buildRequestRedeem!(withdrawBuildArgs)
+          : await adapter.buildWithdraw(withdrawBuildArgs);
       } catch (buildErr) {
         if (__DEV__) {
           console.error("[defi/withdraw] adapter.buildWithdraw threw", {
@@ -1126,6 +1416,109 @@ export const withdraw: MobileToolExecutor = (input, context) =>
         });
       }
 
+      if (unsignedCall.kind === "solana-ix") {
+        if (withdrawTarget) {
+          assertSafetyResult(
+            await runSafetyPipeline({
+              ...withdrawSafetyBase,
+              stage: "submit",
+              call: unsignedCall,
+              positionBalance: liveBalance,
+            }),
+          );
+        }
+        if (withdrawTarget) {
+          const preflight = await runSafetyPipeline({
+            ...withdrawSafetyBase,
+            stage: "broadcast",
+            call: unsignedCall,
+            positionBalance: liveBalance,
+          });
+          if (!preflight.ok) {
+            releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
+          }
+          assertSafetyResult(preflight);
+        }
+
+        let signature: string;
+        try {
+          if (__DEV__) {
+            console.warn("[defi/withdraw] submitting solana-ix", {
+              instructionCount: unsignedCall.instructions.length,
+            });
+          }
+          signature = await submitSolanaCall(
+            context.wallet,
+            chainConfig,
+            unsignedCall,
+          );
+        } catch (err) {
+          releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
+          throw err;
+        }
+
+        // A redeem REQUEST (`isAsyncWithdraw`) needs the SAME durable
+        // `asyncPhase` tracking `deposit`'s request phase gets — otherwise
+        // the backend claim-watcher has nothing to poll and the position
+        // never becomes claimable. `createPosition`'s payload already types
+        // `asyncPhase: "redeem_requested"` for exactly this call (it was
+        // never actually sent with that value before this fix). Best-effort:
+        // the on-chain enqueue already succeeded, so a tracking failure here
+        // is logged, not thrown — same posture as every other post-submit
+        // bookkeeping call in this file.
+        if (isAsyncWithdraw) {
+          try {
+            await strategiesApi.createPosition({
+              protocolSlug,
+              chainId: position.chainId,
+              namespace: adapter.namespace,
+              assetSymbol,
+              assetContract: assetContract ?? undefined,
+              poolId: position.poolId ?? undefined,
+              amountAtDeposit: position.amountAtDeposit,
+              amountAtDepositUsd: Number.parseFloat(
+                position.amountAtDepositUsd,
+              ),
+              openTxHash: signature,
+              asyncPhase: "redeem_requested" as const,
+              asyncRequestedRaw:
+                typeof amountRaw === "string"
+                  ? amountRaw
+                  : amountRaw.toString(),
+            });
+          } catch (err) {
+            if (__DEV__) {
+              console.error(
+                "[defi/withdraw] createPosition (redeem_requested) failed after a successful on-chain enqueue",
+                { positionId, signature, error: err },
+              );
+            }
+          }
+        }
+
+        return {
+          status: "success" as const,
+          tx_confirmed: !isAsyncWithdraw,
+          data: {
+            position_id: positionId,
+            protocol_slug: protocolSlug,
+            chain_id: pipelineChainId,
+            asset_symbol: assetSymbol,
+            namespace,
+            amount_raw:
+              typeof amountRaw === "string" ? amountRaw : amountRaw.toString(),
+            signature,
+            ...(isAsyncWithdraw
+              ? {
+                  settlement: "pending" as const,
+                  async_phase: "redeem_requested" as const,
+                  note: "Withdrawal requested. This exits through a cooldown period, so the funds become claimable once it elapses. We'll notify you when it's ready to claim.",
+                }
+              : {}),
+          },
+        };
+      }
+
       if (unsignedCall.kind !== "evm-call") {
         if (__DEV__) {
           console.warn(
@@ -1142,7 +1535,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       }
 
       const { walletClient, publicClient } = resolveChainClients(
-        chainId,
+        chainId as number,
         context,
       );
       if (!walletClient || !walletClient.account) {
@@ -1381,22 +1774,37 @@ export const claim: MobileToolExecutor = (input, context) =>
         throw new DefiError("protocol_not_found", position.protocolSlug);
       }
 
-      const blockchain = context.blockchains.find(
-        (b) => b.chainId === position.chainId,
-      );
-      if (!blockchain) {
-        if (__DEV__) {
-          console.warn(
-            "[defi/claim] unsupported_chain — no blockchain row in context",
-            {
-              chainId: position.chainId,
-              available: context.blockchains.map((b) => b.chainId),
-            },
+      // Same namespace-aware resolution `deposit`/`withdraw` use — Solana
+      // positions carry the numeric backend sentinel `chainId`, which does
+      // not identify a row in `Blockchain` (whose `chainId` is `null` for
+      // non-EVM networks).
+      let chainConfig: ChainConfig;
+      let pipelineChainId: number | string = position.chainId;
+      if (adapter.namespace === "solana") {
+        const solana = resolveSolanaChain(context);
+        chainConfig = solana.chainConfig;
+        pipelineChainId = solana.chainId;
+      } else {
+        const blockchain = context.blockchains.find(
+          (b) => b.chainId === position.chainId,
+        );
+        if (!blockchain) {
+          if (__DEV__) {
+            console.warn(
+              "[defi/claim] unsupported_chain — no blockchain row in context",
+              {
+                chainId: position.chainId,
+                available: context.blockchains.map((b) => b.chainId),
+              },
+            );
+          }
+          throw new DefiError(
+            "unsupported_chain",
+            `chainId=${position.chainId}`,
           );
         }
-        throw new DefiError("unsupported_chain", `chainId=${position.chainId}`);
+        chainConfig = buildChainConfigFromBlockchain(blockchain);
       }
-      const chainConfig = buildChainConfigFromBlockchain(blockchain);
       const decimals = decimalsForSymbol(position.assetSymbol);
 
       // ERC-7540 async vaults (§7) claim through a DIFFERENT capability pair
@@ -1438,10 +1846,20 @@ export const claim: MobileToolExecutor = (input, context) =>
           .getPool(position.poolId)
           .catch(() => null);
         const claimTarget = opportunity?.depositTarget;
-        if (!claimTarget || claimTarget.kind !== "async-vault") {
+        // Every kind with the async-claim capability, not just EVM's
+        // `async-vault` — `jito-vault-deposit` (Kyros) is the same shape
+        // (request → cooldown → claim) on Solana. This was hardcoded to
+        // `"async-vault"` only before 2026-08-27, which meant a Solana async
+        // claim would have failed here even once every other gate below is
+        // fixed.
+        if (
+          !claimTarget ||
+          (claimTarget.kind !== "async-vault" &&
+            claimTarget.kind !== "jito-vault-deposit")
+        ) {
           throw new DefiError(
             "protocol_not_found",
-            `${position.protocolSlug}: pool ${position.poolId} no longer resolves an async-vault target`,
+            `${position.protocolSlug}: pool ${position.poolId} no longer resolves an async-claimable target`,
           );
         }
 
@@ -1494,6 +1912,40 @@ export const claim: MobileToolExecutor = (input, context) =>
           }
           throw buildErr;
         }
+        if (claimUnsignedCall.kind === "solana-ix") {
+          let signature: string;
+          try {
+            signature = await submitSolanaCall(
+              context.wallet,
+              chainConfig,
+              claimUnsignedCall,
+            );
+          } catch (err) {
+            const c = classifyDefiError(err);
+            throw new DefiError(c === "unknown" ? "claim_failed" : c);
+          }
+          try {
+            await strategiesApi.claimAsyncPosition(positionId, signature);
+          } catch (recordErr) {
+            if (__DEV__) {
+              console.error(
+                "[defi/claim] claimAsyncPosition failed after a successful on-chain claim",
+                { positionId, signature, error: recordErr },
+              );
+            }
+          }
+          return {
+            status: "success" as const,
+            tx_confirmed: false,
+            data: {
+              position_id: positionId,
+              protocol_slug: position.protocolSlug,
+              chain_id: pipelineChainId,
+              signature,
+            },
+          };
+        }
+
         if (claimUnsignedCall.kind !== "evm-call") {
           throw new DefiError(
             "unsupported_chain",
@@ -1706,7 +2158,20 @@ export const rebalance: MobileToolExecutor = (input, context) =>
         { position_id: fromPositionId, amount_raw: "MAX" },
         context,
       );
-      if (withdrawResult.status !== "success" || !withdrawResult.tx_hash) {
+      // A Solana withdraw never sets `tx_hash` (it's typed `0x${string}` and
+      // would reject a base58 signature — the signature lives under
+      // `data.signature` instead, same convention `sendSol` established).
+      // Without this, a genuinely successful Solana leg 1 would be
+      // misreported as `rebalance_failed` here. `rebalance`'s OWN
+      // `*_tx_hash` display fields further below still only carry the EVM
+      // hash — a cosmetic gap for a Solana leg, not a correctness one, and
+      // out of scope for this fix.
+      const withdrawSucceeded =
+        withdrawResult.status === "success" &&
+        (!!withdrawResult.tx_hash ||
+          !!(withdrawResult.data as { signature?: string } | undefined)
+            ?.signature);
+      if (!withdrawSucceeded) {
         if (__DEV__) {
           console.warn(
             "[defi/rebalance] rebalance_failed — leg 1 (withdraw) did not succeed",

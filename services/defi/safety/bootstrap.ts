@@ -18,6 +18,7 @@ import { LAYER3_CHECKS } from "./checks/layer3-policy";
 import { LAYER4_CHECKS } from "./checks/layer4-execution";
 import { LAYER5_CHECKS } from "./checks/layer5-state";
 import { Eip155SafetyProvider } from "./providers/eip155";
+import { SolanaSafetyProvider } from "./providers/solana";
 import { registerChainSafetyProvider, registerSafetyCheck } from "./registry";
 
 let booted = false;
@@ -36,9 +37,13 @@ export function bootDefiSafety(): void {
     registerSafetyCheck(check);
   }
 
-  // The only provider that exists today. Every provider-backed check above
-  // covers EVM from this one registration; Sui/Solana/Stellar add a file each.
+  // Every provider-backed check above covers EVM from this one
+  // registration; Sui/Stellar still add a file each when they land.
   registerChainSafetyProvider(Eip155SafetyProvider);
+  // Solana — see `providers/solana.ts`'s header for scope (full for every
+  // required method; `decodeIntent` is fully decoded only for
+  // `jito-vault-deposit`/`kamino-kvault`, honestly partial elsewhere).
+  registerChainSafetyProvider(SolanaSafetyProvider);
 
   booted = true;
 }

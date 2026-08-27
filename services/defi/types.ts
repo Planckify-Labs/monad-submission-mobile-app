@@ -348,7 +348,19 @@ export type DepositTarget =
       strategy: string;
       mintA: string;
       mintB: string;
-    };
+    }
+  // Jito Restaking Vault deposit — the generic `MintTo` instruction on
+  // Jito's public Vault program (`jito-foundation/restaking`), currently
+  // resolved only for Kyros's kySOL vault. `vault` is the pinned on-chain
+  // Vault account; `mint` is its live `supported_mint` (JitoSOL for kySOL,
+  // NOT native SOL — this deposits an SPL token, unlike `"solana-lst-stake"`).
+  // Deposit is synchronous (single `MintTo`); withdrawal is a two-step,
+  // epoch-cooldown ticket flow (`EnqueueWithdrawal` then a later
+  // `BurnWithdrawalTicket` claim) via the adapter's `buildRequestRedeem`/
+  // `buildClaimRedeem`/`readAsyncRequest` capabilities — see
+  // `adapters/jitoVaultDeposit.ts`'s
+  // header for the verification story and why withdraw stays unbuilt.
+  | { kind: "jito-vault-deposit"; vault: string; mint: string };
 
 export type DepositTargetKind = DepositTarget["kind"];
 
@@ -396,6 +408,7 @@ export function targetUnderlying(target: DepositTarget): string | null {
       return target.coinType;
     case "solana-reserve":
     case "kamino-kvault":
+    case "jito-vault-deposit":
       return target.mint;
     default:
       return null;

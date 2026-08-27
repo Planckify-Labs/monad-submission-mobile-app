@@ -53,6 +53,7 @@ import { EmberSuiAdapter } from "./adapters/emberSui";
 import { Erc4626Adapter } from "./adapters/erc4626";
 import { EthenaEthereumAdapter } from "./adapters/ethena";
 import { GmxV2ArbitrumAdapter } from "./adapters/gmxV2";
+import { JitoVaultDepositAdapter } from "./adapters/jitoVaultDeposit";
 import { JupiterLendAdapter } from "./adapters/jupiterLend";
 import { KaiSuiAdapter } from "./adapters/kaiSui";
 import { KaminoKvaultAdapter } from "./adapters/kaminoKvault";
@@ -149,6 +150,11 @@ export function bootDefi(): void {
     // majority of real "Standard" raydium-amm TVL — see
     // adapters/raydiumAmmV4.ts's header.
     registerDefiAdapter(RaydiumAmmV4Adapter);
+    // Jito Restaking Vault deposit (Kyros's kySOL vault today) — routed by
+    // `DepositTarget.kind === "jito-vault-deposit"`. Deposit only: this
+    // program's withdraw is a two-step, epoch-cooldown ticket flow, not a
+    // single atomic action — see adapters/jitoVaultDeposit.ts's header.
+    registerDefiAdapter(JitoVaultDepositAdapter);
     registerDefiAdapter(MapleSyrupUsdcEthereumAdapter);
     registerDefiAdapter(MapleSyrupUsdcBaseAdapter);
   }
