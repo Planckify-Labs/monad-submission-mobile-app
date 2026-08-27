@@ -84,6 +84,29 @@ export interface SafetyCheck {
     readonly kinds?: readonly DepositTargetKind[];
     readonly stages?: readonly SafetyStage[];
     readonly actions?: readonly SafetyAction[];
+    /**
+     * `true` when this check cannot run without a RESOLVED `ctx.target`
+     * (everything provider-backed: does the target exist, is it allowlisted,
+     * what are its exit terms, did its position move).
+     *
+     * This dimension exists because not every deposit arrives with a target.
+     * A venue-routed Sui intent ("supply 100 USDC to Scallop") and a legacy
+     * slug-routed EVM deposit both name a PROTOCOL, not a pool, so the server
+     * never resolves a `DepositTarget` for them. The old handling was to skip
+     * the whole pipeline for those — which silently took the ops kill switch,
+     * the per-chain DeFi gate, the user's tier/whitelist/pause, the decimals
+     * and balance checks and the duplicate-submission guard off the table for
+     * an entire class of deposits, none of which needs a target at all.
+     *
+     * So the runner drops exactly the target-dependent checks and runs the
+     * rest, and each check declares its own dependency here rather than the
+     * runner inferring it. The gap that remains is then visible in the
+     * pipeline's own `ran` list instead of being invisible at the call site.
+     *
+     * A kind-scoped check (`kinds`) is target-dependent by construction and
+     * needs no flag — the runner cannot match a kind it does not have.
+     */
+    readonly requiresTarget?: boolean;
   };
   run(ctx: SafetyContext): Promise<SafetyResult>;
 }
@@ -154,6 +177,21 @@ export function exitNeedsConsent(terms: ExitTerms): boolean {
   return terms.kind !== "instant";
 }
 
+/**
+ * The verdict a `requiresTarget` check returns when it is somehow reached
+ * without one.
+ *
+ * The runner does not select those checks when `ctx.target` is absent, so this
+ * is unreachable through `runSafetyPipeline`; it exists so each check can
+ * narrow `ctx.target` without a non-null assertion, and so a check that
+ * forgets to declare `requiresTarget` degrades to "did not verify" instead of
+ * throwing on a property access. It is deliberately NOT a refusal: a target
+ * that was never resolved is a gap the caller must already know about (the
+ * check's absence from `PipelineResult.ran` is where that shows), not a
+ * property this check just found to be false.
+ */
+export const NO_TARGET_TO_VERIFY: SafetyResult = { ok: true };
+
 export interface SimResult {
   ok: boolean;
   revertReason?: string;
@@ -188,12 +226,42 @@ export interface SafetyContext {
   /** Required, not defaulted — a caller must state it explicitly so a check
    *  can never run under the wrong action by omission (see `SafetyAction`). */
   action: SafetyAction;
-  target: DepositTarget;
+  /**
+   * The resolved pool this deposits into, when there is one.
+   *
+   * OPTIONAL because two real paths legitimately have no target: a
+   * venue-routed Sui intent and a legacy slug-routed EVM deposit both name a
+   * protocol rather than a pool. Those used to skip the pipeline entirely;
+   * now they run every check that does not need a target and the
+   * target-dependent ones scope themselves out (`appliesTo.requiresTarget`).
+   *
+   * Absent means "not resolved", never "none" — a check must not read that as
+   * permission to proceed on a property it could not verify.
+   */
+  target?: DepositTarget;
   chainId: number | string;
   wallet: string;
   requestedAmount: bigint | "MAX";
   /** The underlying the resolved target says this pool deposits. */
   underlyingExpected: string;
+  /**
+   * What the wallet actually SPENDS, when that is not the pool's underlying.
+   *
+   * A zap ("swap X, then supply Y", one atomic transaction — Sui's
+   * `swap_and_supply` via `buildZapSupply`, an EVM `router-call` zap-in)
+   * breaks an assumption two Layer-2 checks were written under: that the
+   * asset the user is spending IS the asset the pool receives. Left
+   * unset those checks read the pool's underlying and conclude the wallet
+   * cannot afford a deposit it funds perfectly well in another coin, and
+   * cross-check the typed amount against the wrong token's decimals.
+   *
+   * So the funding leg is stated explicitly rather than inferred. Absent
+   * means "same as the underlying", which is the ordinary single-asset
+   * deposit and stays exactly as it was.
+   */
+  fundingAsset?: string;
+  /** Raw amount of `fundingAsset` the wallet spends. Pairs with the above. */
+  fundingAmount?: bigint;
   previewOut: bigint | null;
   tvlUsdSnapshot: number | null;
   sim: SimResult | null;
@@ -237,6 +305,30 @@ export interface SafetyContext {
    *  the check is non-fatal in that case, same posture as everywhere
    *  else a live read backs a safety check. */
   positionBalance?: bigint;
+
+  // ── `postexec` only ──────────────────────────────────────────────────────
+  /**
+   * The position balance read BEFORE the transaction was submitted.
+   *
+   * `PositionDeltaCheck` is a DELTA assertion, and a delta needs two readings.
+   * Without this it could only ask "is the balance non-zero now", which passes
+   * trivially for any user who already had a position — i.e. it would have
+   * vouched for a deposit that went nowhere in exactly the case the check
+   * exists for. Captured by the caller immediately before submitting, so the
+   * window between the two readings is as small as the chain allows.
+   *
+   * `undefined` means no snapshot was taken (or the read failed): the check
+   * reports the deposit as UNVERIFIED rather than inventing a verdict.
+   */
+  positionBefore?: bigint;
+  /**
+   * Confirmations the submitter observed on the receipt.
+   *
+   * Supplied by the caller rather than read here because the submitter is
+   * what owns the receipt; the check contributes the POLICY (how deep this
+   * chain's reorg window is), not the counting.
+   */
+  confirmations?: number;
 }
 
 /**
@@ -290,12 +382,25 @@ export interface ChainSafetyProvider {
     target: DepositTarget,
     chainId: number | string,
   ): Promise<ExitTerms>;
-  /** L5: post-execution position delta, for the assertion. */
-  readPositionDelta(
+  /**
+   * L5: the owner's CURRENT position balance at this target.
+   *
+   * Named for what it reads. It was `readPositionDelta`, which is what the
+   * postexec check wanted but not what any provider returned — all three
+   * return an absolute balance — and that mismatch is precisely why the
+   * check compared a balance against zero and called it a delta. The delta
+   * is computed by the check from a before/after pair (`positionBefore`).
+   *
+   * `null` ⇒ the chain could not answer. The caller must NOT read that as
+   * "no position": an unreadable position is the one case where asserting a
+   * delta would manufacture a false alarm about money that did move. Same
+   * contract as `readBalance`.
+   */
+  readPositionBalance(
     target: DepositTarget,
     owner: string,
     chainId: number | string,
-  ): Promise<bigint>;
+  ): Promise<bigint | null>;
 
   // ── Optional capabilities (§11.6), presence-checked ──────────────────────
   /** #1: on-chain `decimals()` for an asset — never a symbol→decimals map. */
@@ -307,6 +412,38 @@ export interface ChainSafetyProvider {
   finalityDepth?(chainId: number | string): number;
   /** #4: whether sandwich-prone kinds can route through a private mempool. */
   supportsPrivateSubmit?(chainId: number | string): boolean;
+  /**
+   * L4: is `destination` — the address the BUILT call actually goes to — a
+   * place this target is allowed to send funds?
+   *
+   * `decodeIntent` deliberately receives only the call, so it cannot answer
+   * this on its own; `isAllowlisted` receives only the target, so it vouches
+   * for the target without ever looking at the call. Between the two there was
+   * a gap wide enough to drive a substituted destination through, and
+   * `DecodedIntentMatchCheck`'s own doc claimed a binding the code never
+   * performed. This is that binding, and it is the provider's job because the
+   * legitimate destination is chain- AND kind-specific: the vault itself for a
+   * singleton family, a pinned router for an LP/router family, the pinned
+   * program for a Solana kind, the pinned package for a Sui one.
+   *
+   * OPTIONAL, presence-checked: a provider that cannot enumerate legitimate
+   * destinations for a kind returns `true` for that kind rather than guessing,
+   * and a provider that omits the method entirely leaves the check as it was.
+   */
+  isAllowedDestination?(
+    target: DepositTarget,
+    destination: string,
+    chainId: number | string,
+    /**
+     * The whole built call, for chains where "the destination" is plural. An
+     * EVM call has exactly one `to`, so `destination` says everything; a
+     * Solana call is a LIST of instructions and a Sui PTB a list of
+     * moveCalls, where checking only the one the decoder surfaced would leave
+     * every other leg unexamined. Passed so those providers can assert over
+     * all of them; ignored by the ones that don't need it.
+     */
+    call?: UnsignedCall,
+  ): Promise<boolean>;
   /** L2: the protocol's own cap on how much it will accept right now. */
   readDepositCapHeadroom?(
     target: DepositTarget,

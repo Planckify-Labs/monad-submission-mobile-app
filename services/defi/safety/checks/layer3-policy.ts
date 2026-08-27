@@ -10,12 +10,14 @@
  * audit-logged rather than weighed against anything.
  */
 
+import { foldAddressForKey } from "@/services/chains/addressCompare";
 import type { RiskTier } from "../../types";
 import { getChainSafetyProvider } from "../registry";
 import {
   type ExitTerms,
   exitDelaySeconds,
   exitNeedsConsent,
+  NO_TARGET_TO_VERIFY,
   type SafetyCheck,
 } from "../types";
 
@@ -71,7 +73,12 @@ export const FamilyKillSwitchCheck: SafetyCheck = {
   // one scoped to `actions: ["withdraw"]` when that need is real.
   appliesTo: { actions: ["deposit"] },
   run: async (ctx) => {
-    const keys = [ctx.target.kind, ctx.family, ctx.protocolSlug].filter(
+    // Deliberately NOT `requiresTarget`. A venue-routed deposit still carries
+    // `family`/`protocolSlug`, which is what ops actually types into a kill
+    // switch during an incident ("stop feeding scallop"); scoping this check
+    // to resolved targets would have made the lever silently inert for the
+    // one deposit shape that names the protocol and nothing else.
+    const keys = [ctx.target?.kind, ctx.family, ctx.protocolSlug].filter(
       (k): k is string => typeof k === "string" && k.length > 0,
     );
     for (const key of keys) {
@@ -200,12 +207,20 @@ export const VelocityCapCheck: SafetyCheck = {
  */
 let denyList = new Set<string>();
 
+/**
+ * Folded by the address's own ENCODING, not blanket-lowercased: `0x` hex is
+ * case-insignificant, base58/base32 is not. Blanket folding still matched a
+ * sanctioned address against itself (both sides folded), so this is not a
+ * missed block — but it silently widened each entry to every case-variant of
+ * itself, and a deny list that quietly means more than it says is a bad thing
+ * to hand an ops team during an incident.
+ */
 export function setCounterpartyDenyList(addresses: readonly string[]): void {
-  denyList = new Set(addresses.map((a) => a.toLowerCase()));
+  denyList = new Set(addresses.map(foldAddressForKey));
 }
 
 export function isCounterpartyDenied(address: string | null): boolean {
-  return !!address && denyList.has(address.toLowerCase());
+  return !!address && denyList.has(foldAddressForKey(address));
 }
 
 export const SanctionsScreenCheck: SafetyCheck = {
@@ -215,14 +230,19 @@ export const SanctionsScreenCheck: SafetyCheck = {
     if (denyList.size === 0) return { ok: true };
     const candidates: (string | null)[] = [ctx.wallet];
     // Every kind's destination, read off the target rather than a decode, so
-    // the screen runs even before a call exists.
+    // the screen runs even before a call exists. With no resolved target
+    // there is no counterparty address to screen, but the USER's own wallet
+    // still is one — so this check runs either way rather than declaring
+    // `requiresTarget` and going dark on the venue-routed path.
     const t = ctx.target;
-    if ("vault" in t) candidates.push(t.vault as string);
-    if ("pool" in t) candidates.push(t.pool as string);
-    if ("comet" in t) candidates.push(t.comet as string);
-    if ("cToken" in t) candidates.push(t.cToken as string);
-    if ("router" in t) candidates.push(t.router as string);
-    if ("market" in t) candidates.push(t.market as string);
+    if (t) {
+      if ("vault" in t) candidates.push(t.vault as string);
+      if ("pool" in t) candidates.push(t.pool as string);
+      if ("comet" in t) candidates.push(t.comet as string);
+      if ("cToken" in t) candidates.push(t.cToken as string);
+      if ("router" in t) candidates.push(t.router as string);
+      if ("market" in t) candidates.push(t.market as string);
+    }
 
     for (const candidate of candidates) {
       if (isCounterpartyDenied(candidate)) {
@@ -292,8 +312,20 @@ export function tierAllows(userTier: RiskTier, poolTier: RiskTier): boolean {
 export const ExitTermsConsentCheck: SafetyCheck = {
   id: "exit-terms-consent",
   layer: 3,
-  appliesTo: { actions: ["deposit"], stages: ["presign"] },
+  // `requiresTarget`: the lockup is a property of the POOL, and every
+  // provider reads it off `target.kind`. A venue-routed deposit therefore
+  // gets no exit gate at all — the honest consequence of not knowing which
+  // pool it lands in, recorded in the runbook and visible as this check's
+  // absence from `ran`. Failing it closed instead would refuse every
+  // plain-language Sui supply, which is a product decision, not this
+  // check's to take.
+  appliesTo: {
+    actions: ["deposit"],
+    stages: ["presign"],
+    requiresTarget: true,
+  },
   run: async (ctx) => {
+    if (!ctx.target) return NO_TARGET_TO_VERIFY;
     const provider = getChainSafetyProvider(ctx.namespace);
     // A namespace with NO provider has no provider-backed safety at all (its
     // Layer-1/4/5 checks already no-op the same way). Blocking only this one

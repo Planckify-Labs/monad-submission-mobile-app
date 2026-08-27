@@ -13,8 +13,9 @@
  * one check on every chain.
  */
 
+import { sameAddress } from "../addressMatch";
 import { getChainSafetyProvider } from "../registry";
-import type { SafetyCheck } from "../types";
+import { NO_TARGET_TO_VERIFY, type SafetyCheck } from "../types";
 
 /**
  * Chain binding (§11 Layer 4, `[N]`). The signed transaction must be bound to
@@ -45,9 +46,13 @@ export const ChainBindingCheck: SafetyCheck = {
  * user what the call does; this is the MACHINE assertion that it really does
  * it — especially for `router-call`, whose calldata we did not author.
  *
- * Asserted: the destination is the resolved target or an allowlisted router,
- * the asset is the pool's underlying, the amount is what was requested, and the
- * recipient is the user's OWN wallet — never a third party.
+ * Asserted here: the asset is the pool's underlying, the amount is what was
+ * requested, and the recipient is the user's OWN wallet — never a third
+ * party. All three are properties of the call and the user, so they hold with
+ * or without a resolved pool.
+ *
+ * The destination half lives in `DestinationBoundToTargetCheck` below, which
+ * needs a target and says so.
  */
 export const DecodedIntentMatchCheck: SafetyCheck = {
   id: "decoded-intent-match",
@@ -66,20 +71,12 @@ export const DecodedIntentMatchCheck: SafetyCheck = {
       };
     }
 
-    // The destination must be something Layer 1 already vouched for.
-    const allowlisted = await provider.isAllowlisted(ctx.target, ctx.chainId);
-    if (!allowlisted) {
-      return {
-        ok: false,
-        fail: "target_not_allowlisted",
-        detail: "call destination is not an approved target",
-      };
-    }
-
-    // Funds and receipts come back to the user, always.
+    // Funds and receipts come back to the user, always. Compared under the
+    // chain's OWN case rule (`sameAddress`) — a blanket `.toLowerCase()` here
+    // would let a case-variant lookalike pass on every base58/base32 chain.
     if (
       intent.recipient &&
-      intent.recipient.toLowerCase() !== ctx.wallet.toLowerCase()
+      !sameAddress(ctx.namespace, intent.recipient, ctx.wallet)
     ) {
       return {
         ok: false,
@@ -90,7 +87,7 @@ export const DecodedIntentMatchCheck: SafetyCheck = {
 
     if (
       intent.assetIn &&
-      intent.assetIn.toLowerCase() !== ctx.underlyingExpected.toLowerCase()
+      !sameAddress(ctx.namespace, intent.assetIn, ctx.underlyingExpected)
     ) {
       return {
         ok: false,
@@ -112,6 +109,75 @@ export const DecodedIntentMatchCheck: SafetyCheck = {
     }
 
     return { ok: true };
+  },
+};
+
+/**
+ * The built call goes where this pool actually deposits (§11 Layer 4).
+ *
+ * Split out of `DecodedIntentMatchCheck` because the two halves have
+ * different preconditions. Everything that check asserts is about the CALL
+ * and the USER (the payout comes back to the user's own wallet, the asset and
+ * amount are what was requested) and holds whether or not a pool was
+ * resolved. These two assertions are about the TARGET, so folding them into
+ * the same check meant a venue-routed deposit either lost all of it or logged
+ * `decoded-intent-match` as passed while silently skipping the target half.
+ * Now the audit trail says exactly which of the two ran.
+ *
+ * The pair is what closes the gap between them: `isAllowlisted` never sees the
+ * call, `decodeIntent` never sees the target, so until both run together the
+ * two halves can disagree and nothing notices.
+ *
+ * It re-decodes rather than sharing a decode with the check above. That is one
+ * extra calldata/PTB parse per submit, deliberately: checks are independent by
+ * construction here, and threading a decode between them would make the order
+ * they run in load-bearing.
+ */
+export const DestinationBoundToTargetCheck: SafetyCheck = {
+  id: "decoded-destination-allowlisted",
+  layer: 4,
+  appliesTo: { stages: ["submit"], requiresTarget: true },
+  run: async (ctx) => {
+    if (!ctx.target) return NO_TARGET_TO_VERIFY;
+    const provider = getChainSafetyProvider(ctx.namespace);
+    if (!provider || !ctx.call) return { ok: true };
+
+    // The TARGET must be something Layer 1 already vouched for.
+    const allowlisted = await provider.isAllowlisted(ctx.target, ctx.chainId);
+    if (!allowlisted) {
+      return {
+        ok: false,
+        fail: "target_not_allowlisted",
+        detail: "call destination is not an approved target",
+      };
+    }
+
+    // Presence-checked — a provider that cannot enumerate a kind's legitimate
+    // destinations leaves the assertion where it was rather than guessing
+    // (see `isAllowedDestination`'s own doc).
+    if (!provider.isAllowedDestination) return { ok: true };
+
+    const intent = await provider.decodeIntent(ctx.call);
+    if (!intent) {
+      return {
+        ok: false,
+        fail: "decoded_intent_mismatch",
+        detail: "could not decode the built call",
+      };
+    }
+    const destinationOk = await provider.isAllowedDestination(
+      ctx.target,
+      intent.destination,
+      ctx.chainId,
+      ctx.call,
+    );
+    return destinationOk
+      ? { ok: true }
+      : {
+          ok: false,
+          fail: "decoded_intent_mismatch",
+          detail: "the built call goes somewhere this pool does not deposit to",
+        };
   },
 };
 
@@ -143,7 +209,7 @@ export const ApprovalScopingCheck: SafetyCheck = {
     if (
       intent.spender &&
       intent.destination &&
-      intent.spender.toLowerCase() !== intent.destination.toLowerCase()
+      !sameAddress(ctx.namespace, intent.spender, intent.destination)
     ) {
       return {
         ok: false,
@@ -276,6 +342,7 @@ export const GasSanityCheck: SafetyCheck = {
 export const LAYER4_CHECKS: readonly SafetyCheck[] = [
   ChainBindingCheck,
   DecodedIntentMatchCheck,
+  DestinationBoundToTargetCheck,
   ApprovalScopingCheck,
   QuoteFreshnessCheck,
   GasSanityCheck,

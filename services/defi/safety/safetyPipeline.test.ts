@@ -24,6 +24,7 @@ import {
   ExposureCapCheck,
   FamilyKillSwitchCheck,
   LAYER3_CHECKS,
+  SanctionsScreenCheck,
   setCounterpartyDenyList,
   setDefiEnabledChains,
   setKilledFamilies,
@@ -31,9 +32,12 @@ import {
   VelocityCapCheck,
 } from "./checks/layer3-policy";
 import {
+  DecodedIntentMatchCheck,
+  DestinationBoundToTargetCheck,
   IdempotencyCheck,
   resetInFlightSubmissions,
 } from "./checks/layer4-execution";
+import { LAYER5_CHECKS } from "./checks/layer5-state";
 import {
   registerChainSafetyProvider,
   registerSafetyCheck,
@@ -80,7 +84,7 @@ function stubProvider(
     }),
     simulate: async () => ({ ok: true }),
     isProtocolHalted: async () => false,
-    readPositionDelta: async () => 1n,
+    readPositionBalance: async () => 1n,
     readDecimals: async () => 6,
     ...overrides,
   };
@@ -541,5 +545,136 @@ describe("Withdraw-only Layer 0 checks", () => {
       }),
     );
     expect(result.ok).toBe(true);
+  });
+});
+
+/**
+ * A deposit that names a PROTOCOL rather than a pool (a venue-routed Sui
+ * intent, a legacy slug-routed EVM deposit) has no resolved `DepositTarget`.
+ * Both call sites used to skip the pipeline outright for those, which quietly
+ * exempted an entire class of deposits from every check that never needed a
+ * target in the first place.
+ */
+describe("deposits with no resolved target", () => {
+  it("drops the target-dependent checks and keeps the rest", () => {
+    registerChainSafetyProvider(stubProvider());
+    for (const check of [
+      ...LAYER1_CHECKS,
+      ...LAYER3_CHECKS,
+      ...LAYER5_CHECKS,
+    ]) {
+      registerSafetyCheck(check);
+    }
+
+    const withTarget = selectChecks(ctx()).map((c) => c.id);
+    const withoutTarget = selectChecks(ctx({ target: undefined })).map(
+      (c) => c.id,
+    );
+
+    // Provider-backed identity and exit terms need a pool to look at.
+    expect(withTarget).toContain("target-has-code");
+    expect(withTarget).toContain("exit-terms-consent");
+    expect(withoutTarget).not.toContain("target-has-code");
+    expect(withoutTarget).not.toContain("underlying-matches");
+    expect(withoutTarget).not.toContain("target-allowlisted");
+    expect(withoutTarget).not.toContain("exit-terms-consent");
+
+    // Everything about the USER and the POLICY still runs.
+    for (const id of [
+      "family-kill-switch",
+      "user-policy",
+      "chain-enabled-for-defi",
+      "sanctions-screen",
+      "pool-anomaly",
+    ]) {
+      expect(withoutTarget).toContain(id);
+    }
+  });
+
+  it("still answers the ops kill switch on a venue-routed deposit", async () => {
+    // Keyed by the protocol slug, which is what a venue-routed deposit
+    // carries and what ops actually types during an incident.
+    setKilledFamilies(["scallop"]);
+    registerSafetyCheck(FamilyKillSwitchCheck);
+    const result = await runSafetyPipeline(
+      ctx({ target: undefined, protocolSlug: "scallop" }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("family_disabled");
+  });
+
+  it("still enforces the user's tier/whitelist/pause", async () => {
+    registerSafetyCheck(UserPolicyCheck);
+    const result = await runSafetyPipeline(
+      ctx({
+        target: undefined,
+        protocolSlug: "scallop",
+        policy: { paused: true },
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("strategy_paused");
+  });
+
+  it("still screens the user's own wallet against the deny list", async () => {
+    setCounterpartyDenyList([WALLET]);
+    registerSafetyCheck(SanctionsScreenCheck);
+    const result = await runSafetyPipeline(ctx({ target: undefined }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("counterparty_blocked");
+  });
+
+  it("still binds the built call to the chain and the user's own wallet", async () => {
+    registerChainSafetyProvider(
+      stubProvider({
+        decodeIntent: async () => ({
+          destination: VAULT,
+          action: "deposit",
+          assetIn: ASSET,
+          amountIn: 1000n,
+          // Pays out somewhere that is not the user.
+          recipient: "0x9999999999999999999999999999999999999999",
+          valueNative: 0n,
+          spender: null,
+          approvalAmount: null,
+          minOut: null,
+          deadline: null,
+        }),
+      }),
+    );
+    registerSafetyCheck(DecodedIntentMatchCheck);
+    const result = await runSafetyPipeline(
+      ctx({
+        target: undefined,
+        stage: "submit",
+        call: { kind: "evm-call", to: VAULT, chainId: 1 } as never,
+      }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.fail).toBe("decoded_intent_mismatch");
+  });
+
+  /**
+   * The destination binding is the half that genuinely needs a target, so it
+   * is its own check rather than a silently-skipped branch inside
+   * `decoded-intent-match`. The audit trail has to be able to say which of
+   * the two ran.
+   */
+  it("reports the destination binding as absent, not as passed", async () => {
+    registerChainSafetyProvider(stubProvider());
+    registerSafetyCheck(DecodedIntentMatchCheck);
+    registerSafetyCheck(DestinationBoundToTargetCheck);
+    const call = { kind: "evm-call", to: VAULT, chainId: 1 } as never;
+
+    const withTarget = await runSafetyPipeline(
+      ctx({ stage: "submit", call, submissionKey: undefined }),
+    );
+    expect(withTarget.ran).toContain("decoded-destination-allowlisted");
+
+    const withoutTarget = await runSafetyPipeline(
+      ctx({ target: undefined, stage: "submit", call }),
+    );
+    expect(withoutTarget.ran).toContain("decoded-intent-match");
+    expect(withoutTarget.ran).not.toContain("decoded-destination-allowlisted");
   });
 });

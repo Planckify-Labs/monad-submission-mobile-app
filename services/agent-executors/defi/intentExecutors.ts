@@ -18,6 +18,7 @@
 import { SuiJsonRpcClient } from "@mysten/sui/jsonRpc";
 import { track } from "@/services/analytics/posthog";
 import { compileIntentToPtb } from "@/services/chains/sui/intent/compileIntentToPtb";
+import type { RiskFlag } from "@/services/chains/sui/intent/guardian/riskCheck";
 import { runGuardian } from "@/services/chains/sui/intent/guardian/riskCheckRegistry";
 import {
   IntentExecuteInputSchema,
@@ -27,6 +28,22 @@ import { intentStore } from "@/services/chains/sui/intent/intentStore";
 import type { CompileContext } from "@/services/chains/sui/intent/intentTypes";
 import { simulateSuiTransaction } from "@/services/chains/sui/simulation";
 import { DefiError } from "@/services/defi/errors/defiErrors";
+import { bootDefiSafety } from "@/services/defi/safety/bootstrap";
+import {
+  POSTEXEC_UNCONFIRMED_NOTE,
+  snapshotPositionBefore,
+  verifyPostExecution,
+} from "@/services/defi/safety/postexec";
+import { setSuiChainResolver } from "@/services/defi/safety/providers/sui";
+import { runSafetyPipeline } from "@/services/defi/safety/registry";
+import type {
+  SafetyAction,
+  SafetyContext,
+  SafetyPolicy,
+  SafetyStage,
+} from "@/services/defi/safety/types";
+import type { DepositTarget, RiskTier } from "@/services/defi/types";
+import { targetUnderlying } from "@/services/defi/types";
 import { SuiSwapError } from "@/services/swap/sui/types";
 import { getWalletForNamespace } from "@/services/walletPresence";
 import { parseToolInput } from "../parseInput";
@@ -144,6 +161,160 @@ function mapCompileError(err: unknown): ExecutorError {
 }
 
 /**
+ * Run the chain-agnostic safety pipeline over a compiled Sui intent
+ * (§11.1's first anchor at preview, second at execute).
+ *
+ * Why this exists at all: Sui DeFi executes through THIS file rather than
+ * `writes.ts`, so until now it was the one namespace whose deposits never
+ * met the pipeline. The guardian it sits beside answers different questions
+ * (live price impact, oracle staleness, an effect-level diff of the dry-run)
+ * and keeps running; what the pipeline adds is everything that is about the
+ * USER and the POLICY rather than about the chain, plus a fail-closed
+ * posture the guardian deliberately does not have (a guardian check that
+ * throws contributes no flag, so that it cannot break a preview).
+ *
+ * Runs for BOTH routing shapes. A pool-level intent carries a server-resolved
+ * target and gets the full pipeline. A plain venue-routed intent ("supply 100
+ * USDC to Scallop") has no target, and used to get nothing at all — which
+ * quietly exempted it from the ops kill switch, the per-chain DeFi gate, the
+ * user's own tier/whitelist/pause, the decimals and balance checks and the
+ * duplicate-submission guard, none of which needs a target. Those all run now;
+ * the target-dependent checks (Layer 1 identity, the destination binding, exit
+ * terms) declare `requiresTarget` and the runner drops exactly those, so the
+ * gap is the narrow real one and it is visible in the audit trail instead of
+ * at a call site.
+ *
+ * The remaining gap is exit terms: the lockup is a property of the pool, so a
+ * venue-routed supply is not gated on it. Refusing every plain-language supply
+ * instead is a product decision, not this function's to take; it is recorded
+ * in the runbook and surfaced to the user as a preview flag.
+ */
+interface SuiSafetyArgs {
+  target: DepositTarget | undefined;
+  action: SafetyAction;
+  stage: SafetyStage;
+  chain: ReturnType<typeof getActiveSuiChain>;
+  walletAddress: string;
+  /** Raw amount of the coin the WALLET spends (the input leg of a zap). */
+  fundingAmount?: bigint;
+  fundingAsset?: string;
+  /** Human amount as the user said it, for the decimals cross-check. */
+  requestedHuman?: number;
+  poolId?: string;
+  protocolSlug?: string;
+  /** Raw tool input, for the Layer-0 provenance checks. */
+  toolInput?: Record<string, unknown>;
+  /** The user's strategy row, for the Layer-3 tier/whitelist/pause gate. */
+  policy?: SafetyPolicy;
+  call?: { kind: "sui-ptb"; transactionBlockBase64: string };
+}
+
+/**
+ * Build the context once so the pre-sign, submit and post-execution stages
+ * all describe the SAME deposit. Reconstructing it per stage is how the three
+ * would drift into verifying subtly different things.
+ */
+function buildSuiSafetyContext(args: SuiSafetyArgs): SafetyContext {
+  bootDefiSafety();
+  // The provider resolves its RPC through the same hook `eip155`/`solana`
+  // use, pointed at the chain this intent actually compiled against.
+  setSuiChainResolver(() => args.chain);
+
+  const underlying = args.target ? targetUnderlying(args.target) : null;
+  const ctx: SafetyContext = {
+    namespace: SUI_NS,
+    action: args.action,
+    target: args.target,
+    toolInput: args.toolInput,
+    policy: args.policy,
+    chainId: args.chain.network,
+    wallet: args.walletAddress,
+    requestedAmount: args.fundingAmount ?? "MAX",
+    underlyingExpected: underlying ?? args.fundingAsset ?? "",
+    // Stated explicitly so the Layer-2 balance and decimals checks read the
+    // coin the wallet SPENDS. For `swap_and_supply` that is the input coin,
+    // not the pool's underlying — see `SafetyContext.fundingAsset`.
+    fundingAsset: args.fundingAsset,
+    fundingAmount: args.fundingAmount,
+    requestedHuman: args.requestedHuman,
+    previewOut: null,
+    tvlUsdSnapshot: null,
+    sim: null,
+    feeEstimate: null,
+    stage: args.stage,
+    poolId: args.poolId,
+    protocolSlug: args.protocolSlug,
+    // `protocolSlug` is the fallback family key so the ops kill switch has
+    // something to match on a venue-routed intent, which never has a kind.
+    family: args.target?.kind ?? args.protocolSlug,
+    call: args.call,
+    submissionKey: `${args.walletAddress}:${args.poolId ?? args.target?.kind ?? args.protocolSlug ?? "venue"}:${
+      args.fundingAmount?.toString() ?? "max"
+    }`,
+  };
+  return ctx;
+}
+
+async function runSuiSafety(args: SuiSafetyArgs): Promise<string | null> {
+  const result = await runSafetyPipeline(buildSuiSafetyContext(args));
+  return result.ok ? null : result.fail;
+}
+
+/** Hand-written, per the guardian's own copy discipline. No raw codes. */
+const SAFETY_REFUSAL_COPY: Record<string, string> = {
+  counterparty_blocked:
+    "This venue is blocked right now. Nothing has been prepared.",
+  family_disabled: "This protocol is paused right now. Try another venue.",
+  exit_terms_unknown:
+    "We could not confirm how you would get your money back out, so we did not prepare this.",
+  insufficient_funds: "Your balance is too low for this amount.",
+  target_not_a_contract:
+    "We could not verify this pool on chain, so we did not prepare this.",
+  target_not_allowlisted:
+    "We could not verify this pool on chain, so we did not prepare this.",
+  decoded_intent_mismatch:
+    "The prepared transaction did not match the plan, so we stopped.",
+  decimals_mismatch: "That amount did not look right, so we stopped.",
+};
+
+/**
+ * Map a `UserStrategy.tier` string onto the safety layer's `RiskTier`.
+ *
+ * Same defaulting `writes.ts`'s `toTierKey` uses (an unrecognised tier is
+ * treated as the most conservative one, never the most permissive), written
+ * locally so this file does not pull the EVM write path's module graph in.
+ */
+function toSafetyTier(tier: string | undefined): RiskTier {
+  return tier === "balanced" || tier === "aggressive" ? tier : "conservative";
+}
+
+/**
+ * Shown when a supply ran without a server-resolved pool. Hand-written, no
+ * raw codes, no em-dashes (CLAUDE.md).
+ */
+const UNVERIFIED_POOL_FLAG: RiskFlag = {
+  code: "effect.mismatch",
+  severity: "warn",
+  title: "Pool not verified on chain",
+  detail:
+    "You named a venue rather than a specific pool, so we could not check this pool's identity or how quickly you could withdraw. Every other safety check still ran.",
+};
+
+function safetyRiskFlag(code: string): RiskFlag {
+  return {
+    // Reuses the existing `effect.mismatch` class rather than widening the
+    // guardian's vocabulary for a verdict that is not a guardian finding:
+    // the pipeline refused, and the card's job here is to say so plainly.
+    code: "effect.mismatch",
+    severity: "block",
+    title: "Safety check failed",
+    detail:
+      SAFETY_REFUSAL_COPY[code] ??
+      "A safety check did not pass, so we did not prepare this.",
+  };
+}
+
+/**
  * `defi_intent_preview` — READ. Compiles + dry-runs + guards, then returns
  * the plan + guardian verdict. Never signs. Renders `IntentPreviewCard`.
  */
@@ -195,12 +366,19 @@ export const defiIntentPreview: MobileToolExecutor = (input, context) =>
       intent.action === "swap_and_supply"
         ? intent.poolId
         : undefined;
+    // Dynamic import keeps `@/api/endpoints/strategies` (which transitively
+    // pulls React Native) out of this module's static graph — same pattern as
+    // `scallop.config`/`ember.config`, so the node/vitest harness can load the
+    // executor without an RN parse.
+    const { strategiesApi } = await import("@/api/endpoints/strategies");
+    // The user's own tier / whitelist / pause. `writes.ts` has always read
+    // this for EVM and Solana; the Sui path never did, so a paused strategy
+    // or an off-whitelist venue was enforced on two chains out of three.
+    // Best-effort, exactly as `writes.ts` treats it: an unreachable strategy
+    // leaves the policy checks with nothing to assert rather than blocking a
+    // deposit on an API outage.
+    const strategy = await strategiesApi.getStrategy().catch(() => null);
     if (poolId) {
-      // Dynamic import keeps `@/api/endpoints/strategies` (which transitively
-      // pulls React Native) out of this module's static graph — same pattern as
-      // `scallop.config`/`ember.config`, so the node/vitest harness can load the
-      // executor without an RN parse.
-      const { strategiesApi } = await import("@/api/endpoints/strategies");
       const opp = await strategiesApi.getPool(poolId).catch(() => null);
       if (opp?.depositTarget) ctx.depositTarget = opp.depositTarget;
     }
@@ -272,6 +450,48 @@ export const defiIntentPreview: MobileToolExecutor = (input, context) =>
     );
     const wouldRevert =
       dryRun !== null && dryRun.status !== "success" && !versionGateArtifact;
+
+    // §11 pre-sign anchor. A refusal becomes a BLOCK flag rather than a thrown
+    // error on purpose: `defi_intent_preview` is a read tool whose contract is
+    // `{ risk_flags, blocked }`, the card already renders that, and the
+    // execute path already refuses any intent carrying a block flag — so this
+    // reuses the existing un-bypassable gate instead of inventing a parallel
+    // one.
+    const safetyFailure = await runSuiSafety({
+      target: ctx.depositTarget,
+      action: intent.action === "withdraw" ? "withdraw" : "deposit",
+      stage: "presign",
+      chain,
+      walletAddress: previewWallet.address,
+      fundingAmount: compiled.inputAmountRaw,
+      fundingAsset: compiled.inputCoinType,
+      requestedHuman:
+        "amount" in intent && intent.amount
+          ? Number.parseFloat(intent.amount.human)
+          : undefined,
+      poolId,
+      protocolSlug: "venue" in intent ? intent.venue : undefined,
+      toolInput: input as Record<string, unknown>,
+      policy: strategy
+        ? {
+            tier: toSafetyTier(strategy.tier),
+            protocolWhitelist: strategy.protocolWhitelist ?? undefined,
+            allowAllInTier: !!strategy.allowAllInTier,
+            paused: !!strategy.pausedAt,
+          }
+        : undefined,
+    });
+    if (safetyFailure) flags.push(safetyRiskFlag(safetyFailure));
+
+    // A deposit whose pool the server never resolved is one the identity and
+    // exit-terms checks could not look at. That is a real difference in what
+    // was verified, so it is stated rather than left to the absence of a
+    // flag. `warn`, not `block`: the plain-language venue path is a supported
+    // way to deposit, and every check that does not need a pool still ran.
+    if (!ctx.depositTarget && intent.action !== "swap") {
+      flags.push(UNVERIFIED_POOL_FLAG);
+    }
+
     const blocked = flags.some((f) => f.severity === "block") || wouldRevert;
 
     const intent_id = intentStore.put({
@@ -282,6 +502,7 @@ export const defiIntentPreview: MobileToolExecutor = (input, context) =>
       inputCoinType: compiled.inputCoinType,
       inputAmountRaw: compiled.inputAmountRaw,
       simulationUnreliable: compiled.simulationUnreliable,
+      depositTarget: ctx.depositTarget,
     });
 
     // What the guardian ACTUALLY read this run — real on-chain state, not a
@@ -404,6 +625,43 @@ export const defiIntentExecute: MobileToolExecutor = (input, context) =>
       );
     }
 
+    // §11.1's SECOND anchor, over the PTB that is about to be signed. The
+    // dry-run above answers "would this succeed"; this answers "is this still
+    // the transaction we authorised" — the Layer-4 chain binding and the
+    // decoded-call-to-venue-package binding, plus the duplicate-submission
+    // guard, over a PTB that has been sitting in a five-minute cache.
+    // Built once and reused for the post-execution stage below, so both
+    // describe the same deposit rather than two reconstructions of it.
+    const safetyArgs = {
+      target: entry.depositTarget,
+      action: (entry.intent.action === "withdraw"
+        ? "withdraw"
+        : "deposit") as SafetyAction,
+      stage: "submit" as SafetyStage,
+      chain,
+      walletAddress: context.wallet.address,
+      fundingAmount: entry.inputAmountRaw,
+      fundingAsset: entry.inputCoinType,
+      poolId: "poolId" in entry.intent ? entry.intent.poolId : undefined,
+      protocolSlug: "venue" in entry.intent ? entry.intent.venue : undefined,
+    };
+    const submitCtx = buildSuiSafetyContext({
+      ...safetyArgs,
+      call: { kind: "sui-ptb", transactionBlockBase64: entry.ptbBase64 },
+    });
+    const submitResult = await runSafetyPipeline(submitCtx);
+    if (!submitResult.ok) {
+      // Same curated vocabulary the preview uses; never a raw code to the user.
+      throw new ExecutorError(
+        ExecutorErrorCode.StalePrecondition,
+        "intent_no_longer_safe",
+      );
+    }
+
+    // "before" half of the post-execution delta assertion (§11 Layer 5),
+    // read as late as possible: the next statement signs.
+    const positionBefore = await snapshotPositionBefore(submitCtx);
+
     const kit = getSuiKit();
     if (!kit.signAndExecuteSuiPtb) {
       throw new ExecutorError(
@@ -496,12 +754,54 @@ export const defiIntentExecute: MobileToolExecutor = (input, context) =>
       });
     }
 
+    // ── Safety pipeline, the stage after execution (§11 Layer 5) ────────
+    // Sui's `signAndExecuteSuiPtb` returns only once the network has executed
+    // the PTB, so unlike the EVM path there is nothing to wait for and the
+    // position can be read immediately. No `confirmations`: Sui's provider
+    // declares no `finalityDepth`, and claiming a depth nobody measured would
+    // be worse than omitting it.
+    //
+    // Never throws. The PTB has executed; reporting a failure here would tell
+    // the user their deposit did not happen while their coins sit in the
+    // venue. A plain `swap` is skipped, because there is no position for a
+    // delta to be about.
+    const postExec =
+      entry.intent.action === "swap"
+        ? null
+        : await verifyPostExecution(
+            { ...buildSuiSafetyContext(safetyArgs), stage: "postexec" },
+            { positionBefore },
+          );
+    if (postExec?.status === "mismatch" && __DEV__) {
+      console.error("[intentExecutors] POSITION DID NOT MOVE after execute", {
+        fail: postExec.fail,
+        detail: postExec.detail,
+        ran: postExec.ran,
+      });
+    }
+
     // base58 digest in data.digest — never the hex-typed tx_hash (§6.4).
     return {
       status: "success",
       tx_confirmed: true,
       transaction_id,
-      data: { digest, network: chain.network },
+      data: {
+        digest,
+        network: chain.network,
+        ...(postExec
+          ? {
+              position_verified:
+                postExec.status === "verified"
+                  ? true
+                  : postExec.status === "mismatch"
+                    ? false
+                    : null,
+              ...(postExec.status === "mismatch"
+                ? { note: POSTEXEC_UNCONFIRMED_NOTE }
+                : {}),
+            }
+          : {}),
+      },
     };
   });
 

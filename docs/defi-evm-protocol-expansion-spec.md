@@ -809,8 +809,19 @@ interface ChainSafetyProvider {
   simulate(call: UnsignedCall): Promise<SimResult>;
   /** L5: protocol's own emergency state (paused/frozen/deprecated/expired). */
   isProtocolHalted(target: DepositTarget): Promise<boolean>;
-  /** L5: post-exec position delta for the assertion. */
-  readPositionDelta(target: DepositTarget, owner: string): Promise<bigint>;
+  /**
+   * L5: the owner's CURRENT position balance at this target. The postexec
+   * DELTA is computed by the check from a before/after pair
+   * (`SafetyContext.positionBefore`), because a single reading can only ask
+   * "does the user have a position at all" — which any wallet that already
+   * held one passes for free, hiding the exact case the assertion exists to
+   * catch. `null` ⇒ the chain could not answer, which must never be read as
+   * "no position" (same contract as `readBalance`).
+   */
+  readPositionBalance(
+    target: DepositTarget,
+    owner: string,
+  ): Promise<bigint | null>;
 }
 ```
 `decodeIntent` returns a normalized shape (`{ to, action, asset, amount,

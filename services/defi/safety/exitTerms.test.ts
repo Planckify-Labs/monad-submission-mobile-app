@@ -52,7 +52,7 @@ function provider(
     }),
     simulate: async () => ({ ok: true }),
     isProtocolHalted: async () => false,
-    readPositionDelta: async () => 1n,
+    readPositionBalance: async () => 1n,
     readDecimals: async () => 6,
     ...(readExitTerms ? { readExitTerms } : {}),
   };

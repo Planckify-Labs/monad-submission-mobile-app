@@ -9,7 +9,7 @@
  * heavy / RN-pulling deps (compiler, guardian, dry-run, kit, RPC) are mocked.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   compileIntentToPtb: vi.fn(),
@@ -18,6 +18,10 @@ const h = vi.hoisted(() => ({
   getBalance: vi.fn(),
   signAndExecuteSuiPtb: vi.fn(),
   recordTransferHistory: vi.fn(),
+  getPool: vi.fn(),
+  getStrategy: vi.fn(),
+  getObject: vi.fn(),
+  getCoinMetadata: vi.fn(),
 }));
 
 vi.mock("../sui/executorContext", () => ({
@@ -44,10 +48,25 @@ vi.mock("../wallet/recordTransferHistory", () => ({
 vi.mock("@mysten/sui/jsonRpc", () => ({
   SuiJsonRpcClient: class {
     getBalance = h.getBalance;
+    getObject = h.getObject;
+    getCoinMetadata = h.getCoinMetadata;
   },
+}));
+// Dynamically imported by the executor for the pool-level path; mocked so a
+// `poolId` intent resolves a real `depositTarget` and the safety pipeline has
+// something to verify.
+vi.mock("@/api/endpoints/strategies", () => ({
+  strategiesApi: { getPool: h.getPool, getStrategy: h.getStrategy },
 }));
 
 import { intentStore } from "@/services/chains/sui/intent/intentStore";
+import { resetDefiSafetyBootstrap } from "@/services/defi/safety/bootstrap";
+import { setKilledFamilies } from "@/services/defi/safety/checks/layer3-policy";
+import {
+  registerChainSafetyProvider,
+  resetSafetyRegistry,
+} from "@/services/defi/safety/registry";
+import type { ChainSafetyProvider } from "@/services/defi/safety/types";
 import type { ExecutorContext } from "../types";
 import {
   defiIntentExecute,
@@ -105,6 +124,11 @@ beforeEach(() => {
   h.getBalance.mockResolvedValue({ totalBalance: "10000000000" }); // 10 SUI
   h.signAndExecuteSuiPtb.mockResolvedValue("DIGEST_base58");
   h.recordTransferHistory.mockResolvedValue("txrec_1");
+  h.getPool.mockResolvedValue(null);
+  h.getStrategy.mockResolvedValue(null);
+  h.getObject.mockResolvedValue(null);
+  h.getCoinMetadata.mockResolvedValue({ decimals: 9 });
+  resetSafetyRegistry();
 });
 
 describe("defiIntentPreview", () => {
@@ -349,5 +373,230 @@ describe("isVersionGateDryRunArtifact (scoped bypass)", () => {
       false,
     );
     expect(isVersionGateDryRunArtifact(true, null)).toBe(false);
+  });
+});
+
+/**
+ * The Sui Intent Engine used to be the one write path that never called
+ * `runSafetyPipeline` — the guardian was the whole of its policy layer. These
+ * two tests pin both halves of the fix: the gate fires, and it does not fire
+ * when it shouldn't.
+ */
+describe("safety pipeline on the Sui intent path (§11.1)", () => {
+  const supplyInput = {
+    action: "supply",
+    venue: "scallop",
+    asset: "SUI",
+    amount: { human: "5" },
+    poolId: "pool-uuid-1234",
+  };
+
+  const scallopTarget = {
+    kind: "scallop-market",
+    market: "0xmarket",
+    coinType: SUI,
+  };
+
+  /** Answers every required primitive; the pipeline should clear it. */
+  function passingSuiProvider(
+    overrides: Partial<ChainSafetyProvider> = {},
+  ): ChainSafetyProvider {
+    return {
+      namespace: "sui",
+      targetExists: async () => true,
+      readUnderlying: async () => SUI,
+      isAllowlisted: async () => true,
+      assertChainBinding: () => true,
+      decodeIntent: async () => ({
+        destination: "0xpkg::mint::mint",
+        action: "deposit",
+        assetIn: null,
+        amountIn: null,
+        recipient: null,
+        valueNative: 0n,
+        spender: null,
+        approvalAmount: null,
+        minOut: null,
+        deadline: null,
+      }),
+      simulate: async () => ({ ok: true }),
+      isProtocolHalted: async () => false,
+      readPositionBalance: async () => 1n,
+      readExitTerms: async () => ({ kind: "instant" }),
+      readDecimals: async () => 9,
+      readBalance: async () => 10_000_000_000n,
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    h.getPool.mockResolvedValue({ depositTarget: scallopTarget });
+    h.compileIntentToPtb.mockResolvedValue({
+      ...compiledSwap,
+      summary: "Supply 5 SUI to Scallop",
+    });
+    // Boot FIRST, then override: `bootDefiSafety` is idempotent, so the
+    // provider registered here is the one the executor's own boot leaves in
+    // place.
+    resetDefiSafetyBootstrap();
+  });
+
+  it("blocks the preview when a layer refuses, and the block survives to execute", async () => {
+    const { bootDefiSafety } = await import("@/services/defi/safety/bootstrap");
+    bootDefiSafety();
+    registerChainSafetyProvider(
+      passingSuiProvider({
+        // The venue's own object cannot be verified on chain. Layer 1's
+        // refusal is the one that used to be impossible to reach here.
+        targetExists: async () => false,
+      }),
+    );
+
+    const preview = await defiIntentPreview(supplyInput, suiCtx);
+    expect(preview.status).toBe("success");
+    const data = (
+      preview as {
+        data: {
+          blocked: boolean;
+          risk_flags: { title: string; severity: string }[];
+          intent_id: string;
+        };
+      }
+    ).data;
+    expect(data.blocked).toBe(true);
+    expect(
+      data.risk_flags.some(
+        (f) => f.title === "Safety check failed" && f.severity === "block",
+      ),
+    ).toBe(true);
+
+    // SI-5: the same block that stopped the preview stops the signature.
+    const executed = await defiIntentExecute(
+      { intent_id: data.intent_id },
+      suiCtx,
+    );
+    expect(executed).toMatchObject({ reason: "intent_no_longer_safe" });
+    expect(h.signAndExecuteSuiPtb).not.toHaveBeenCalled();
+  });
+
+  it("leaves a clean intent alone", async () => {
+    const { bootDefiSafety } = await import("@/services/defi/safety/bootstrap");
+    bootDefiSafety();
+    registerChainSafetyProvider(passingSuiProvider());
+
+    const preview = await defiIntentPreview(supplyInput, suiCtx);
+    const data = (
+      preview as { data: { blocked: boolean; risk_flags: unknown[] } }
+    ).data;
+    expect(data.risk_flags).toEqual([]);
+    expect(data.blocked).toBe(false);
+  });
+});
+
+/**
+ * A plain-language supply ("supply 5 SUI to Scallop") carries no `poolId`, so
+ * the server never resolves a `DepositTarget` and `runSuiSafety` used to
+ * return before running anything. That silently exempted the whole
+ * venue-routed path from the ops kill switch, the per-chain DeFi gate and the
+ * user's own tier/whitelist/pause — none of which needs a pool.
+ */
+describe("venue-routed Sui intents (no poolId)", () => {
+  const venueSupply = {
+    action: "supply",
+    venue: "scallop",
+    asset: "SUI",
+    amount: { human: "5" },
+  };
+
+  beforeEach(() => {
+    // No pool: the resolved-target branch never runs.
+    h.getPool.mockResolvedValue(null);
+    h.getStrategy.mockResolvedValue(null);
+    h.compileIntentToPtb.mockResolvedValue({
+      ...compiledSwap,
+      summary: "Supply 5 SUI to Scallop",
+    });
+    resetDefiSafetyBootstrap();
+    setKilledFamilies([]);
+  });
+
+  afterEach(() => {
+    setKilledFamilies([]);
+  });
+
+  it("blocks when ops has killed the venue", async () => {
+    const { bootDefiSafety } = await import("@/services/defi/safety/bootstrap");
+    bootDefiSafety();
+    // Keyed by the protocol slug — the only key a venue-routed intent has.
+    setKilledFamilies(["scallop"]);
+
+    const preview = await defiIntentPreview(venueSupply, suiCtx);
+    const data = (
+      preview as {
+        data: {
+          blocked: boolean;
+          risk_flags: { title: string; severity: string }[];
+        };
+      }
+    ).data;
+    expect(data.blocked).toBe(true);
+    expect(
+      data.risk_flags.some(
+        (f) => f.title === "Safety check failed" && f.severity === "block",
+      ),
+    ).toBe(true);
+  });
+
+  it("blocks when the user's strategy is paused", async () => {
+    const { bootDefiSafety } = await import("@/services/defi/safety/bootstrap");
+    bootDefiSafety();
+    h.getStrategy.mockResolvedValue({
+      tier: "conservative",
+      pausedAt: "2026-08-27T00:00:00.000Z",
+      allowAllInTier: true,
+      protocolWhitelist: [],
+    });
+
+    const preview = await defiIntentPreview(venueSupply, suiCtx);
+    expect((preview as { data: { blocked: boolean } }).data.blocked).toBe(true);
+  });
+
+  /**
+   * Not blocked, but not silently treated as fully verified either: the
+   * identity and exit-terms checks could not look at a pool nobody resolved,
+   * and the user is told so.
+   */
+  it("warns that the pool itself was not verified, without blocking", async () => {
+    const { bootDefiSafety } = await import("@/services/defi/safety/bootstrap");
+    bootDefiSafety();
+
+    const preview = await defiIntentPreview(venueSupply, suiCtx);
+    const data = (
+      preview as {
+        data: {
+          blocked: boolean;
+          risk_flags: { title: string; severity: string }[];
+        };
+      }
+    ).data;
+    expect(data.blocked).toBe(false);
+    expect(
+      data.risk_flags.some(
+        (f) =>
+          f.title === "Pool not verified on chain" && f.severity === "warn",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not warn about an unverified pool on a plain swap", async () => {
+    const { bootDefiSafety } = await import("@/services/defi/safety/bootstrap");
+    bootDefiSafety();
+
+    const preview = await defiIntentPreview(swapInput, suiCtx);
+    const data = (preview as { data: { risk_flags: { title: string }[] } })
+      .data;
+    expect(
+      data.risk_flags.some((f) => f.title === "Pool not verified on chain"),
+    ).toBe(false);
   });
 });

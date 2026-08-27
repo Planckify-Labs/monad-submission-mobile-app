@@ -22,7 +22,9 @@ import {
   decodeEventLog,
   erc20Abi,
   formatUnits,
+  type PublicClient,
   parseAbi,
+  type TransactionReceipt,
 } from "viem";
 import { strategiesApi } from "@/api/endpoints/strategies";
 import type { TBlockchain } from "@/api/types/blockchain";
@@ -48,6 +50,12 @@ import {
 } from "@/services/defi/registry";
 import { releaseSubmission } from "@/services/defi/safety/checks/layer4-execution";
 import { takeExitConsent } from "@/services/defi/safety/exitConsent";
+import {
+  POSTEXEC_UNCONFIRMED_NOTE,
+  type PostExecVerdict,
+  snapshotPositionBefore,
+  verifyPostExecution,
+} from "@/services/defi/safety/postexec";
 import { setEvmChainResolver } from "@/services/defi/safety/providers/eip155";
 import { setSolanaChainResolver } from "@/services/defi/safety/providers/solana";
 import {
@@ -242,6 +250,88 @@ async function submitSolanaCall(
     instructions: call.instructions,
     additionalSigners: call.additionalSigners,
   });
+}
+
+/**
+ * How long to wait for a receipt before giving up on verifying settlement.
+ *
+ * Short on purpose: this runs inside an agent tool call, and the point is to
+ * catch the common case (an L2 deposit confirms in a couple of seconds), not
+ * to hold the turn open until an L1 block arrives. A timeout is reported as
+ * UNVERIFIED, which is what it is, and never as a failure.
+ */
+const POSTEXEC_RECEIPT_TIMEOUT_MS = 15_000;
+
+/**
+ * Bounded wait for a just-broadcast transaction's receipt, so the postexec
+ * stage has real state to verify against and `tx_confirmed` stops being
+ * hardcoded `false` on a deposit that has already settled.
+ *
+ * `null` means the receipt did not arrive inside the window. That is NOT a
+ * failure: the transaction is very likely still in flight, and the caller
+ * reports exactly what it did before this existed.
+ */
+async function awaitReceiptForVerification(
+  publicClient: PublicClient,
+  hash: `0x${string}`,
+): Promise<{
+  receipt: TransactionReceipt;
+  success: boolean;
+  confirmations: number;
+} | null> {
+  let receipt: TransactionReceipt;
+  try {
+    receipt = await publicClient.waitForTransactionReceipt({
+      hash,
+      timeout: POSTEXEC_RECEIPT_TIMEOUT_MS,
+    });
+  } catch {
+    return null;
+  }
+  // The receipt itself is one confirmation; anything deeper needs the head,
+  // and a head read that fails must not inflate or invent a depth.
+  let confirmations = 1;
+  try {
+    const head = await publicClient.getBlockNumber();
+    if (head > receipt.blockNumber) {
+      confirmations = Number(head - receipt.blockNumber) + 1;
+    }
+  } catch {
+    // Keep the floor of 1 — `FinalityCheck` treats "not deep enough yet" as
+    // a PENDING state, which is the correct reading of an unknown head.
+  }
+  return { receipt, success: receipt.status === "success", confirmations };
+}
+
+/**
+ * Fold a post-execution verdict into the fields a tool result carries.
+ *
+ * `mismatch` is a reconciliation alert, never an error: the transaction
+ * landed. The user gets one hand-written line; the check id and code go to
+ * the audit trail and the dev log only (CLAUDE.md).
+ */
+function postExecResultFields(
+  verdict: PostExecVerdict,
+  label: string,
+): { position_verified: boolean | null; note?: string } {
+  if (verdict.status === "verified") return { position_verified: true };
+  if (verdict.status === "unverified") {
+    if (__DEV__) {
+      console.warn(`[${label}] settlement unverified`, {
+        reason: verdict.reason,
+        ran: verdict.ran,
+      });
+    }
+    return { position_verified: null };
+  }
+  if (__DEV__) {
+    console.error(`[${label}] POSITION DID NOT MOVE after a successful tx`, {
+      fail: verdict.fail,
+      detail: verdict.detail,
+      ran: verdict.ran,
+    });
+  }
+  return { position_verified: false, note: POSTEXEC_UNCONFIRMED_NOTE };
 }
 
 /**
@@ -540,14 +630,15 @@ export const deposit: MobileToolExecutor = (input, context) =>
       const safetyBase: SafetyContext = {
         namespace: adapter.namespace,
         action: "deposit",
-        target: depositTarget ?? {
-          // A slug-routed legacy deposit has no resolved target. Represent it
-          // honestly rather than inventing one: the kind-scoped checks skip it
-          // and the universal ones still run.
-          kind: "erc4626",
-          vault: "0x0000000000000000000000000000000000000000",
-          asset: underlyingExpected as `0x${string}`,
-        },
+        // Absent for a slug-routed legacy deposit, which names a protocol and
+        // not a pool. It used to be a fake zero-address `erc4626` target that
+        // nothing ever read (the `if (depositTarget)` guards below skipped the
+        // whole pipeline), so a slug-routed deposit ran no checks at all — not
+        // the ops kill switch, not the per-chain DeFi gate, not the user's own
+        // tier/whitelist/pause, none of which needs a target. `SafetyContext`
+        // now carries it as optional and the target-dependent checks scope
+        // themselves out (`appliesTo.requiresTarget`), so the rest run.
+        target: depositTarget,
         chainId,
         wallet: context.wallet.address,
         requestedAmount: amountRaw,
@@ -577,11 +668,9 @@ export const deposit: MobileToolExecutor = (input, context) =>
         },
         submissionKey: `${context.wallet.address}:${poolId ?? protocolSlug}:${amountRaw}`,
       };
-      // Only enforced when the pool actually resolved a target — a legacy
-      // slug-routed deposit predates the pipeline and must not start failing.
-      if (depositTarget) {
-        assertSafetyResult(await runSafetyPipeline(safetyBase));
-      }
+      // Runs for every deposit now, resolved target or not: the checks that
+      // need one declare `requiresTarget` and the runner drops exactly those.
+      assertSafetyResult(await runSafetyPipeline(safetyBase));
 
       // ERC-7540 vaults cannot settle in one transaction: the deposit is a
       // REQUEST that an off-chain fulfilment later makes claimable (§7). Ask
@@ -635,31 +724,31 @@ export const deposit: MobileToolExecutor = (input, context) =>
 
       if (unsignedCall.kind === "solana-ix") {
         // ── Safety pipeline, anchor 2 of 2 (§11.1, §11 Layer 4) ──────────
-        if (depositTarget) {
-          assertSafetyResult(
-            await runSafetyPipeline({
-              ...safetyBase,
-              stage: "submit",
-              call: unsignedCall,
-            }),
-          );
-        }
+        assertSafetyResult(
+          await runSafetyPipeline({
+            ...safetyBase,
+            stage: "submit",
+            call: unsignedCall,
+          }),
+        );
         // No ERC-20-style approval preamble here: every Solana adapter in
         // this file embeds the SPL transfer directly in the deposit
         // instruction itself (`approvalsOf` is a no-op for a `solana-ix`
         // call by construction — see its own definition in
         // `services/defi/types.ts`).
-        if (depositTarget) {
-          const preflight = await runSafetyPipeline({
-            ...safetyBase,
-            stage: "broadcast",
-            call: unsignedCall,
-          });
-          if (!preflight.ok) {
-            releaseSubmission(safetyBase.submissionKey ?? "");
-          }
-          assertSafetyResult(preflight);
+        const preflight = await runSafetyPipeline({
+          ...safetyBase,
+          stage: "broadcast",
+          call: unsignedCall,
+        });
+        if (!preflight.ok) {
+          releaseSubmission(safetyBase.submissionKey ?? "");
         }
+        assertSafetyResult(preflight);
+
+        // "before" half of the postexec delta assertion, read as late as
+        // possible (same reasoning as the EVM path below).
+        const solPositionBefore = await snapshotPositionBefore(safetyBase);
 
         let signature: string;
         try {
@@ -749,6 +838,22 @@ export const deposit: MobileToolExecutor = (input, context) =>
           amount_usd: amountAtDepositUsd,
         });
 
+        // Post-execution verification (§11 Layer 5). No `confirmations`: the
+        // Solana wallet kit polls `getSignatureStatuses` and returns the
+        // signature either way, so a confirmed submission and a poll that
+        // timed out are indistinguishable from here. Claiming a depth we did
+        // not observe would be worse than omitting it, and Solana declares no
+        // `finalityDepth`, so `FinalityCheck` stays quiet regardless.
+        const solVerdict = isAsyncDeposit
+          ? ({ status: "unverified", ran: [] } as PostExecVerdict)
+          : await verifyPostExecution(safetyBase, {
+              positionBefore: solPositionBefore,
+            });
+        const solVerification = postExecResultFields(
+          solVerdict,
+          "defi/deposit",
+        );
+
         return {
           status: "success" as const,
           tx_confirmed: !isAsyncDeposit,
@@ -763,7 +868,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
                   async_phase: "deposit_requested" as const,
                   note: "Deposit requested. This pool settles off-chain, so the position becomes claimable once the protocol fulfils the request. We'll notify you when it's ready to claim.",
                 }
-              : {}),
+              : solVerification),
           },
         };
       }
@@ -806,15 +911,13 @@ export const deposit: MobileToolExecutor = (input, context) =>
       // SIGNED — chain binding, decoded-intent match, approval scoping, quote
       // freshness, simulate, idempotency. A compromised backend cannot argue
       // its way past them, because they do not consult it.
-      if (depositTarget) {
-        assertSafetyResult(
-          await runSafetyPipeline({
-            ...safetyBase,
-            stage: "submit",
-            call: unsignedCall,
-          }),
-        );
-      }
+      assertSafetyResult(
+        await runSafetyPipeline({
+          ...safetyBase,
+          stage: "submit",
+          call: unsignedCall,
+        }),
+      );
 
       // 1. Approval preamble. A two-sided LP add needs BOTH tokens approved in
       //    the same build, so iterate the normalised list rather than the
@@ -887,19 +990,23 @@ export const deposit: MobileToolExecutor = (input, context) =>
       // above are separate transactions, so until they are mined the deposit
       // has no allowance and a simulation of it can only ever revert. Anything
       // it reports now is about the deposit itself.
-      if (depositTarget) {
-        const preflight = await runSafetyPipeline({
-          ...safetyBase,
-          stage: "broadcast",
-          call: unsignedCall,
-        });
-        if (!preflight.ok) {
-          // Nothing was broadcast, so the idempotency key claimed at submit
-          // must not outlive the attempt — a genuine retry is not a duplicate.
-          releaseSubmission(safetyBase.submissionKey ?? "");
-        }
-        assertSafetyResult(preflight);
+      const preflight = await runSafetyPipeline({
+        ...safetyBase,
+        stage: "broadcast",
+        call: unsignedCall,
+      });
+      if (!preflight.ok) {
+        // Nothing was broadcast, so the idempotency key claimed at submit
+        // must not outlive the attempt — a genuine retry is not a duplicate.
+        releaseSubmission(safetyBase.submissionKey ?? "");
       }
+      assertSafetyResult(preflight);
+
+      // The "before" half of the post-execution delta assertion (§11 Layer
+      // 5). Read HERE, as late as possible: every second between this and the
+      // "after" reading is a window in which something else could move the
+      // position and get credited to this deposit.
+      const positionBefore = await snapshotPositionBefore(safetyBase);
 
       // 2. Submit the protocol call (phantom-failure-safe — see
       //    submitTx.ts). A broadcast error is never silently treated as
@@ -966,6 +1073,30 @@ export const deposit: MobileToolExecutor = (input, context) =>
         console.warn("[defi/deposit] protocol tx submitted", { hash });
       }
 
+      // 2a. Bounded wait for the receipt. Three things need it: the
+      // post-execution position assertion below, an honest `tx_confirmed`,
+      // and the ERC-7540 `requestId` decode (which used to call
+      // `getTransactionReceipt` the instant after broadcast — before the
+      // transaction could possibly be mined — and swallow the resulting
+      // not-found error, so the id was effectively never read).
+      const settled = await awaitReceiptForVerification(publicClient, hash);
+
+      // A `submitted` outcome means the node ACCEPTED the broadcast, not that
+      // the transaction succeeded; until the receipt existed there was no way
+      // to tell a landed deposit from one that reverted, and a revert was
+      // reported to the user as a success with a hash. Same handling as the
+      // `mined && !success` branch above, which is the identical situation
+      // reached by a different route.
+      if (settled && !settled.success) {
+        if (__DEV__) {
+          console.warn("[defi/deposit] reverted on-chain (post-broadcast)", {
+            hash,
+          });
+        }
+        releaseSubmission(safetyBase.submissionKey ?? "");
+        throw new DefiError("deposit_failed");
+      }
+
       // 2b. ERC-7540 `requestId`, read from the request tx's own emitted
       // event rather than simulated or guessed. `requestDeposit`/
       // `requestRedeem` RETURN the id, but a signed-and-broadcast
@@ -976,9 +1107,9 @@ export const deposit: MobileToolExecutor = (input, context) =>
       // 0-partition convention, which would silently mis-track any vault
       // that DOES partition requests.
       let asyncRequestId: string | undefined;
-      if (isAsyncDeposit) {
+      if (isAsyncDeposit && settled) {
         try {
-          const receipt = await publicClient.getTransactionReceipt({ hash });
+          const receipt = settled.receipt;
           const eventAbi = parseAbi([
             "event DepositRequest(address indexed controller, address indexed owner, uint256 indexed requestId, address sender, uint256 assets)",
             "event RedeemRequest(address indexed controller, address indexed owner, uint256 indexed requestId, address sender, uint256 shares)",
@@ -1101,13 +1232,34 @@ export const deposit: MobileToolExecutor = (input, context) =>
         amount_usd: amountAtDepositUsd,
       });
 
+      // ── Safety pipeline, stage 4 of 4: after the receipt (§11 Layer 5) ──
+      // "The transaction succeeded" and "the user got what they paid for"
+      // are different claims, and only this one checks the second. It cannot
+      // block anything and never throws: the money has already moved, so the
+      // verdict is reported, not enforced. An ASYNC deposit is skipped
+      // outright, because a 7540 request is not supposed to move the position
+      // yet and asserting that it did would flag every correct one.
+      const depositVerdict = isAsyncDeposit
+        ? ({ status: "unverified", ran: [] } as PostExecVerdict)
+        : await verifyPostExecution(safetyBase, {
+            positionBefore,
+            confirmations: settled?.confirmations,
+          });
+      const depositVerification = postExecResultFields(
+        depositVerdict,
+        "defi/deposit",
+      );
+
       // §7 requirement 3 — an async deposit is a REQUEST, not a completed
       // deposit. Reporting "done" here is what would let the agent tell the
       // user their money is earning when it is actually sitting in a queue.
       return {
         status: "success" as const,
         tx_hash: hash,
-        tx_confirmed: false,
+        // Read from the receipt now rather than hardcoded `false`. An async
+        // deposit is never "confirmed" in the sense the agent uses the word:
+        // the request landed, the position has not.
+        tx_confirmed: !isAsyncDeposit && settled !== null,
         data: {
           protocol_slug: protocolSlug,
           chain_id: chainId,
@@ -1118,7 +1270,7 @@ export const deposit: MobileToolExecutor = (input, context) =>
                 async_phase: "deposit_requested" as const,
                 note: "Deposit requested. This pool settles off-chain, so the position becomes claimable once the protocol fulfils the request. We'll notify you when it's ready to claim.",
               }
-            : {}),
+            : depositVerification),
         },
       };
     } catch (err) {
@@ -1268,14 +1420,10 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       const withdrawSafetyBase: SafetyContext = {
         namespace: adapter.namespace,
         action: "withdraw",
-        target: withdrawTarget ?? {
-          // A legacy slug-routed position has no resolved target — the
-          // kind-scoped checks skip it and the universal ones still run,
-          // same posture as deposit's own fallback.
-          kind: "erc4626",
-          vault: "0x0000000000000000000000000000000000000000",
-          asset: withdrawUnderlyingExpected as `0x${string}`,
-        },
+        // Absent for a legacy slug-routed position, same as deposit above:
+        // optional on the context, with the target-dependent checks scoping
+        // themselves out rather than the whole pipeline being skipped.
+        target: withdrawTarget,
         chainId: pipelineChainId,
         wallet: context.wallet.address,
         requestedAmount: amountRaw,
@@ -1295,12 +1443,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           typeof amountRaw === "string" ? amountRaw : amountRaw.toString()
         }`,
       };
-      // Only enforced when the pool actually resolved a target — a legacy
-      // slug-routed withdraw predates the pipeline and must not start
-      // failing (same guard deposit uses).
-      if (withdrawTarget) {
-        assertSafetyResult(await runSafetyPipeline(withdrawSafetyBase));
-      }
+      assertSafetyResult(await runSafetyPipeline(withdrawSafetyBase));
 
       // Pre-flight the on-chain balance. A MAX withdraw against a
       // position with no live balance (stale DB row, deposit that never
@@ -1417,28 +1560,30 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       }
 
       if (unsignedCall.kind === "solana-ix") {
-        if (withdrawTarget) {
-          assertSafetyResult(
-            await runSafetyPipeline({
-              ...withdrawSafetyBase,
-              stage: "submit",
-              call: unsignedCall,
-              positionBalance: liveBalance,
-            }),
-          );
-        }
-        if (withdrawTarget) {
-          const preflight = await runSafetyPipeline({
+        assertSafetyResult(
+          await runSafetyPipeline({
             ...withdrawSafetyBase,
-            stage: "broadcast",
+            stage: "submit",
             call: unsignedCall,
             positionBalance: liveBalance,
-          });
-          if (!preflight.ok) {
-            releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
-          }
-          assertSafetyResult(preflight);
+          }),
+        );
+        const solPreflight = await runSafetyPipeline({
+          ...withdrawSafetyBase,
+          stage: "broadcast",
+          call: unsignedCall,
+          positionBalance: liveBalance,
+        });
+        if (!solPreflight.ok) {
+          releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
         }
+        assertSafetyResult(solPreflight);
+
+        // "before" half of the postexec delta assertion. For a withdraw the
+        // assertion is inverted (the position must SHRINK), which the check
+        // reads off `ctx.action` rather than from the stage.
+        const solWithdrawBefore =
+          await snapshotPositionBefore(withdrawSafetyBase);
 
         let signature: string;
         try {
@@ -1496,6 +1641,20 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           }
         }
 
+        // Post-execution verification (§11 Layer 5). Skipped for a redeem
+        // REQUEST: the position is supposed to still be there until the
+        // cooldown elapses, so asserting it shrank would flag every correct
+        // async exit.
+        const solWithdrawVerdict = isAsyncWithdraw
+          ? ({ status: "unverified", ran: [] } as PostExecVerdict)
+          : await verifyPostExecution(withdrawSafetyBase, {
+              positionBefore: solWithdrawBefore,
+            });
+        const solWithdrawVerification = postExecResultFields(
+          solWithdrawVerdict,
+          "defi/withdraw",
+        );
+
         return {
           status: "success" as const,
           tx_confirmed: !isAsyncWithdraw,
@@ -1514,7 +1673,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
                   async_phase: "redeem_requested" as const,
                   note: "Withdrawal requested. This exits through a cooldown period, so the funds become claimable once it elapses. We'll notify you when it's ready to claim.",
                 }
-              : {}),
+              : solWithdrawVerification),
           },
         };
       }
@@ -1554,16 +1713,14 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       // match (destination vouched-for, recipient is the caller's OWN
       // wallet, amount matches), approval scoping, gas sanity, idempotency,
       // plus `WithdrawBalanceCheck` now that the live balance is known.
-      if (withdrawTarget) {
-        assertSafetyResult(
-          await runSafetyPipeline({
-            ...withdrawSafetyBase,
-            stage: "submit",
-            call: unsignedCall,
-            positionBalance: liveBalance,
-          }),
-        );
-      }
+      assertSafetyResult(
+        await runSafetyPipeline({
+          ...withdrawSafetyBase,
+          stage: "submit",
+          call: unsignedCall,
+          positionBalance: liveBalance,
+        }),
+      );
 
       // Some withdrawals (Lido, Ethena cooldown) require an approval
       // to the queue/redemption manager — handle the preamble the
@@ -1626,20 +1783,18 @@ export const withdraw: MobileToolExecutor = (input, context) =>
       // The dry-run belongs HERE, not with Layer 4 above: the queue/cooldown
       // approvals above are separate transactions, so until they're mined a
       // simulation of the withdraw itself is the only thing this reports on.
-      if (withdrawTarget) {
-        const preflight = await runSafetyPipeline({
-          ...withdrawSafetyBase,
-          stage: "broadcast",
-          call: unsignedCall,
-          positionBalance: liveBalance,
-        });
-        if (!preflight.ok) {
-          // Nothing was broadcast, so the idempotency key claimed at submit
-          // must not outlive the attempt — a genuine retry is not a duplicate.
-          releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
-        }
-        assertSafetyResult(preflight);
+      const preflight = await runSafetyPipeline({
+        ...withdrawSafetyBase,
+        stage: "broadcast",
+        call: unsignedCall,
+        positionBalance: liveBalance,
+      });
+      if (!preflight.ok) {
+        // Nothing was broadcast, so the idempotency key claimed at submit
+        // must not outlive the attempt — a genuine retry is not a duplicate.
+        releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
       }
+      assertSafetyResult(preflight);
 
       if (__DEV__) {
         console.warn("[defi/withdraw] submitting protocol tx", {
@@ -1649,6 +1804,12 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           chainId: walletClient.chain?.id,
         });
       }
+      // "before" half of the postexec delta assertion, read as late as
+      // possible. For a withdraw the assertion is inverted (the position must
+      // SHRINK), which the check reads off `ctx.action`.
+      const withdrawPositionBefore =
+        await snapshotPositionBefore(withdrawSafetyBase);
+
       // Phantom-failure-safe submission: sign locally, then broadcast,
       // so a broadcast-RPC error never gets mislabelled as "nothing
       // happened" while the tx actually moved funds (the reported bug).
@@ -1705,10 +1866,42 @@ export const withdraw: MobileToolExecutor = (input, context) =>
         console.warn("[defi/withdraw] protocol tx submitted", { hash });
       }
 
+      // Bounded wait for the receipt — the same reasoning as deposit's: a
+      // `submitted` outcome says the node accepted the broadcast, not that
+      // the withdraw succeeded, and a reverted withdraw reported as a success
+      // is the exact "we told them it worked" failure this file's phantom-
+      // failure handling exists to avoid.
+      const withdrawSettled = await awaitReceiptForVerification(
+        publicClient,
+        hash,
+      );
+      if (withdrawSettled && !withdrawSettled.success) {
+        if (__DEV__) {
+          console.warn("[defi/withdraw] reverted on-chain (post-broadcast)", {
+            hash,
+          });
+        }
+        releaseSubmission(withdrawSafetyBase.submissionKey ?? "");
+        throw new DefiError("withdraw_failed");
+      }
+
+      // ── Safety pipeline, stage 4 of 4: after the receipt (§11 Layer 5) ──
+      // Never throws: the funds have already left the protocol.
+      const withdrawVerdict = isAsyncWithdraw
+        ? ({ status: "unverified", ran: [] } as PostExecVerdict)
+        : await verifyPostExecution(withdrawSafetyBase, {
+            positionBefore: withdrawPositionBefore,
+            confirmations: withdrawSettled?.confirmations,
+          });
+      const withdrawVerification = postExecResultFields(
+        withdrawVerdict,
+        "defi/withdraw",
+      );
+
       return {
         status: "success" as const,
         tx_hash: hash,
-        tx_confirmed: submit.kind === "mined",
+        tx_confirmed: submit.kind === "mined" || withdrawSettled !== null,
         data: {
           position_id: positionId,
           protocol_slug: protocolSlug,
@@ -1721,6 +1914,7 @@ export const withdraw: MobileToolExecutor = (input, context) =>
           namespace,
           amount_raw:
             typeof amountRaw === "string" ? amountRaw : amountRaw.toString(),
+          ...withdrawVerification,
         },
       };
     } catch (err) {

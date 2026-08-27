@@ -11,7 +11,7 @@
  */
 
 import { getChainSafetyProvider } from "../registry";
-import type { SafetyCheck } from "../types";
+import { NO_TARGET_TO_VERIFY, type SafetyCheck } from "../types";
 
 /** How far below the protocol's own preview we tolerate before refusing. */
 const PREVIEW_TOLERANCE_BPS = 1000; // 10%
@@ -29,13 +29,18 @@ export const DecimalsMatchCheck: SafetyCheck = {
   layer: 2,
   appliesTo: { stages: ["presign"] },
   run: async (ctx) => {
-    if (ctx.requestedAmount === "MAX") return { ok: true };
+    // `requestedHuman` is what the USER typed, so it is denominated in the
+    // asset they are spending — the funding leg for a zap, the underlying
+    // otherwise. Reading the pool's underlying here would compare a SUI
+    // amount against USDC's decimals and refuse a correct deposit.
+    const spendAsset = ctx.fundingAsset ?? ctx.underlyingExpected;
+    const spendAmount = ctx.fundingAmount ?? ctx.requestedAmount;
+    if (spendAmount === "MAX") return { ok: true };
     if (typeof ctx.requestedHuman !== "number") return { ok: true };
 
     const provider = getChainSafetyProvider(ctx.namespace);
     const onchain =
-      (await provider?.readDecimals?.(ctx.underlyingExpected, ctx.chainId)) ??
-      null;
+      (await provider?.readDecimals?.(spendAsset, ctx.chainId)) ?? null;
     if (onchain === null) {
       // We could not read the token's decimals. The amount may well be right,
       // but we cannot prove it, and this check exists precisely because the
@@ -62,7 +67,7 @@ export const DecimalsMatchCheck: SafetyCheck = {
     const expected =
       BigInt(Math.round(ctx.requestedHuman * 1e6)) *
       10n ** BigInt(Math.max(onchain - 6, 0));
-    const actual = ctx.requestedAmount;
+    const actual = spendAmount;
     if (expected > 0n) {
       const ratio =
         actual > expected ? actual / expected : expected / actual || 1n;
@@ -89,8 +94,9 @@ export const DecimalsMatchCheck: SafetyCheck = {
 export const DepositCapHeadroomCheck: SafetyCheck = {
   id: "deposit-cap-headroom",
   layer: 2,
-  appliesTo: { stages: ["presign"] },
+  appliesTo: { stages: ["presign"], requiresTarget: true },
   run: async (ctx) => {
+    if (!ctx.target) return NO_TARGET_TO_VERIFY;
     if (ctx.requestedAmount === "MAX") return { ok: true };
     const provider = getChainSafetyProvider(ctx.namespace);
     const headroom = await provider?.readDepositCapHeadroom?.(
@@ -227,17 +233,21 @@ export const SufficientBalanceCheck: SafetyCheck = {
   layer: 2,
   appliesTo: { stages: ["presign"] },
   run: async (ctx) => {
-    if (ctx.requestedAmount === "MAX") return { ok: true };
+    // The asset the WALLET spends, which is the pool's underlying for an
+    // ordinary deposit and the input coin for a zap (see `fundingAsset`).
+    const spendAsset = ctx.fundingAsset ?? ctx.underlyingExpected;
+    const spendAmount = ctx.fundingAmount ?? ctx.requestedAmount;
+    if (spendAmount === "MAX") return { ok: true };
     const provider = getChainSafetyProvider(ctx.namespace);
     if (!provider?.readBalance) return { ok: true };
 
     const held = await provider.readBalance(
-      ctx.underlyingExpected,
+      spendAsset,
       ctx.wallet,
       ctx.chainId,
     );
     if (held === null) return { ok: true };
-    return held >= ctx.requestedAmount
+    return held >= spendAmount
       ? { ok: true }
       : {
           ok: false,

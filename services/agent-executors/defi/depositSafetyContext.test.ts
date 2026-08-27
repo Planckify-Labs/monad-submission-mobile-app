@@ -161,7 +161,7 @@ function chainStub(): ChainSafetyProvider {
         : { ok: false, revertReason: "allowance" };
     },
     isProtocolHalted: async () => false,
-    readPositionDelta: async () => 1n,
+    readPositionBalance: async () => 1n,
     readDecimals: async () => 8,
     readBalance: async () => h.balance,
   };

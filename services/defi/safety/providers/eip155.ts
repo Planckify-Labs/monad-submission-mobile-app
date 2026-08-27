@@ -18,12 +18,15 @@ import {
   type Address,
   decodeFunctionData,
   erc20Abi,
+  isAddress,
   parseAbi,
   toFunctionSelector,
 } from "viem";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { getPublicClient } from "@/utils/clients";
+import { lstVenueConfig } from "../../adapters/lst.config";
 import {
+  isRouterAllowlisted,
   morphoSingleton,
   routerAllowlist,
 } from "../../constants/evmAddressBook";
@@ -63,6 +66,15 @@ function clientFor(chainId: number | string) {
 }
 
 /** The address a target's transaction is sent to, per kind. */
+/**
+ * EVM address equality. Hex is case-insignificant, so folding is the correct
+ * rule HERE — unlike in the chain-agnostic checks, where the same fold applied
+ * to base58 would create false matches (see `safety/addressMatch.ts`).
+ */
+function eqAddr(a: string | null | undefined, b: string | null | undefined) {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase();
+}
+
 function destinationOf(
   target: DepositTarget,
   chainId: number | string,
@@ -517,9 +529,9 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
   },
 
   /** L5: post-execution position delta. */
-  async readPositionDelta(target, owner, chainId) {
+  async readPositionBalance(target, owner, chainId) {
     const ctx = clientFor(chainId);
-    if (!ctx) return 0n;
+    if (!ctx) return null;
     // The receipt token differs per kind; for the SINGLETON-destination
     // families the destination IS the receipt (4626's vault, Comet's market,
     // cToken), which is what `destinationOf` answers correctly. It is WRONG
@@ -543,7 +555,10 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
           : target.kind === "solidly-lp" || target.kind === "uniswap-v2"
             ? target.pool
             : destinationOf(target, chainId);
-    if (!receipt) return 0n;
+    // No receipt token for this kind ⇒ we cannot read the position, which is
+    // NOT the same as reading zero. `null` keeps the postexec delta check
+    // quiet instead of alarming about a deposit it never had a way to see.
+    if (!receipt) return null;
     try {
       return await ctx.client.readContract({
         address: receipt,
@@ -552,7 +567,7 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
         args: [owner as Address],
       });
     } catch {
-      return 0n;
+      return null;
     }
   },
 
@@ -609,6 +624,46 @@ export const Eip155SafetyProvider: ChainSafetyProvider = {
   /** §11.6 #4: no private-mempool route is wired yet — say so honestly. */
   supportsPrivateSubmit() {
     return false;
+  },
+
+  /**
+   * L4: the built call's `to` must be the destination this target deposits
+   * to. `destinationOf` already knows that address for every kind whose
+   * destination is fixed at resolve time, so this is mostly a re-use — the
+   * two kinds it returns `null` for are the two that legitimately do NOT
+   * deposit at their own target address:
+   *
+   *   - `router-call` — the destination arrives with the quote, which is
+   *     exactly why the router allowlist exists (§6 guardrail 2). Checked
+   *     against that list here, so the assertion holds at signing time and
+   *     not only at build time.
+   *   - `lst-stake` — the stake call goes to the venue's `entry` contract,
+   *     which is not the receipt token for most venues (ether.fi's
+   *     LiquidityPool ≠ eETH). The venue book already pins `entry`, so it
+   *     answers this precisely; an unknown venue returns `true` rather than
+   *     guessing, and Layer 1 has already refused anything unpinned.
+   */
+  async isAllowedDestination(target, destination, chainId) {
+    const expected = destinationOf(target, chainId);
+    if (expected) return eqAddr(destination, expected);
+
+    if (target.kind === "router-call") {
+      if (!isAddress(destination)) return false;
+      return isRouterAllowlisted(
+        target.protocol,
+        Number(chainId),
+        destination as Address,
+      );
+    }
+
+    if (target.kind === "lst-stake") {
+      const venue = lstVenueConfig(target.venue);
+      return venue ? eqAddr(destination, venue.entry) : true;
+    }
+
+    // Nothing pinned to compare against. Say so by passing rather than by
+    // inventing a rule — the other Layer-1/4 assertions still apply.
+    return true;
   },
 
   /** L2: `maxDeposit` headroom, where the standard exposes it. */

@@ -14,12 +14,22 @@
  * at sign time regardless (§5.3), so persistence buys nothing.
  */
 
+import type { DepositTarget } from "@/services/defi/types";
 import type { RiskFlag } from "./guardian/riskCheck";
 import type { Intent } from "./intentSchema";
 
 export interface IntentStoreEntry {
   ptbBase64: string;
   intent: Intent;
+  /**
+   * The server-resolved deposit target this PTB was compiled for, when the
+   * intent named an exact pool. Carried through the store because the
+   * pre-sign safety pipeline runs again at EXECUTE (§11.1's second anchor)
+   * and every provider-backed check needs the target to have something to
+   * verify. Absent for a plain venue-routed intent, exactly as
+   * `services/agent-executors/defi/writes.ts` treats a slug-routed deposit.
+   */
+  depositTarget?: DepositTarget;
   flags: RiskFlag[];
   summary: string;
   /** Resolved input coinType — for activity-feed recording at execute. */
@@ -36,6 +46,7 @@ export interface IntentStoreEntry {
 export interface PutIntentArgs {
   ptbBase64: string;
   intent: Intent;
+  depositTarget?: DepositTarget;
   flags: RiskFlag[];
   summary: string;
   inputCoinType?: string;
@@ -63,6 +74,7 @@ class IntentStoreImpl {
     this.entries.set(id, {
       ptbBase64: args.ptbBase64,
       intent: args.intent,
+      depositTarget: args.depositTarget,
       flags: args.flags,
       summary: args.summary,
       inputCoinType: args.inputCoinType,

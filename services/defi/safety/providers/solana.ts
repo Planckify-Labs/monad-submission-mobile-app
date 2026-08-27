@@ -45,13 +45,22 @@
  *     `false` — the SAME default `eip155.ts` uses for every EVM kind that
  *     has no known pause primitive (aave-v3, curve-lp, uniswap-v2, …); not a
  *     Solana-specific gap.
- *   - `readExitTerms`/`readDecimals`/`finalityDepth`/
- *     `supportsPrivateSubmit`/`readDepositCapHeadroom` are OPTIONAL
- *     capabilities the interface itself documents as safe to omit — a
- *     missing `readExitTerms` makes the Layer-3 consent check fail closed to
- *     `unknown` rather than assume instant, which is the designed behaviour,
- *     not a bypass. `readDecimals` is implemented (SPL mints always expose
- *     it cheaply); the rest are left unset.
+ *   - `readExitTerms` is implemented per kind (see the method). It was
+ *     MISSING in the first version of this file, and the consequence was not
+ *     a softer check — it was a total outage: `ExitTermsConsentCheck` treats
+ *     "provider docked, capability absent" as a refusal, so every Solana
+ *     deposit failed Layer 3 with `exit_terms_unknown` while the catalogue
+ *     went on badging those pools "Deposit in-app". Fail-closed did its job;
+ *     nothing else did. Found and fixed 2026-08-27.
+ *   - `isAllowedDestination` binds the BUILT call to this kind's pinned
+ *     program (see the method) — the assertion `DecodedIntentMatchCheck`'s
+ *     doc always described and no provider actually performed.
+ *   - `readDecimals` is implemented (SPL mints always expose it cheaply).
+ *     `finalityDepth`/`supportsPrivateSubmit`/`readDepositCapHeadroom` stay
+ *     unset: the interface documents them as safe to omit, and each is a
+ *     claim we cannot honestly make yet (no confirmation count reaches the
+ *     postexec context, no private-mempool route is wired, and none of these
+ *     kinds exposes a readable deposit cap).
  */
 
 import { getAssociatedTokenAddressSync, getMint } from "@solana/spl-token";
@@ -67,6 +76,7 @@ import { NATIVE_ASSET_SENTINEL, targetUnderlying } from "../../types";
 import type {
   ChainSafetyProvider,
   DecodedIntent,
+  ExitTerms,
   SafetyContext,
   SimResult,
 } from "../types";
@@ -100,6 +110,31 @@ const STABLE_PROGRAM_ID = "5quBtoiQqxF9Jv6KYKctB59NT3gtJD2Y65kdnB1Uev3h";
 const KAMINO_LIQUIDITY_PROGRAM_ID =
   "6LtLpnUFNByNXLyCoK9wA2MykKAmQNZKBdY8s47dehDc";
 const JITO_VAULT_PROGRAM_ID = "Vau1t6sLNxnzB7ZDsef8TLbPLfyZMYXH8WTNqUdm9g8";
+/** `PROGRAM_IDS.lending.main` from the bundled `@jup-ag/lend` SDK — the same
+ *  constant `adapters/jupiterLend.ts` builds against (its header records the
+ *  cross-check against the protocol's own published IDL). */
+const JUPITER_LEND_PROGRAM_ID = "jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9";
+/** Owner of any deployed upgradeable program account. Verified live for
+ *  `JUPITER_LEND_PROGRAM_ID` (getAccountInfo, 2026-08-27: `executable: true`,
+ *  `owner: BPFLoaderUpgradeab1e…`). */
+const BPF_LOADER_UPGRADEABLE = "BPFLoaderUpgradeab1e11111111111111111111111";
+
+/**
+ * Programs that may appear in a built call WITHOUT being the protocol itself:
+ * account plumbing every Solana transaction needs (create the ATA, wrap SOL,
+ * set a compute budget). They move nothing on their own — a token transfer
+ * still needs the user's signature, and the recipient assertion covers where
+ * it lands — so allowing them is not a hole, while refusing them would reject
+ * essentially every real deposit this app builds.
+ */
+const INFRASTRUCTURE_PROGRAM_IDS: ReadonlySet<string> = new Set([
+  "11111111111111111111111111111111", // System
+  "ComputeBudget111111111111111111111111111111",
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", // SPL Token
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb", // Token-2022
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL", // Associated Token Account
+  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr", // Memo v2
+]);
 
 /** The account a target's on-chain identity actually lives at, per kind,
  * plus the program that MUST own it — pinned here, never trusted from the
@@ -155,6 +190,59 @@ function destinationOf(
         address: new PublicKey(target.vault),
         expectedOwner: new PublicKey(JITO_VAULT_PROGRAM_ID),
       };
+    // The one Solana kind whose target carries NO address: Jupiter Lend Earn
+    // routes by underlying mint (`{ kind, asset }`) and the SDK derives every
+    // account from it, so there is no per-vault account to own-check. What
+    // IS checkable, and what this kind's Layer-1 therefore asserts, is that
+    // the pinned lending program is a deployed program: an executable account
+    // owned by the BPF upgradeable loader. The asset itself is bound
+    // separately, by `readUnderlying` → `UnderlyingMatchesCheck`, against the
+    // server-resolved pool's own underlying.
+    //
+    // Before this case existed `destinationOf` returned `null` here, so
+    // `targetExists` answered `false` and EVERY Jupiter Lend deposit failed
+    // Layer 1 with `target_not_a_contract` (found 2026-08-27).
+    case "jupiter-lend-vault":
+      return {
+        address: new PublicKey(JUPITER_LEND_PROGRAM_ID),
+        expectedOwner: new PublicKey(BPF_LOADER_UPGRADEABLE),
+      };
+    default:
+      return null;
+  }
+}
+
+/**
+ * The program a given kind's protocol instruction must belong to. Exported so
+ * the offline coverage test can assert that EVERY Solana kind resolves to a
+ * pin — from outside, a missing pin and a wrong destination both surface as a
+ * plain `false`, which is exactly how the `jupiter-lend-vault` gap survived. Same pins as
+ * `destinationOf`'s `expectedOwner`, read from the other direction: that map
+ * answers "who owns this account", this one answers "whose instruction may
+ * this call carry".
+ */
+export function protocolProgramFor(target: DepositTarget): string | null {
+  switch (target.kind) {
+    case "solana-lst-stake":
+      return isSolanaLstVenue(target.venue)
+        ? getSolanaLstConfig(target.venue).program
+        : null;
+    case "solana-reserve":
+      return KLEND_PROGRAM_ID;
+    case "kamino-kvault":
+      return KVAULT_PROGRAM_ID;
+    case "raydium-cpmm-pool":
+      return CPMM_PROGRAM_ID;
+    case "raydium-amm-v4-pool":
+      return AMM_V4_PROGRAM_ID;
+    case "raydium-stable-pool":
+      return STABLE_PROGRAM_ID;
+    case "kamino-liquidity-strategy":
+      return KAMINO_LIQUIDITY_PROGRAM_ID;
+    case "jito-vault-deposit":
+      return JITO_VAULT_PROGRAM_ID;
+    case "jupiter-lend-vault":
+      return JUPITER_LEND_PROGRAM_ID;
     default:
       return null;
   }
@@ -375,9 +463,12 @@ export const SolanaSafetyProvider: ChainSafetyProvider = {
 
   /** L5: reuse the kind's OWN already-verified `readPosition` rather than
    * re-deriving each kind's receipt-balance logic a second time here. */
-  async readPositionDelta(target, owner, chainId) {
+  async readPositionBalance(target, owner, chainId) {
     const adapter = getDefiAdapterForKind(target.kind);
-    if (!adapter) return 0n;
+    // No adapter ⇒ nothing can read this position. `null`, not `0n`: an
+    // unreadable position must not look like an empty one to the postexec
+    // delta check (see `readPositionBalance`'s contract).
+    if (!adapter) return null;
     const rpcUrl = rpcUrlFor(chainId);
     const chain = {
       namespace: "solana",
@@ -386,9 +477,13 @@ export const SolanaSafetyProvider: ChainSafetyProvider = {
     } as unknown as ChainConfig;
     try {
       const position = await adapter.readPosition(owner, { target, chain });
+      // A `null` position is a real, readable ZERO (the wallet has not
+      // deposited here yet) — that is the state a first deposit must be
+      // measurable against, so it must not be reported as unreadable. Only
+      // a THROWN read below becomes `null`.
       return position?.currentAmount ?? 0n;
     } catch {
-      return 0n;
+      return null;
     }
   },
 
@@ -418,6 +513,98 @@ export const SolanaSafetyProvider: ChainSafetyProvider = {
       return bal ? BigInt(bal.value.amount) : 0n;
     } catch {
       return null;
+    }
+  },
+
+  /**
+   * L4: every top-level instruction in the built call belongs either to this
+   * kind's own pinned program or to the account-plumbing set. Solana's
+   * "destination" is plural — a transaction is a LIST of instructions — so
+   * asserting only the one `decodeIntent` surfaced would leave an appended
+   * leg to an arbitrary program unexamined, which is precisely the shape this
+   * assertion exists to refuse. The `call` the check hands over is what makes
+   * the plural version possible.
+   *
+   * A kind with no pinned program returns `false`: Layer 1 has already
+   * refused it (`destinationOf` is the same map), and agreeing here would be
+   * the second half of a contradiction.
+   */
+  async isAllowedDestination(target, destination, _chainId, call) {
+    const expected = protocolProgramFor(target);
+    if (!expected) return false;
+
+    const allowed = (programId: string) =>
+      programId === expected || INFRASTRUCTURE_PROGRAM_IDS.has(programId);
+
+    if (call && call.kind === "solana-ix") {
+      return call.instructions.every((ix) => allowed(ix.programId.toBase58()));
+    }
+    // No call to widen to (a caller that only has the decoded destination):
+    // assert what we were given.
+    return allowed(destination);
+  },
+
+  /**
+   * L5: how long funds are locked on the way out (§12 Q2).
+   *
+   * The verdict describes THE EXIT THIS APP BUILDS, not every exit the
+   * protocol offers — that distinction decides two of the rows below, and
+   * getting it backwards would either promise liquidity we don't build or
+   * warn about a queue we never enter.
+   *
+   * Same conservative rule `eip155.ts` uses: liquidity is a Layer-2 problem,
+   * a protocol-imposed wait is a lockup, and anything we cannot characterise
+   * is `unknown` (which refuses at Layer 3 rather than assuming instant). The
+   * `default` is what makes a NEW Solana kind fail closed until someone
+   * decides its terms deliberately.
+   */
+  async readExitTerms(target): Promise<ExitTerms> {
+    switch (target.kind) {
+      // Money markets, share vaults and AMM pools: withdraw is one call
+      // whenever the venue has liquidity. Utilisation/reserve depth is
+      // Layer 2's problem, exactly as an Aave reserve at full utilisation is
+      // on EVM — an illiquidity condition, not a protocol-imposed wait.
+      case "solana-reserve":
+      case "kamino-kvault":
+      case "jupiter-lend-vault":
+      case "raydium-cpmm-pool":
+      case "raydium-amm-v4-pool":
+      case "raydium-stable-pool":
+      case "kamino-liquidity-strategy":
+        return { kind: "instant" };
+
+      // Both LST shapes exit in ONE transaction as this adapter builds it:
+      // `spl-stake-pool` uses `WithdrawSol`(16), paid out of the pool's
+      // reserve, and `marinade` uses `liquid_unstake`, paid out of the
+      // liquidity pool (`adapters/solanaLst.ts`). The DELAYED alternatives
+      // exist on both protocols — SPL `WithdrawStake` hands back a stake
+      // account that must deactivate over an epoch, Marinade's
+      // `order_unstake`/`claim` is a ~2-epoch ticket — but this app never
+      // builds them, so warning about them would describe someone else's
+      // withdraw. Marinade's unstake fee and a drained reserve are Layer-2
+      // cost/liquidity questions, not lockups.
+      case "solana-lst-stake":
+        return { kind: "instant" };
+
+      // Jito restaking vault: `EnqueueWithdrawal`(12) mints a withdrawal
+      // ticket, and `BurnWithdrawalTicket`(14) can only pay out once MORE
+      // than one full epoch has elapsed (`Config.epoch_length` = 432,000
+      // slots on mainnet ⇒ roughly 2-4 days depending on where in the epoch
+      // the enqueue landed — read live by the adapter, see
+      // `adapters/jitoVaultDeposit.ts`). That is a protocol-imposed wait, and
+      // its duration genuinely is not a fixed number, so `queued` rather than
+      // a `delayed` with an invented figure.
+      //
+      // `declared`, not `onchain`, for the same reason `async-vault` and the
+      // EVM queue-exit LSTs are: the queue was reviewed when the family was
+      // pinned and is documented in the adapter's own header, so it does not
+      // need per-deposit consent — the approval card still discloses it
+      // through `exitTermsNotice`.
+      case "jito-vault-deposit":
+        return { kind: "queued", source: "declared" };
+
+      default:
+        return { kind: "unknown" };
     }
   },
 

@@ -667,6 +667,7 @@ review and still blocks production.
 
 ---
 
+
 ## 7. Sign-off log
 
 | Date | Reviewer | Scope | Result |
@@ -738,3 +739,57 @@ For each address: the two source URLs, the label each source uses, the on-chain
 reads, and the verdict. A verdict with no citation is not a sign-off — it is an
 opinion, and the whole point of this step is that opinions are what the
 automated layers already give us.
+
+## 9. Non-EVM pins — NOT covered by this sign-off
+
+**Status: unsigned.** Everything above concerns
+`api/src/strategies/targets/address-book/`, which is EVM-only. The Solana and
+Sui expansions added a second population of pinned identities that has never
+had an equivalent pass, and the numbers are no longer small.
+
+### 9.1 Where they live
+
+Unlike EVM, they are not in one book. The trust decisions are spread across
+three kinds of file, in two repos:
+
+| Population | Where | Roughly |
+|---|---:|---|
+| Solana program ids | `mobile-app/services/defi/safety/providers/solana.ts` (Layer-1/L4 pins), each adapter's own constant, `api/.../*.resolver.ts` | 9 programs |
+| Solana LST venue table | `mobile-app/services/defi/adapters/solana/lst.config.ts` ⇄ `api/.../solana-lst.config.ts` | 16 venues × (program, stakePool, mint) |
+| Sui packages | per-venue config (`cetus/bluefin/current/kai/...config.ts`), some CONSTANT, some fetched live | 10 venues |
+| Sui LST venue table | `mobile-app/services/defi/adapters/sui/lst.config.ts` ⇄ `api/.../sui-lst.config.ts` | 4 venues |
+
+### 9.2 What is now automated (and what that does not prove)
+
+`mobile-app/services/defi/nonEvmPinParity.test.ts` compares the two repos'
+copies of the Solana program ids and both LST venue tables, the same way
+`addressBookParity.test.ts` does for EVM. Read §1.1 before treating that as
+coverage: **a parity test proves the two copies agree, not that either is
+right.** The first EVM sign-off found three wrong addresses out of 125, and a
+parity test would have called all three of them consistent.
+
+### 9.3 The Sui-specific problem a review has to decide
+
+Several Sui venues do not pin their call package at all — they FETCH it:
+Suilend from an on-chain `UpgradeCap` (trustworthy: on-chain, from a pinned
+cap id), but NAVI, Turbos, Ember and Scallop from the vendor's own HTTPS
+endpoint, with a pinned fallback. A compromised or spoofed vendor endpoint
+therefore chooses a `moveCall` target for us.
+
+The device's Layer-1 check narrows this: `providers/sui.ts` verifies the target
+OBJECT's on-chain type origin against the type the backend independently
+resolved, so a swapped package alone does not get a deposit routed to it. It
+does not close it, because a package upgrade legitimately changes the call
+target while the type origin stays fixed. **This is the open question a Sui
+sign-off has to answer**, and it has no EVM equivalent — an EVM address book
+entry cannot change under you between two reads.
+
+### 9.4 The bar, when the pass is run
+
+Same three parts as §2.2, with one substitution: an on-chain identity read on
+Solana means the account's **owning program** (what `isAllowlisted` checks) and
+on Sui the object's **type origin package**. Aggregator provenance still does
+not meet the bar. Note that most Solana pins were sourced from
+`igneous-labs/sanctum-lst-list` plus a live `getAccountInfo` cross-check, which
+IS a first-party-plus-corroboration story and should shorten the pass
+considerably — see `add-defi-pool-resolver.md` §14.2.

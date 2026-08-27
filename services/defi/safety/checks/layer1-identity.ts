@@ -14,7 +14,7 @@
  */
 
 import { getChainSafetyProvider } from "../registry";
-import type { SafetyCheck } from "../types";
+import { NO_TARGET_TO_VERIFY, type SafetyCheck } from "../types";
 
 /**
  * `EXTCODESIZE > 0` on EVM, "object exists with the expected type" on Sui,
@@ -24,7 +24,9 @@ import type { SafetyCheck } from "../types";
 export const TargetHasCodeCheck: SafetyCheck = {
   id: "target-has-code",
   layer: 1,
+  appliesTo: { requiresTarget: true },
   run: async (ctx) => {
+    if (!ctx.target) return NO_TARGET_TO_VERIFY;
     const provider = getChainSafetyProvider(ctx.namespace);
     if (!provider) {
       // No provider ⇒ we cannot verify anything about this chain's targets.
@@ -58,7 +60,9 @@ export const TargetHasCodeCheck: SafetyCheck = {
 export const UnderlyingMatchesCheck: SafetyCheck = {
   id: "underlying-matches",
   layer: 1,
+  appliesTo: { requiresTarget: true },
   run: async (ctx) => {
+    if (!ctx.target) return NO_TARGET_TO_VERIFY;
     const provider = getChainSafetyProvider(ctx.namespace);
     if (!provider) return { ok: true }; // reported by target-has-code
     const actual = await provider.readUnderlying(ctx.target, ctx.chainId);
@@ -92,7 +96,9 @@ export const UnderlyingMatchesCheck: SafetyCheck = {
 export const TargetAllowlistedCheck: SafetyCheck = {
   id: "target-allowlisted",
   layer: 1,
+  appliesTo: { requiresTarget: true },
   run: async (ctx) => {
+    if (!ctx.target) return NO_TARGET_TO_VERIFY;
     const provider = getChainSafetyProvider(ctx.namespace);
     if (!provider) return { ok: true }; // reported by target-has-code
     const allowed = await provider.isAllowlisted(ctx.target, ctx.chainId);

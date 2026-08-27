@@ -1102,7 +1102,8 @@ a wrong receipt address past validation.
 
 **Three touch points share `target.pool` as a receipt-address default, and all
 three needed the fallback.** Beyond the adapter's `lpTokenOf`: the mobile
-safety provider's `readPositionDelta` (Layer 5 post-execution check) used
+safety provider's `readPositionDelta` (Layer 5 post-execution check; renamed
+`readPositionBalance` in §16.1) used
 `destinationOf`, which is correct as the `tx.to` for `add_liquidity` but wrong
 as the receipt for a classic pool; and the fork harness's `positionBalance`
 had the identical assumption. Missing either would not fail loudly — it would
@@ -2240,3 +2241,304 @@ anything (confirmed via a clean `git stash`-free run). Fixed alongside
 adding `raydium-stable-pool` to the same set — worth remembering that
 `pnpm test` should have caught this and evidently wasn't run to completion
 before that session's commit.
+
+---
+
+## 15. The safety layer past the EVM boundary — 2026-08-27
+
+Solana and Sui resolvers had been landing for a week. This pass asked the
+question nobody had asked out loud: does the §11 safety layer actually cover
+them? It did not, and two of the gaps were outages rather than weaknesses.
+
+### 15.1 Two families that could never execute
+
+Both were fail-CLOSED, which is why nothing was on fire and also why nothing
+was noticed. A pool that refuses looks exactly like a pool that is not wired up
+yet.
+
+- **Every Solana deposit refused at Layer 3.** `SolanaSafetyProvider` shipped
+  without `readExitTerms`, and `ExitTermsConsentCheck` treats "provider docked,
+  capability absent" as a refusal on purpose (`exit_terms_unknown`). So the
+  Solana write path merged in `0e7604a` could not complete a single deposit,
+  while `reads.ts` went on badging all 23 Solana protocols `in_app: true`.
+- **Jupiter Lend refused at Layer 1.** `jupiter-lend-vault` is the one Solana
+  kind whose target carries no address (`{ kind, asset }`), so it had no entry
+  in `destinationOf`, so `targetExists` answered `false` →
+  `target_not_a_contract` for the whole family.
+
+Both are provable offline in one second — no RPC, no fork, no device. That is
+the lesson worth keeping: the checks that decide whether a family can execute
+at all are pure functions of a target kind, so the coverage test for them is
+cheap and there was never a reason not to have one.
+`providers/{solana,sui}Provider.test.ts` are now that ratchet, and each was
+verified by deleting a case and watching it fail.
+
+### 15.2 Sui was never in the pipeline at all
+
+Sui DeFi executes through `defi_intent_preview`/`defi_intent_execute`, not
+`writes.ts`, and that path called `runGuardian` and never `runSafetyPipeline`.
+The guardian is good at what it does (live price impact, oracle staleness, an
+effect-level diff of the dry-run) and it deliberately fails OPEN so a broken
+check cannot break a preview. What Sui was missing was the other nineteen
+checks, none of which are chain-specific: tier and protocol whitelist, exposure
+and velocity ceilings, the sanctions screen, the family kill switch, exit-terms
+consent, decimals, APY drift, duplicate submission.
+
+`providers/sui.ts` + one registration + a pipeline call at preview (presign) and
+before signing (submit). A refusal becomes a `block` risk flag rather than a
+thrown error, which reuses the un-bypassable gate the execute path already had.
+
+**Closed 2026-08-27 (§16).** The pipeline used to run only when the intent
+named an exact pool. It now runs for both routing shapes.
+
+### 15.3 Gates that existed, ran, and could never fire
+
+`setKilledFamilies`, `setCounterpartyDenyList`, `setDefiEnabledChains` and
+`setSafetyAuditSink` had a setter each and no production caller — every call
+site was `safetyPipeline.test.ts`. So the sanctions screen returned `ok` on its
+first line, the kill switch was inert, `chain-enabled-for-defi` short-circuited
+on a `null` set, and the audit trail went to a `__DEV__` console that production
+never runs.
+
+`services/defi/safety/opsConfig.ts` is the missing half: env-sourced today,
+remote-config-shaped by construction (`applyDefiOpsConfig` is a pure "here is
+the current config" entry point). Every value it carries is a REFUSAL, so a
+corrupt or empty config costs availability and never safety. Failures go to
+analytics as `defi_safety_check_failed`; passes go to a bounded device-local
+ring so "which check let this through" stays answerable without spending the
+user's bandwidth on nineteen events per deposit.
+
+On the backend, `registerNonEvm` puts every Sui/Solana resolver behind the same
+`isFamilyKilled` switch the EVM families answer to. Sub-flags default ON,
+because these families are live and a default-off flag would be an outage
+dressed up as caution.
+
+### 15.4 Two assertions that were documented but never performed
+
+- **The built call's destination.** `DecodedIntentMatchCheck`'s doc said "the
+  destination is the resolved target or an allowlisted router". The code never
+  compared them: `isAllowlisted` only ever saw the target, `decodeIntent` only
+  ever saw the call. `isAllowedDestination` (optional, presence-checked) is that
+  binding — the target's own address on EVM, the pinned program on Solana
+  (asserted over EVERY instruction, since a Solana "destination" is plural), the
+  venue package on Sui.
+- **Address comparison on base58.** The same check compared recipients and
+  assets with `.toLowerCase()` on both sides. Correct for `0x` hex, wrong for
+  Solana base58 and Stellar base32, and wrong in the dangerous direction: a fold
+  never rejects, it only makes distinct addresses compare EQUAL. A 44-character
+  pubkey has ~30 letters, so case-insensitivity is worth roughly 2^30 of
+  grinding on the one check whose job is catching a substituted recipient. Now
+  `safety/addressMatch.ts`, which dispatches through the wallet kit's own case
+  rule.
+
+### 15.5 The server-side ratchet now reaches non-EVM
+
+`validateTarget` had `default: return !isEvmTargetKind(kind)` — a Sui or Solana
+kind validated **by being non-EVM**, which made "nobody checked this" and "its
+resolver checked it" the same answer. Non-EVM kinds now have to name what
+validates them (`RESOLVER_VALIDATED_KINDS`, one line each, with the file that
+does it), and `NON_EVM_TARGET_KINDS` makes `tsc` fail if a new union member
+lands in neither list.
+
+Worth stating plainly, because the declaration could read as more than it is:
+none of those resolvers touches the chain (measured — zero
+`getObject`/`getAccountInfo` across all nineteen). They join a protocol's own
+API on an identity the DeFiLlama row already carries and refuse an ambiguous
+match. The on-chain half lives on the device. Two anchors, but both thinner
+than the EVM pair.
+
+### 15.6 What a new non-EVM family now has to do
+
+1. A `destinationOf`/`targetObjectOf` entry and a pinned program/package —
+   without it Layer 1 refuses, and `providers/*Provider.test.ts` fails.
+2. A `readExitTerms` case. `unknown` is a refusal, not a default.
+2b. A `readPositionBalance` that returns `null` — never `0n` — when the read
+   FAILS, so the postexec delta check can tell "the RPC is down" from "the
+   user has no position" (§16.1). A `null` position object is still a real
+   `0n`.
+3. An entry in `RESOLVER_VALIDATED_KINDS` naming its resolver-side check, and a
+   place in `NON_EVM_TARGET_KINDS` (or `tsc` fails).
+4. A row in `nonEvmPinParity.test.ts` if it pins anything in both repos.
+5. The §12.3 sign-off, which for non-EVM pins has **never been run** — see
+   `defi-address-book-security-signoff.md` §9.
+
+### 15.7 Known gaps this pass did NOT close
+
+Recorded rather than quietly left. The first two were closed the same day, in
+§16; they are kept here with their outcome so the record reads in order.
+
+- ~~**`postexec` never runs.**~~ Closed — §16.1.
+- ~~**Venue-routed Sui intents skip the pipeline.**~~ Closed — §16.2.
+- **Sui package provenance** is a vendor-HTTPS trust assumption for four venues
+  (sign-off runbook §9.3).
+- **Ops config is env-only.** The remote-config caller is a caller away, but
+  changing a kill switch still means shipping a build.
+
+---
+
+## 16. Closing the last two safety-layer gaps — 2026-08-27
+
+Both items from §15.7. They turned out to share a root cause worth naming: a
+**stage or a context field that the type system offered and no caller ever
+supplied**. Nothing was broken in a way a test would catch, because the code
+was never reached.
+
+### 16.1 `postexec` — two checks that had never executed
+
+`PositionDeltaCheck` and `FinalityCheck` were registered, selected and
+unreachable: no call site passed `stage: "postexec"` on any chain. Wiring them
+surfaced three defects in the checks themselves, all of which would have
+shipped the moment a caller appeared.
+
+**It was not a delta.** The provider method was called `readPositionDelta` and
+every implementation returned an absolute balance. The check compared that to
+zero. Against a wallet with an existing position that passes for free, which is
+precisely the case that hides a deposit that succeeded on chain and landed
+nowhere. Fixed by taking two readings: the caller snapshots
+`positionBefore` immediately before submitting, and the method is now
+`readPositionBalance`, named for what it returns.
+
+**It was deposit-shaped.** No `actions` scope, and a body that demanded the
+position GREW. Wiring the withdraw path would have flagged every correct
+withdrawal. Direction now follows `ctx.action`.
+
+**Zero and unreadable were the same value.** Every provider returned `0n` on a
+failed read, so "the RPC is down" and "the user has no position" were
+indistinguishable, and the first would have raised a reconciliation alarm about
+money that moved perfectly well. `readPositionBalance` returns `bigint | null`
+with the same contract `readBalance` already documented; a `null` *position
+object* (nobody has deposited yet) is still a real `0n`, because that is the
+state a first deposit must be measurable against.
+
+`ProtocolHaltedCheck` also carried no stage scope, so it would have started
+asking "is this protocol paused?" about settled deposits. Scoped to the three
+pre-execution stages.
+
+**The call-site contract is the important part.** `safety/postexec.ts` never
+throws. Everywhere else a refusal means nothing happened, so `assertSafetyResult`
+throwing is right; here the funds have already moved, and throwing would tell a
+user their deposit failed while it sits in the protocol — and invite a retry.
+The verdict is data:
+
+| verdict | meaning |
+| --- | --- |
+| `verified` | the position moved in the right direction |
+| `mismatch` | the transaction succeeded, the position did not move. Reconciliation alert, never a user error |
+| `unverified` | we could not look (no target, no provider, no snapshot, no receipt in the window, read failed). Not evidence of anything |
+
+A pipeline that selected **no** checks reports `unverified`, not `verified` —
+otherwise a check that silently stopped applying looks exactly like one that
+passed.
+
+Wired at four call sites: EVM deposit, Solana deposit, EVM withdraw, Solana
+withdraw (`writes.ts`) and the Sui intent execute path (`intentExecutors.ts`).
+Async (ERC-7540) deposits and redeem requests are skipped by design: a request
+is not supposed to move the position yet, and asserting that it did would flag
+every correct one.
+
+**Two bugs fell out of needing a receipt.** The EVM path now does a bounded
+15-second `waitForTransactionReceipt` after broadcast, and with a receipt in
+hand:
+
+- A `submitted` outcome means the node ACCEPTED the broadcast, not that the
+  transaction succeeded. A **reverted** deposit or withdraw was being reported
+  to the user as a success with a hash, and a position row was created for it.
+  Now it takes the same path the already-existing `mined && !success` branch
+  takes.
+- The ERC-7540 `requestId` decode called `getTransactionReceipt` the instant
+  after broadcast — before the transaction could possibly be mined — and
+  swallowed the not-found error, so the id was effectively never read. It now
+  reads the receipt that was actually waited for.
+
+`tx_confirmed` was hardcoded `false` on the deposit path and is now read from
+the receipt.
+
+### 16.2 Deposits that name a protocol instead of a pool
+
+A venue-routed Sui intent ("supply 100 USDC to Scallop") and a legacy
+slug-routed EVM deposit both name a protocol, so the server never resolves a
+`DepositTarget`. Both call sites skipped the **entire** pipeline for those —
+`writes.ts` behind `if (depositTarget)`, `runSuiSafety` behind an early return.
+
+The reasoning at the time was sound as far as it went: a Layer-1 identity check
+has nothing to look at, and `writes.ts` was even constructing a fake
+zero-address `erc4626` target that nothing ever read. What it missed is how
+much of the pipeline never needed a target. Skipping it meant those deposits
+were exempt from the ops kill switch, the per-chain DeFi gate, the user's own
+tier / whitelist / pause, the decimals and balance checks, the chain binding,
+the recipient assertion and the duplicate-submission guard.
+
+`SafetyContext.target` is now optional and a check declares
+`appliesTo.requiresTarget` when it genuinely needs one. The runner drops
+exactly those, and the audit trail records the target as `"unresolved"`, so the
+gap is visible in `PipelineResult.ran` instead of invisible at a call site.
+
+Three checks changed shape rather than gaining the flag:
+
+- `FamilyKillSwitchCheck` keys off `family` **and** `protocolSlug`, which is
+  what a venue-routed deposit carries and what ops actually types during an
+  incident. Requiring a target would have made the lever inert for the one
+  deposit shape that names the protocol and nothing else.
+- `SanctionsScreenCheck` still screens the user's own wallet.
+- `DecodedIntentMatchCheck` was **split**. The recipient / asset / amount
+  assertions are about the call and the user and hold either way; the allowlist
+  and destination binding need a target and are now
+  `DestinationBoundToTargetCheck`. Folding them together meant a target-less
+  deposit either lost all of it or logged `decoded-intent-match` as passed while
+  silently skipping the target half.
+
+The Sui path additionally gained the user's strategy (`getStrategy`, best-effort
+exactly as `writes.ts` treats it). Tier, whitelist and pause were being enforced
+on two chains out of three.
+
+**What is deliberately still not covered.** Exit terms. The lockup is a property
+of the pool and every provider reads it off `target.kind`, so a venue-routed
+supply is not gated on it. Failing it closed instead would refuse every
+plain-language Sui supply — a product decision, not the check's to take. The
+user is told: the preview carries a `warn` flag, "Pool not verified on chain",
+which states that identity and withdrawal terms could not be checked and that
+everything else still ran. The honest next step is an adapter capability that
+reports the canonical target a venue resolves to, which would let the full
+pipeline run on the venue path too; it is feature work on ~10 adapters and was
+not started.
+
+### 16.2b Noted while wiring, not a defect: `decimals-match` is EVM-inert
+
+Layer 2's own header calls the decimals check "the highest-value item in the
+whole layer", and on the `writes.ts` deposit path it returns `ok` on its fourth
+line, because it needs `ctx.requestedHuman` and nothing sets it.
+
+That is correct, not an oversight, and it is written down here so nobody
+"fixes" it into something circular. `defi_deposit` takes `amount_raw` and
+nothing else; the only human-scale number available downstream is
+`formatUnits(amountRaw, decimals)`, which is derived FROM the same `decimals`
+the check would be validating. Cross-checking it would prove nothing.
+
+The check is real exactly where an independent human amount exists: the Sui
+intent path, where the model emits `amount.human` and the compiler scales it,
+so `runSuiSafety` passes `requestedHuman` and the two derivations can actually
+disagree. Giving the EVM path real coverage means adding a human amount to the
+tool contract, not adjusting the check.
+
+### 16.3 Verifying a change in here
+
+Every guard added in this pass was confirmed to FAIL before it was trusted, by
+breaking the thing it protects and watching the test go red:
+
+| drift introduced | test that caught it |
+| --- | --- |
+| delta reverted to the single-reading form | 4 in `postexec.test.ts` |
+| direction no longer follows `ctx.action` | 2 |
+| `protocol-halted` unscoped from stages | 1 |
+| `verifyPostExecution` throws instead of returning | 4 |
+| a failed read treated as `0n` | 1 |
+| runner ignores `requiresTarget` | 2 in `safetyPipeline.test.ts` |
+| kill switch requires a target again | 2 |
+| `runSuiSafety` skips on a missing target | 2 in `intentExecutors.test.ts` |
+
+This matters more than the count. An earlier pass in this file shipped two
+guards that passed under simulated drift — a `kind coverage` assertion that
+tested the wrong return value, and a TypeScript exhaustiveness check written as
+`const _: Unclassified[] = []`, which compiles green for **any** element type
+because an empty array satisfies it. A guard nobody has watched fail is a guard
+you do not know you have.

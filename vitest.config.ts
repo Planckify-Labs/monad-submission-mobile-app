@@ -125,6 +125,7 @@ export default defineConfig({
       // enforces it.
       "services/defi/unionParity.test.ts",
       "services/defi/addressBookParity.test.ts",
+      "services/defi/nonEvmPinParity.test.ts",
       // Fork tests (§11.3). Skipped unless FORK_TESTS=1 and FORK_RPC_URL_<id>
       // are set, so listing them here is safe: without a fork they report their
       // own gate and nothing else.
@@ -135,6 +136,9 @@ export default defineConfig({
       "services/defi/__fork__/forkCoverage.test.ts",
       "services/defi/slippage.test.ts",
       "services/defi/safety/safetyPipeline.test.ts",
+      "services/defi/safety/postexec.test.ts",
+      "services/defi/safety/providers/solanaProvider.test.ts",
+      "services/defi/safety/providers/suiProvider.test.ts",
       // Exit-terms consent gate (§11 Layer 3, §12 Q2).
       "services/defi/safety/exitTerms.test.ts",
       // Deposit-risk (impermanent-loss) disclosure copy.

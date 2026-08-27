@@ -61,7 +61,12 @@ export function selectChecks(ctx: SafetyContext): SafetyCheck[] {
       const a = check.appliesTo;
       if (!a) return true;
       if (a.namespaces && !a.namespaces.includes(ctx.namespace)) return false;
-      if (a.kinds && !a.kinds.includes(ctx.target.kind)) return false;
+      // A kind-scoped check is target-dependent by construction: with no
+      // resolved target there is no kind to match, so it cannot apply.
+      if (a.kinds && (!ctx.target || !a.kinds.includes(ctx.target.kind))) {
+        return false;
+      }
+      if (a.requiresTarget && !ctx.target) return false;
       if (a.stages && !a.stages.includes(ctx.stage)) return false;
       if (a.actions && !a.actions.includes(ctx.action)) return false;
       return true;
@@ -132,7 +137,10 @@ export async function runSafetyPipeline(
       verdict: result.ok ? "pass" : "fail",
       fail: result.ok ? undefined : result.fail,
       detail: result.ok ? undefined : result.detail,
-      target: ctx.target.kind,
+      // "unresolved" is a real, distinguishable value in the trail: it says
+      // this deposit named a protocol rather than a pool, which is also why
+      // the target-dependent checks are absent from `ran`.
+      target: ctx.target?.kind ?? "unresolved",
       wallet: ctx.wallet,
       chainId: ctx.chainId,
       ts: Date.now(),

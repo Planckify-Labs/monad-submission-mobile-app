@@ -22,6 +22,21 @@ export type AnalyticsEventProps = {
     to_asset?: string;
     amount?: number;
   };
+  /**
+   * A safety-pipeline refusal (§11.6 #7). Failures only — passes stay in the
+   * device-local ring in `services/defi/safety/opsConfig.ts`. Carries no
+   * wallet address and no raw error text, only our own curated vocabulary.
+   */
+  defi_safety_check_failed: {
+    check_id: string;
+    layer: number;
+    verdict: string;
+    fail_code?: string;
+    detail?: string;
+    target_kind?: string;
+    chain_id?: string | number;
+    passed_before?: string;
+  };
   defi_deposit_completed: {
     chain: string;
     protocol_slug?: string;
