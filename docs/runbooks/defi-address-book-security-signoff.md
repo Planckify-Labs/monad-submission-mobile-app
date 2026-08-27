@@ -603,6 +603,216 @@ round trip was **executed on a fork** rather than inferred from probes — which
 is the check Avant taught us to insist on, since every structural signal on
 Avant also looked correct.
 
+---
+
+## 10. Solana address-book security sign-off — 2026-08-27
+
+Closes §9's Solana half. Sui (§9.3) is untouched by this pass and remains
+unsigned. Same bar as §2.2, using §9.4's substitution (owning program /
+type-origin package stands in for a checksummed "address").
+
+### 10.1 Scope
+
+Solana has no single `address-book/` directory (§9.1) — the trust decisions
+are spread across the device safety provider, two adapter-side venue tables,
+and their backend twins:
+
+| Population | Where | Distinct addresses |
+|---|---|---:|
+| Protocol programs (Kamino Lend, Kamino kVault, Kamino kLiquidity, Raydium CPMM/AMM v4/Stable, Jito Restaking Vault, Jupiter Lend) | `services/defi/safety/providers/solana.ts` ⇄ 8 `api/src/strategies/targets/*.resolver.ts` | 8 |
+| Kamino kvault venue table (2 vaults: Sentora PYUSD, Ethena Prime) | `api/.../kamino-kvault.config.ts` ⇄ `services/defi/adapters/kaminoKvault.ts` | 4 (2 vaults + 2 mints) |
+| Jito "Kyros" restaking-vault pin | `api/.../jito-vault.resolver.ts` ⇄ `services/defi/adapters/jitoVaultDeposit.ts` | 1 (vault; mint is JitoSOL, counted below) |
+| Solana LST venue table — 16 `spl-stake-pool` venues | `services/defi/adapters/solana/lst.config.ts` ⇄ `api/.../solana-lst.config.ts` | 35 (16 pools + 16 mints + the 3 distinct stake-pool-fork programs behind them) |
+| Solana LST venue table — Marinade | same files | 3 (program + state + mSOL mint) |
+| **Total** | | **51** |
+
+`BPF_LOADER_UPGRADEABLE` (`solana.ts`, used only to assert Jupiter Lend's
+program is a deployed executable) is Solana's own native loader address, not
+a protocol trust decision — checked live but not counted above, the same way
+the EVM pass didn't "sign off" `0x0` or a CREATE2 factory.
+
+Individual Kamino Lend reserves, individual Raydium pools, and individual
+kLiquidity strategies are **not** book entries — only the 8 programs above
+are pinned for those kinds. Each instance is instead independently
+owner-checked on-chain, every time, by `isAllowlisted`/`isAllowedDestination`
+at deposit time. That is stronger than a static pin (it cannot go stale the
+way Finding 1's `cWETHv3` did), so those instances are out of this review's
+scope for the same reason §2's EVM book never lists per-market Aave reserves.
+
+### 10.2 Method actually used
+
+- **Cross-repo parity.** `services/defi/nonEvmPinParity.test.ts` (targeted
+  single-file run, 2026-08-27: **7/7 pass**) mechanically confirms mobile and
+  api agree. Per §1.1/§9.2, that proves agreement, not correctness — every
+  verification below is independent of it.
+- **Leg 1 (protocol's own registry).** Official npm-scoped SDK packages —
+  `@kamino-finance/klend-sdk`, `@kamino-finance/kliquidity-sdk`,
+  `@raydium-io/raydium-sdk-v2`, `@jito-foundation/vault-sdk`,
+  `@marinade.finance/marinade-ts-sdk`, `@jup-ag/lend` — downloaded from the
+  npm registry and grepped for each pinned constant. A scoped npm package
+  under an org name (`@kamino-finance/*`, `@jito-foundation/*`,
+  `@marinade.finance/*`) requires npm-verified ownership of that org, which is
+  the same tier of first-party evidence §2.2 accepts for a GitHub org repo.
+  Sanctum's own `igneous-labs/sanctum-lst-list` Rust crate
+  (`rust/sanctum-lst-list/src/programs.rs`) for the three stake-pool-fork
+  program ids. Kamino's own live vaults API (`api.kamino.finance/kvaults/vaults`)
+  for the two kvault instances. DeFiLlama's protocol registry
+  (`api.llama.fi/protocol/kyros`) for Kyros's official URL + asset, and its
+  `yield-server` adaptor source for solstrategies (recorded below at the same
+  below-the-bar tier §2.2 gives aggregator-adjacent provenance).
+- **Leg 2 (second source / on-chain corroboration).** Live `getAccountInfo`
+  against public mainnet RPC for all 51 addresses: every program confirmed
+  `executable: true`, owner = the upgradeable BPF loader; every instance
+  account confirmed owner = its claimed program; every one of the 16 stake
+  pools had its `pool_mint` field (SPL Stake Pool layout, offset 162 — the
+  same offset `adapters/solanaLst.ts` already reads, re-applied independently
+  here rather than trusted) decoded and compared byte-for-byte against the
+  claimed mint. A `total_lamports` read on all 16 pools additionally served
+  as a liveness check (§10.4 explains why).
+- **Leg 3 (venue question, §1.4).** Kamino, Raydium, Jito, Jupiter Lend and
+  Marinade are re-confirmed live and operating **today** (not from training
+  recall) by the fact that their own APIs/on-chain state answered with
+  current, non-trivial numbers during this review (Kamino kvault
+  `tokenAvailable`/`sharesIssued`, Jupiter Lend's `totalAssets`, Kyros's
+  DeFiLlama TVL, all 16 stake pools' `total_lamports`). Per-brand
+  reputational/incident research for each of the 16 white-label LST brands
+  individually was **not** performed — see §10.6.
+
+### 10.3 Verdict summary
+
+| Family / group | Addresses | Verdict |
+|---|---:|---|
+| Kamino Lend program | 1 | **PASS** — matches `@kamino-finance/klend-sdk`'s own `programId.ts` |
+| Kamino kVault program | 1 | **PASS** — matches klend-sdk's `kvault` codegen `programId.ts` |
+| Kamino kLiquidity program | 1 | **PASS** — matches `@kamino-finance/kliquidity-sdk`'s `YVAULTS_PROGRAM_ADDRESS` |
+| Kamino kvault instances (Sentora PYUSD, Ethena Prime) | 2 vaults + 2 mints | **PASS** — Kamino's own `/kvaults/vaults` API names both, `tokenMint` matches exactly, both live and funded |
+| Raydium CPMM / AMM v4 / Stable programs | 3 | **PASS** — all three match `@raydium-io/raydium-sdk-v2`'s `src/common/programId.ts` exactly |
+| Jito Restaking Vault program | 1 | **PASS** — matches `@jito-foundation/vault-sdk`'s `JITO_VAULT_PROGRAM_ADDRESS` |
+| Jito "Kyros" vault instance | 1 | **PASS, with a recorded gap (Finding S2)** — on-chain + DeFiLlama asset-match only, no first-party document names the instance |
+| Jupiter Lend program | 1 | **PASS** — matches `@jup-ag/lend`'s own bundled `PROGRAM_IDS.lending.main` |
+| Sanctum stake-pool-fork programs (`Spl`, `SanctumSpl`, `SanctumSplMulti`) | 3 | **PASS** — all three match Sanctum's own `sanctum-lst-list` Rust crate `programs.rs` |
+| 15 `spl-stake-pool` LST venues (jito/jupsol/dsol/phantom/dfdv/hylo/bonk/helius/bybit/thevault/doublezero/blazestake/jpool/binance/jagpool) | 30 (pool + mint) | **PASS** — pool, program tag and mint all match Sanctum's list exactly; on-chain owner+mint decode match; all 16 live with 100K-10.3M SOL staked (see below) |
+| `solstrategies` (stkeSOL) | 2 (pool + mint) | **PASS, below the strict provenance bar (recorded, same as original pin)** — matches DeFiLlama's `yield-server` adaptor source code exactly; on-chain owner+mint match; 615K SOL live |
+| Marinade program, state, mSOL mint | 3 | **PASS** — all three match `@marinade.finance/marinade-ts-sdk`'s own README account list; state's on-chain owner matches the program |
+
+**Result: 51/51 addresses signed off, 0 wrong addresses.** Two findings
+recorded, neither an address defect — see §10.4.
+
+### 10.4 Findings
+
+#### Finding S1 — Sanctum's canonical LST source has moved behind a key this codebase doesn't have — **MEDIUM (informational, not fail-closed)**
+
+`igneous-labs/sanctum-lst-list`'s own `README.md`:
+
+> **ARCHIVE NOTICE** — This repo is no longer in use. Sanctum LST metadata is
+> now served from a live DB via our API at
+> `https://sanctum-api.ironforge.network`.
+
+Every endpoint on that replacement API returned `401 {"error":{"code":
+"UNAUTHORIZED","message":"Missing API key."}}` during this review — this
+codebase has no credential for it. Two things follow, and they cut opposite
+ways:
+
+- The **program-id constants** (`Spl`/`SanctumSpl`/`SanctumSplMulti` →
+  `SPoo1Ku8…`/`SP12tWFxD9…`/`SPMBzsVUuo…`) live in the repo's compiled Rust
+  crate source, not the archived data feed — those are unaffected and still
+  matched exactly (§10.3).
+- The **per-pool TOML rows** (pool address, mint, symbol) are a frozen
+  snapshot that happened to still be fetchable from GitHub. It matched all 15
+  applicable venues byte-for-byte, but Sanctum is no longer maintaining that
+  file going forward. A new pool Sanctum onboards after the archive date, or
+  a future pool migration, would not be caught by re-diffing against it.
+
+This is the same shape as §1.6: a control that looks like coverage but quietly
+stopped being current. **Recommendation:** whoever owns Sanctum's integration
+relationship should get an `ironforge` API key before the next Solana
+re-verification pass, so `sanctum-lst-list.toml` can be replaced with the live
+endpoint rather than a dated GitHub snapshot.
+
+#### Finding S2 — Jito's "Kyros" vault has no first-party document naming the specific pinned instance — **LOW (documented gap, §2.2 rule 3)**
+
+`CQpvXgoaaawDCLh8FwMZEwQqnPakRUZ5BnzhjnEBPJv`, pinned in
+`jito-vault.resolver.ts`/`jitoVaultDeposit.ts`.
+
+Checked and came up empty: `kyros.fi`'s static HTML (client-rendered SPA, no
+address in the served markup), `api.kyros.fi`, `kyros.fi/api/*`,
+`kobe.mainnet.jito.network` (Jito's known stake-data API host),
+`jito.network`'s public API and docs (403/404). Unlike the Jito Vault
+*program* (confirmed against the official SDK, §10.3) or Kamino's kvault
+instances (confirmed against Kamino's own `/kvaults/vaults` API), no
+first-party source publishes which vault address is "Kyros" as a named
+product.
+
+What corroborates it instead: the account's on-chain owner is the Jito Vault
+program (confirmed §10.2), and DeFiLlama's own protocol registry
+(`api.llama.fi/protocol/kyros`) names the official site (`kyros.fi`) and its
+one live Solana pool's `underlyingTokens` is exactly the pinned JitoSOL mint,
+with a live TVL of ~$11.8M during this review — the same "payload agrees with
+the protocol on every checkable point" reasoning §2.2/Finding 4 already
+established as sufficient when a static document doesn't exist. Recording
+this honestly as a gap rather than silently treating on-chain-only as equal
+to the full three-leg bar: a future reviewer should re-check whether Kyros
+ever exposes a vault-list endpoint the way Kamino does.
+
+#### Note — Kamino's own vault label differs from the book's DeFiLlama-driven one (benign)
+
+Kamino's `/kvaults/vaults` API names `D1XVxx4ur7kiSgpuerUmoJXvZ3yEBFZWPx1uN7qBADFb`
+**"Ethena Prime"**; the book's `poolMeta` match string (sourced from
+DeFiLlama, which is what the resolver actually joins against) is **"Kamino
+USDG Ethena"**. Address and mint both match exactly (§10.3) — this is two
+different projects' display names for the same vault, not a Finding-3-shaped
+defect. Recorded so a future reviewer doesn't re-flag it as a mismatch.
+
+#### Note — Jupiter Lend's second ("ethena") program deployment, independently corroborated
+
+`@jup-ag/lend`'s own bundled `PROGRAM_IDS` constant confirms Jupiter Lend
+segments some assets under a **second** program deployment,
+`jup97Zx1NixM8UJMQFw8TtKzqTiRT3ETAJR7cVx3PfQ` (`lending.ethena`), distinct
+from the pinned `lending.main` (`jup3YeL8Qh…`). `adapters/jupiterLend.ts`'s
+own header already documented this exact split and reasoned that an asset
+needing "ethena" would fail loudly (account-not-found) rather than silently
+misroute — this review independently confirms the second program id is real
+(not a hypothetical) and that all 7 live Earn assets on
+`lite-api.jup.ag/lend/v1/earn/tokens` today are mainstream single assets
+consistent with "main". Not a new finding; recorded as corroboration of an
+already-correct call.
+
+### 10.5 Sign-off status
+
+| Requirement | Status |
+|---|---|
+| Every Solana pinned address reviewed | **COMPLETE — 51/51 addresses signed off 2026-08-27, 0 wrong addresses.** Two findings recorded (S1: a source going stale, not an address defect; S2: a documented provenance gap on one vault instance, not a wrong address). Outstanding: a **named Security counter-signature** (below) and obtaining an `ironforge` API key (S1). |
+
+**Running total (Solana): 51 addresses signed off, 0 corrections needed.**
+Tracked separately from the EVM running total in §6.2 (129 addresses) — these
+are two distinct populations per §9.
+
+### 10.6 What this pass did not cover (residual scope, stated honestly per §1)
+
+- **Sui pins (§9.3)** — completely untouched by this pass, still unsigned.
+- **Per-brand solvency/incident history** for each of the 16 LST brand names
+  (Phantom, DeFi Development Corp, Hylo, BONK, Helius, Bybit, The Vault,
+  DoubleZero, BlazeStake, JPool, Binance, JagPool, SOL Strategies) was not
+  individually researched the way Radiant's wind-down was surfaced in §1.4/
+  Finding 2. Substituted with a live on-chain liveness read instead (§10.2) —
+  a materially different, weaker signal than a reputational check, and worth
+  a follow-up pass if any of these venues starts carrying meaningful TVL
+  through this app.
+- **Finding S1's replacement source** (`sanctum-api.ironforge.network`) could
+  not be queried — no API key available to this review.
+- **Dynamic-resolution instances** (individual Kamino Lend reserves, Raydium
+  pools, kLiquidity strategies) — by design not book entries; see §10.1.
+
+### Sign-off log (Solana)
+
+| Date | Reviewer | Scope | Result |
+|---|---|---|---|
+| 2026-08-27 | Automated review, pending Security counter-signature | 51 Solana pinned addresses: 8 protocol programs, Kamino kvault's 2 instances, Jito's Kyros vault, the 17-venue LST table (16 `spl-stake-pool` + Marinade) — full on-chain corroboration for all, first-party SDK/API/registry match for all but one instance (S2) | **51/51 PASS.** 0 wrong addresses. 2 findings (S1, S2), neither hiding an incorrect address. |
+
+> Same rule as §7: a row here needs a **named human**. The 2026-08-27 row is
+> a prepared review, not a signature — a Security reviewer countersigns after
+> checking this section's evidence.
+
 **Running total: 129 addresses.** The counter-signature in §7 covers 125; these
 four are appended pending the same signature.
 
@@ -742,10 +952,12 @@ automated layers already give us.
 
 ## 9. Non-EVM pins — NOT covered by this sign-off
 
-**Status: unsigned.** Everything above concerns
+**Status: Solana signed off 2026-08-21 → 2026-08-27, see §10. Sui remains
+unsigned.** Everything in §§1-8 concerns
 `api/src/strategies/targets/address-book/`, which is EVM-only. The Solana and
-Sui expansions added a second population of pinned identities that has never
-had an equivalent pass, and the numbers are no longer small.
+Sui expansions added a second population of pinned identities that had never
+had an equivalent pass, and the numbers are no longer small. §10 closes the
+Solana half; Sui (§9.3) is still open.
 
 ### 9.1 Where they live
 
