@@ -118,6 +118,10 @@ export const TOOLS_WITHOUT_COUNTERPARTY: ReadonlySet<string> = new Set([
   "defi_cross_chain_deposit",
   "defi_compound",
   "defi_intent_execute",
+  // Creates a reminder, not a transfer. There is no destination at setup
+  // time; the venue is disclosed on the opportunity card each cycle, when
+  // the user actually approves a deposit.
+  "defi_set_recurring_invest",
   // Settles inside a pre-signed on-chain allowance whose caveats are the
   // hard ceiling; there is no address for the user to vet per call.
   "x402_fetch",

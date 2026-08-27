@@ -26,11 +26,21 @@
  *    unlike the strategy-gated /strategies detail screen). Inert in
  *    historical mode where `onUserPrompt` is undefined.
  *  - The empty state is actionable: tap to ask the agent to widen.
+ *
+ * Since docs/defi-quick-invest-spec.md §4 this file is also a thin router
+ * between two render modes. `quick` (the default) renders
+ * `OpportunityQuickInvestCard`; `browse` renders everything described
+ * above, unchanged. The browse list is NOT deprecated — it is the only
+ * surface that can deposit a hand-typed amount into one specific pool,
+ * which is how a newly-added protocol/pool gets exercised individually.
+ * The mode choice is remembered for the session, so switching to browse
+ * once keeps later opportunity cards in browse too.
  */
 
 import { router } from "expo-router";
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Check,
   ChevronDown,
@@ -57,6 +67,7 @@ import { strategiesApi } from "@/api/endpoints/strategies";
 import SingleLoadingSekeleton from "@/components/common/SingleLoadingSekeleton";
 import { useUserStrategy } from "@/hooks/queries/useStrategy";
 import { useAddWalletPrompt } from "@/hooks/useAddWalletPrompt";
+import useRQGlobalState from "@/hooks/useRQGlobalState";
 import { useWallet } from "@/hooks/useWallet";
 import type { Namespace } from "@/services/chains/types";
 // ⚠️ TEMPORARY DEBUG — delete with services/defi/__debugEvmCoverage.ts
@@ -67,15 +78,19 @@ import {
 import {
   type DisplayPool,
   groupOpportunities,
+  isTestnetRow,
   type OpportunityGroup,
   prettyProtocol,
   type RawOpportunity,
 } from "@/services/defi/opportunityDisplay";
+import { chainLabel, TIER_LABEL } from "@/services/defi/opportunityLabels";
 import { protocolAppUrl } from "@/services/defi/protocolLinks";
+import { buildDepositPrompt } from "@/services/defi/quickInvest";
 import { getChainFamilyLabel } from "@/services/walletKit/chainInfo";
 import { ownedNamespaces } from "@/services/walletPresence";
 import { tapFeedback } from "@/utils/hapticsUtils";
 import type { ToolComponentProps } from "../types";
+import OpportunityQuickInvestCard from "./OpportunityQuickInvestCard";
 import PagerButton from "./PagerButton";
 import SetupStrategyCTA from "./SetupStrategyCTA";
 
@@ -131,12 +146,6 @@ type OpportunityOutput = {
   };
 };
 
-const TIER_LABEL: Record<string, string> = {
-  conservative: "Low risk",
-  balanced: "Moderate risk",
-  aggressive: "High risk",
-};
-
 const TIER_PILL_COLOR: Record<string, string> = {
   conservative: "bg-green-100 text-green-700",
   balanced: "bg-amber-100 text-amber-700",
@@ -146,18 +155,6 @@ const TIER_PILL_COLOR: Record<string, string> = {
 // Slug → display name now lives in `services/defi/opportunityDisplay.ts`
 // (`prettyProtocol`): the approval surfaces have to show the user the same
 // venue name this list showed them when they picked it.
-
-const TESTNET_CHAIN_IDS = new Set<number>([
-  11155111, // Ethereum Sepolia
-  84532, // Base Sepolia
-  421614, // Arbitrum Sepolia
-  11155420, // Optimism Sepolia
-  80002, // Polygon Amoy
-  97, // BNB testnet
-  43113, // Avalanche Fuji
-  59141, // Linea Sepolia
-  534351, // Scroll Sepolia
-]);
 
 function apyNumber(value: OpportunityRow["apy"]): number {
   if (value === undefined || value === null) return Number.NEGATIVE_INFINITY;
@@ -200,51 +197,6 @@ function formatSafety(value: OpportunityRow["score"]): string | null {
   const n = typeof value === "string" ? Number(value) : value;
   if (!Number.isFinite(n)) return null;
   return `Safety ${Math.round(n)}`;
-}
-
-// Prefer the backend's DeFiLlama-provided label (covers testnets like
-// "Ethereum Sepolia" and any chain we haven't hardcoded). Fall back to a
-// best-effort lookup by chainId for legacy payloads that omit the name.
-function chainLabel(
-  chainName?: string,
-  chainId?: number,
-  namespace?: string,
-): string | null {
-  if (chainName && chainName.trim()) return chainName;
-  // Non-EVM payloads (Solana / Sui) carry a namespace but no numeric
-  // chainId — ask the registry for the chain-family label instead of
-  // branching on the namespace string here.
-  if (chainId === undefined && namespace) {
-    const label = getChainFamilyLabel(namespace);
-    if (label !== "Wallet") return label;
-  }
-  switch (chainId) {
-    case 1:
-      return "Ethereum";
-    case 8453:
-      return "Base";
-    case 42161:
-      return "Arbitrum";
-    case 10:
-      return "Optimism";
-    case 137:
-      return "Polygon";
-    case 56:
-      return "BNB Chain";
-    default:
-      return chainId ? `Chain ${chainId}` : null;
-  }
-}
-
-function isTestnetRow(row: OpportunityRow): boolean {
-  if (
-    row.chain_id !== undefined &&
-    TESTNET_CHAIN_IDS.has(Number(row.chain_id))
-  ) {
-    return true;
-  }
-  const name = (row.chain_name ?? "").toLowerCase();
-  return /sepolia|testnet|goerli|holesky|devnet|fuji|mumbai|amoy/.test(name);
 }
 
 function SkeletonRow() {
@@ -652,6 +604,20 @@ const OpportunityListCard: React.FC<
   const { wallets } = useWallet();
   const { promptFor, sheet: addWalletSheet } = useAddWalletPrompt();
   const [page, setPage] = useState(0);
+  /**
+   * Which render mode this card is in (quick-invest spec §4).
+   *
+   * Session-scoped rather than per-card on purpose: someone verifying a
+   * newly-registered protocol wants the pool-by-pool list for every
+   * opportunity card in the conversation, not one tap per card. Switching
+   * back to "quick" is the same single tap.
+   */
+  const { data: viewMode, setNewData: setViewMode } = useRQGlobalState<
+    "quick" | "browse"
+  >({
+    queryKey: ["defi", "opportunity-view-mode"],
+    initialData: "quick",
+  });
 
   const owned = useMemo(
     () => new Set<Namespace>(ownedNamespaces(wallets)),
@@ -757,15 +723,20 @@ const OpportunityListCard: React.FC<
   // as ONE row with a "best of N pools" drill-down instead of N indistinct
   // rows (spec §2.1, §9). Testnets are filtered first (hidden in production
   // when any mainnet row exists), then grouping ranks groups safest-first.
-  const groups = useMemo(() => {
+  const visibleRows = useMemo(() => {
     const all = output?.data?.opportunities ?? [];
     const mainnet = all.filter((r) => !isTestnetRow(r));
     const visible = !__DEV__ && mainnet.length > 0 ? mainnet : all;
     // ⚠️ TEMPORARY DEBUG — dumps in-app vs Manual coverage to Metro.
     logEvmCoverage(all as RawOpportunity[]);
     logSolanaCoverage(all as RawOpportunity[]);
-    return groupOpportunities(visible as RawOpportunity[]);
+    return visible;
   }, [output]);
+
+  const groups = useMemo(
+    () => groupOpportunities(visibleRows as RawOpportunity[]),
+    [visibleRows],
+  );
 
   // Flattened pools (across all groups + pages) drive selection + counts.
   const allPools = useMemo(() => groups.flatMap((g) => g.pools), [groups]);
@@ -918,6 +889,30 @@ const OpportunityListCard: React.FC<
     );
   }
 
+  // ── Mode router (§4) ────────────────────────────────────────────────
+  // Quick Invest leads with the outcome. Everything below this branch is
+  // the browse list, unchanged and one tap away — and still the only way
+  // to deposit a hand-typed amount into one hand-picked pool.
+  if (viewMode === "quick") {
+    return (
+      <>
+        <OpportunityQuickInvestCard
+          input={input}
+          rows={visibleRows}
+          scope={output?.data}
+          optionCount={groups.length}
+          onUserPrompt={onUserPrompt}
+          onBrowse={() => {
+            tapFeedback();
+            setViewMode("browse");
+          }}
+          showSetupCTA={showSetupCTA}
+        />
+        {addWalletSheet}
+      </>
+    );
+  }
+
   const pageCount = Math.max(1, Math.ceil(groups.length / PREVIEW_COUNT));
   const safePage = Math.min(page, pageCount - 1);
   const shownGroups = groups.slice(
@@ -952,26 +947,26 @@ const OpportunityListCard: React.FC<
   const canSubmit = canDeposit && !!onUserPrompt;
   const submitDeposit = () => {
     if (!onUserPrompt || depositable.length === 0) return;
-    const legs = depositable.map((p) => {
-      const sym = p.asset_symbol ?? input?.asset_symbol ?? "tokens";
-      const chain = chainLabel(p.chain_name, p.chain_id, p.namespace);
-      const meta = p.pool_meta ? ` — ${p.pool_meta}` : "";
-      // Carry the exact poolId so the agent pins the precise pool (spec §6):
-      // EVM routes it into `defi_deposit { pool_id }`, Sui into
-      // `defi_intent_preview { poolId }` (pool-level Sui deposits, Phase 3) — a
-      // multi-vault Sui venue (Ember) is otherwise ambiguous from the venue name
-      // alone. Both paths now consume a pool_id, so include it whenever the pick
-      // carries one; the agent routes by the row's chain/namespace, not by this
-      // hint (no namespace branch here, per the CI guardrail).
-      const poolHint = p.pool_id ? ` (pool_id ${p.pool_id})` : "";
-      return `${amounts[p.rowKey]} ${sym} into ${prettyProtocol(
-        p.protocol_slug,
-      )}${meta}${chain ? ` on ${chain}` : ""}${poolHint}`;
-    });
+    // Wording lives in `buildDepositPrompt` so the Quick Invest card and
+    // this multi-select builder can never drift into describing the same
+    // deposit differently. Each leg carries the exact poolId so the agent
+    // pins the precise pool (spec §6): EVM routes it into
+    // `defi_deposit { pool_id }`, Sui into `defi_intent_preview { poolId }`
+    // (pool-level Sui deposits, Phase 3) — a multi-vault Sui venue (Ember)
+    // is otherwise ambiguous from the venue name alone. The agent routes by
+    // the row's chain/namespace, not by this hint (no namespace branch
+    // here, per the CI guardrail).
     onUserPrompt(
-      legs.length === 1
-        ? `Deposit ${legs[0]} from my wallet. Please proceed.`
-        : `Deposit the following from my wallet: ${legs.join("; ")}. Please proceed.`,
+      buildDepositPrompt(
+        depositable.map((p) => ({
+          amount: amounts[p.rowKey],
+          symbol: p.asset_symbol ?? input?.asset_symbol ?? "tokens",
+          protocolLabel: prettyProtocol(p.protocol_slug),
+          poolMeta: p.pool_meta,
+          chain: chainLabel(p.chain_name, p.chain_id, p.namespace),
+          poolId: p.pool_id,
+        })),
+      ),
     );
     setSelected(new Set());
     setAmounts({});
@@ -980,6 +975,17 @@ const OpportunityListCard: React.FC<
   return (
     <View className="my-1.5-">
       <View className="flex-row items-center gap-2 px-3.5 py-3 mb-1.5 rounded-2xl border border-light-matte-black/10 bg-white">
+        <Pressable
+          onPress={() => {
+            tapFeedback();
+            setViewMode("quick");
+          }}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Back to the quick invest card"
+        >
+          <ArrowLeft size={14} color={BRAND_RED} />
+        </Pressable>
         <TrendingUp size={14} color={BRAND_RED} />
         <Text className="text-xs font-bold uppercase tracking-wide text-light-matte-black">
           {header}

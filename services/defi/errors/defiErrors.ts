@@ -33,6 +33,8 @@ export type DefiErrorCode =
   | "strategy_paused"
   | "strategy_not_configured"
   | "position_not_found"
+  /** DCA v1: the recurring plan is gone, or was already cancelled. */
+  | "plan_not_found"
   | "cooldown_in_progress"
   | "cooldown_not_started"
   | "no_claimable_balance"
@@ -119,6 +121,7 @@ const PASSTHROUGH_CODES = new Set<DefiErrorCode>([
   "strategy_paused",
   "strategy_not_configured",
   "position_not_found",
+  "plan_not_found",
   "cooldown_in_progress",
   "cooldown_not_started",
   "no_claimable_balance",
@@ -398,6 +401,11 @@ export const defiErrorCopy: Record<DefiErrorCode, DefiErrorCopy> = {
   position_not_found: {
     title: "Position not found",
     body: "We couldn't find the position you asked about. Refresh and try again.",
+    cta: "retry",
+  },
+  plan_not_found: {
+    title: "Plan not found",
+    body: "That recurring plan is no longer active. Set up a new one any time.",
     cta: "retry",
   },
   cooldown_in_progress: {

@@ -118,6 +118,13 @@ export const TOOL_NAMESPACE_ROLES: Readonly<Record<string, ToolNamespaceSpec>> =
     defi_claim: ACTIVE,
     defi_rebalance: ACTIVE,
     defi_compound: ACTIVE,
+    // A plan PINS the wallet that will eventually sign, so the wallet on
+    // screen must be the wallet recorded — `active`, never the laxer
+    // `counterparty` (quick-invest spec §12.1a rule 4).
+    defi_set_recurring_invest: ACTIVE,
+    // Reading your own plans is wallet-scoped server-side by the JWT and
+    // needs no chain at all.
+    defi_list_recurring_invest: AGNOSTIC,
     // The one DeFi tool that bridges before depositing: its destination is
     // a chain it names, and the wallet there never signs the source-side
     // transaction.

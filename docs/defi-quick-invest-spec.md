@@ -1,7 +1,37 @@
 # DeFi Quick Invest — Engineering Spec
 
-**Status:** Proposed — not started. All open questions resolved
-(§11, §12.6); ready for implementation review.
+**Status:** **Phases 0, 1 and 2 implemented (2026-08-27), not yet
+device-verified.** Phase 3 (§13) deliberately NOT built — see the note at
+the end of this block. All open questions resolved (§11, §12.6).
+
+Phase 0 landed as: `services/defi/quickInvest.ts` (the §5/§6/§11
+algorithm, pure) + `services/defi/quickInvest.test.ts` (§10, registered in
+`vitest.config.ts`), `components/home/TakumiAgent/StructuredUI/cards/OpportunityQuickInvestCard.tsx`
+with `cards/quickInvest/{AmountSlider,RiskDial,AllocationBreakdown}.tsx`,
+`hooks/defi/useIdleAssetBalances.ts` (§6, §6.1, §11.4, §11.6), and the
+quick/browse router inside `OpportunityListCard.tsx` (§4). Three
+supporting extractions keep the two surfaces from drifting:
+`services/defi/opportunityShape.ts` (`shapeOpportunity`, now shared with
+`reads.ts` because §3.1's dial re-fetch produces rows itself),
+`services/defi/opportunityLabels.ts` (`chainLabel`, `TIER_LABEL`), and
+`isTestnetRow` moved into `services/defi/opportunityDisplay.ts`. The
+deposit prompt wording is now one shared `buildDepositPrompt` so quick and
+browse can never describe the same deposit differently.
+
+Two deliberate additions beyond the spec as written:
+
+- **The browse mode choice is session-sticky** (`useRQGlobalState`, key
+  `["defi","opportunity-view-mode"]`), not per card. Reason from the
+  product owner: the pool-by-pool list with hand-typed amounts is how a
+  newly-registered protocol/pool gets exercised individually against the
+  agent, so a tester needs it for *every* opportunity card in a
+  conversation, not one tap per card. Browse mode carries a back arrow to
+  return. §4's "demoted, not removed" is unchanged.
+- **An explicit "nothing chosen yet" state.** §6's "empty slider" fallback
+  would otherwise present the slider's own floor as if it were a
+  suggestion, so with no amount, no tier and no detectable balance the
+  projection reads `—`, the breakdown is hidden and the CTA is disabled
+  until the user drags. Nothing is claimed that we did not compute.
 **Related:** `docs/defi-pool-level-deposits-spec.md` (§9.2 — the UI invariant
 this spec revises, entry-surface only), `docs/defi-strategies-spec.md`
 (§8 scoring/ranking — the allocation algorithm here reuses `score`
@@ -32,6 +62,74 @@ compared concepts plus the "Final Design" section at the top, which is
 what §3 below implements (concept #11's slider+breakdown card, wrapped
 by the 3-state entry logic).
 
+
+### Phase 1 (agent-api) — landed
+
+`src/agents/defi/tools/opportunities.ts`: `amount_usd`'s description
+rewritten per §8, and `tier`'s alongside it (the same undersell applied —
+the model only passed `tier` when consciously filtering, so a goal it
+understood went unforwarded). `src/agents/defi/systemPrompt.ts` gained the
+"pass `amount_usd` and `tier` whenever the user has stated them" rule, with
+an explicit prohibition on INVENTING an amount: a guessed number reaches
+the user as a pre-filled deposit amount, which is a financial suggestion
+this app must not make on its own. Guarded by new cases in
+`systemPrompt.spec.ts`, including that negative.
+
+### Phase 2 (DCA v1) — landed across three repos
+
+**api:** `RecurringInvestPlan` model + migration
+`20260827000000_recurring_invest_plan`, `recurring-invest.service.ts`,
+`workers/recurring-invest-watcher.processor.ts`, a daily `@Cron` in
+`strategies.scheduler.ts`, and `GET/POST/PATCH /strategies/recurring-invest`
+on `StrategiesController` (owner from the JWT, no wallet field on any DTO).
+`StrategiesService.ensureUserStrategy` became public (§12.6 requirement 1)
+and gained `getSavedTier`, so the DCA layer never touches the legacy
+lowercased `UserStrategy.walletAddress` itself. `plan_not_found` added to
+`DEFI_ERROR_CODES` and mirrored in mobile `defiErrors.ts`.
+
+**agent-api:** `defi_set_recurring_invest` (write) and
+`defi_list_recurring_invest` (read) in `tools/recurring.ts`, both
+card-backed, plus a `human-summary` case whose wording says "remind",
+never "invest". A systemPrompt section frames DCA as a reminder and forbids
+calling it automatic.
+
+**mobile:** `services/agent-executors/defi/recurring.ts`, both cards
+(`RecurringInvestCard` renders `WriteApprovalGate`; `RecurringPlanListCard`
+doubles as the §12.5 pause/cancel surface), the push branch in
+`services/push/index.ts`, and `hooks/useAgentPrefill.ts`'s module-level
+`setAgentPrefillDirect` plus a durable pending-prompt store.
+
+Four deviations from the spec as written, each deliberate:
+
+- **Watcher dedup is a compare-and-swap, not an event row (§12.4).** A plan
+  is not a position, so mirroring the auto-compound `(positionId, kind)`
+  unique constraint would have meant a whole new table. A conditional
+  `updateMany` on the plan's own `nextDueAt` is strictly stronger — two
+  overlapping scans cannot both win — and needs no table.
+- **`ExecutorContext` gained `activeChainCaip2`.** §12.1a rule 1 requires
+  CAIP-2, and `activeChainId` cannot express a Solana cluster or a Stellar
+  network. Resolved through the walletKit registry's `matchesBlockchainRow`,
+  so it is a registry lookup, not a namespace comparison.
+- **§12.5b is handled by a durable pending prompt**, not by catching
+  `authentication_required` in the landing turn. `armPendingAgentPrompt`
+  persists the intent to MMKV; `AgentMode` re-arms it once a session exists
+  again. One code path sends, and the intent survives an app restart during
+  the sign-in detour, which a purely in-memory approach would not.
+- **A generic write-card gate guard was added**
+  (`StructuredUI/writeCardGate.test.ts`). §12.5 flags the missing-gate
+  failure by name; a test that fails on it is the only thing that makes
+  "do not repeat it" hold. It allowlists `x402_fetch` (spends inside a
+  pre-signed allowance) with a stated reason, and it was verified to FAIL
+  on injected drift before being trusted.
+
+### Phase 3 (§13) — deliberately not built
+
+Unattended recurring investing introduces a standing financial authority a
+compromised relayer or scheduler could abuse periodically rather than once.
+§13 says so itself and requires its own security-reviewed spec; the
+schema's `executionMode` column is the forward-compat slot, and nothing
+else about v1 assumes v2 exists. Building it as part of this work would be
+exactly the "do not fold this into a Phase 0/1/2 PR" the spec prohibits.
 ---
 
 ## 1. Problem & goal

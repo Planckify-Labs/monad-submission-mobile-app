@@ -6,6 +6,7 @@ import type {
   TCrossChainQuoteRequest,
   TCrossChainStatusResponse,
   TOpportunity,
+  TRecurringInvestPlan,
   TRouterQuote,
   TStrategyPosition,
   TUserStrategy,
@@ -245,5 +246,48 @@ export const strategiesApi = {
     return api
       .get(`strategies/cross-chain/status?${qs}`)
       .json<TCrossChainStatusResponse>();
+  },
+
+  // ── Recurring investment plans (DCA v1, spec §12) ──────────────────
+  //
+  // None of these takes a wallet address. The owner comes from the JWT
+  // server-side (§12.3a Rule 1), which is also why there is nothing to
+  // canonicalize on this side: a client cannot supply a wrongly-cased
+  // address because a client cannot supply an address at all.
+
+  listRecurringInvestPlans: async () => {
+    return api
+      .get("strategies/recurring-invest")
+      .json<TRecurringInvestPlan[]>();
+  },
+
+  /**
+   * Create or replace the plan for one (wallet, chain, asset). Creates a
+   * REMINDER only: no funds move at setup time and no signing authority is
+   * granted. `caip2Id` is supplied by the executor from the active wallet,
+   * never by the model.
+   */
+  createRecurringInvestPlan: async (payload: {
+    caip2Id: string;
+    assetSymbol: string;
+    amountUsd: number;
+    tier: string;
+    cadenceDays: number;
+  }) => {
+    return api
+      .post("strategies/recurring-invest", { json: payload })
+      .json<TRecurringInvestPlan>();
+  },
+
+  /** Pause, resume, or cancel one plan. Cancelling is terminal. */
+  updateRecurringInvestPlan: async (
+    planId: string,
+    status: "active" | "paused" | "cancelled",
+  ) => {
+    return api
+      .patch(`strategies/recurring-invest/${encodeURIComponent(planId)}`, {
+        json: { status },
+      })
+      .json<TRecurringInvestPlan>();
   },
 };

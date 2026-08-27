@@ -115,6 +115,10 @@ export default defineConfig({
       "components/home/TakumiAgent/StructuredUI/mergeToolParts.test.ts",
       // Failure-card copy + the add-wallet action offered alongside it.
       "components/home/TakumiAgent/StructuredUI/agentErrorCopy.test.ts",
+      // Every write tool that has a card must render an approval gate in
+      // it — `capability: "write"` tagging alone shows no prompt, which is
+      // how `bridge_execute` once shipped ungated.
+      "components/home/TakumiAgent/StructuredUI/writeCardGate.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",
@@ -135,6 +139,9 @@ export default defineConfig({
       // and is what actually stops a new family shipping unrehearsed.
       "services/defi/__fork__/forkCoverage.test.ts",
       "services/defi/slippage.test.ts",
+      // Quick Invest allocation (docs/defi-quick-invest-spec.md §5, §10) —
+      // the client-side split behind the redesigned opportunity card.
+      "services/defi/quickInvest.test.ts",
       "services/defi/safety/safetyPipeline.test.ts",
       "services/defi/safety/postexec.test.ts",
       "services/defi/safety/providers/solanaProvider.test.ts",

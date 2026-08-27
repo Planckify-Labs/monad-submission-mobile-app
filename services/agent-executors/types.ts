@@ -117,6 +117,21 @@ export interface ExecutorContext {
    * directly" guidance in `AGENT_PROTOCOL.md` §3.
    */
   activeChainId?: number;
+  /**
+   * CAIP-2 id of the wallet's currently-active chain
+   * ("eip155:8453", "solana:5eykt4…", "stellar:pubnet").
+   *
+   * `activeChainId` above cannot serve this purpose: a numeric chain id is
+   * EVM-shaped and degenerates to 0 on every other family, so it cannot
+   * name a Solana cluster or a Stellar network at all. Resolved in
+   * `AgentMode` through the walletKit registry's `matchesBlockchainRow`,
+   * i.e. by asking the chain's own kit rather than by comparing namespace
+   * strings. Undefined when no blockchain row matches the active chain.
+   *
+   * Added for DCA v1 (docs/defi-quick-invest-spec.md §12.1a rule 1), where
+   * a plan must identify its chain in a form that survives leaving EVM.
+   */
+  activeChainCaip2?: string;
 }
 
 /**

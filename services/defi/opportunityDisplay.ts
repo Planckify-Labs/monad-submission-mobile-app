@@ -60,6 +60,37 @@ export interface OpportunityGroup {
   pools: DisplayPool[];
 }
 
+/**
+ * Testnet chains, by numeric id. Shared with the Quick Invest card, which
+ * re-fetches opportunities itself on a risk-dial change (quick-invest spec
+ * §3.1) and has to apply the same filter the browse list does.
+ */
+const TESTNET_CHAIN_IDS = new Set<number>([
+  11155111, // Ethereum Sepolia
+  84532, // Base Sepolia
+  421614, // Arbitrum Sepolia
+  11155420, // Optimism Sepolia
+  80002, // Polygon Amoy
+  97, // BNB testnet
+  43113, // Avalanche Fuji
+  59141, // Linea Sepolia
+  534351, // Scroll Sepolia
+]);
+
+export function isTestnetRow(row: {
+  chain_id?: number;
+  chain_name?: string;
+}): boolean {
+  if (
+    row.chain_id !== undefined &&
+    TESTNET_CHAIN_IDS.has(Number(row.chain_id))
+  ) {
+    return true;
+  }
+  const name = (row.chain_name ?? "").toLowerCase();
+  return /sepolia|testnet|goerli|holesky|devnet|fuji|mumbai|amoy/.test(name);
+}
+
 function toNum(value: number | string | undefined | null): number {
   if (value === undefined || value === null) return Number.NEGATIVE_INFINITY;
   const n = typeof value === "string" ? Number(value) : value;

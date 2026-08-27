@@ -42,6 +42,10 @@ import { optionalAuthApi } from "@/constants/configs/ky";
 import { pointsQueryKeys } from "@/constants/queryKeys/pointsQueryKeys";
 import { redeemQueryKeys } from "@/constants/queryKeys/redeemQueryKeys";
 import { transactionsQueryKeys } from "@/constants/queryKeys/transactionsQueryKeys";
+import {
+  armPendingAgentPrompt,
+  setAgentPrefillDirect,
+} from "@/hooks/useAgentPrefill";
 import { usePaymentIntentInvalidator } from "@/hooks/usePaymentIntentInvalidator";
 
 /**
@@ -338,6 +342,35 @@ function readPointsPushData(
   };
 }
 
+/**
+ * Shape of the `data` payload for a recurring-invest reminder
+ * (DCA v1, docs/defi-quick-invest-spec.md §12.5).
+ *
+ * The server sends a plan-derived `prompt` — product wording only, no
+ * vendor or infrastructure detail — which the device replays into the
+ * agent as if the user had typed it. That lands on the normal
+ * `defi_list_opportunities` → Quick Invest path. There is NO new deposit
+ * UI and no new navigation primitive, and nothing is signed or submitted
+ * by tapping the notification.
+ */
+interface RecurringInvestPushData {
+  planId?: string;
+  prompt?: string;
+}
+
+function readRecurringInvestPushData(
+  notification: Notifications.Notification,
+): RecurringInvestPushData | null {
+  const raw = notification.request.content.data;
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  if (data.kind !== "recurring_invest_nudge") return null;
+  return {
+    planId: typeof data.planId === "string" ? data.planId : undefined,
+    prompt: typeof data.prompt === "string" ? data.prompt : undefined,
+  };
+}
+
 /** Shape of the `data` payload for incoming-transfer pushes. */
 interface TransferPushData {
   transactionId?: string;
@@ -431,6 +464,26 @@ export function usePushNotificationHandler(): void {
               router.push("/wallet" as never);
             } catch (err) {
               console.warn("[push] wallet route not available:", err);
+            }
+            return;
+          }
+
+          const recurringData = readRecurringInvestPushData(
+            response.notification,
+          );
+          if (recurringData?.prompt) {
+            // Two writes, both required. The React Query entry is what
+            // `AgentMode` drains on this launch; the MMKV copy is what
+            // survives a detour through sign-in, because a nudge fires
+            // days or weeks after setup and the session may have expired
+            // (§12.5b). The chat lives under the home pager, so routing
+            // home is part of the hand-off, not separate from it.
+            armPendingAgentPrompt(recurringData.prompt);
+            setAgentPrefillDirect(recurringData.prompt, { autoSend: true });
+            try {
+              router.push("/" as never);
+            } catch (err) {
+              console.warn("[push] home route not available:", err);
             }
             return;
           }

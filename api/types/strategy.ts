@@ -17,6 +17,13 @@ export type LiquidityProfile = "instant" | "queued_short" | "queued_long";
 export type StrategyStatus = "active" | "withdrawn" | "failed";
 
 export interface TOpportunity {
+  /**
+   * True when this row is OUTSIDE the user's saved risk tier and was only
+   * returned because nothing inside it matched. The client must never
+   * auto-allocate into these; it shows them so it can stop claiming the
+   * chain has nothing when the real answer is "nothing at your risk level".
+   */
+  outsideTier?: boolean;
   id: string;
   protocolSlug: string;
   chainId: number;
@@ -188,4 +195,39 @@ export interface TRouterQuote {
   tokenIn: string;
   amountIn: string;
   chainId: number;
+}
+
+/**
+ * A recurring investment plan — DCA v1
+ * (docs/defi-quick-invest-spec.md §12.3).
+ *
+ * A reminder, not an automation: the server nudges on `nextDueAt`, the
+ * user taps once, and the user's own key signs through the normal
+ * `defi_deposit` approval flow. Nothing here is a credential.
+ */
+export interface TRecurringInvestPlan {
+  id: string;
+  /** CAIP-2, never a numeric chain id (which is EVM-shaped). */
+  caip2Id: string;
+  /** Resolved server-side from the Blockchain table; null if unknown. */
+  chainName: string | null;
+  assetSymbol: string;
+  amountUsd: number;
+  /** The tier the user chose when creating the plan. */
+  tier: string;
+  /**
+   * The tier that will ACTUALLY be applied. A saved `UserStrategy` tier
+   * takes precedence over the plan's — correct as a safety ceiling, but it
+   * must never be applied silently, so the client surfaces the difference.
+   */
+  effectiveTier: string;
+  tierOverridden: boolean;
+  cadenceDays: number;
+  status: "active" | "paused" | "cancelled" | string;
+  /** "reminder" in v1. The forward-compat slot for unattended execution. */
+  executionMode: string;
+  nextDueAt: string;
+  createdAt: string;
+  /** Only on create: true when this replaced an existing plan. */
+  replaced?: boolean;
 }

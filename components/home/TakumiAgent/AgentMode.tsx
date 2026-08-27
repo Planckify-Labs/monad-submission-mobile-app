@@ -33,6 +33,7 @@ import {
 } from "@/components/agent/ApprovalSheet";
 import { approvalSummaryFromToolInput } from "@/components/home/TakumiAgent/StructuredUI/approvalSummary";
 import { resolveAssetMeta } from "@/components/home/TakumiAgent/StructuredUI/resolveAssetMeta";
+import { useIsAuthenticated } from "@/hooks/queries/useAuth";
 import type {
   ConversationCache,
   ConversationListCache,
@@ -41,7 +42,12 @@ import type {
 import { useAgentBusyPublisher } from "@/hooks/useAgentBusy";
 import { useAgentConnectionPublisher } from "@/hooks/useAgentConnection";
 import { useAgentOnboarding } from "@/hooks/useAgentOnboarding";
-import { useAgentPrefill } from "@/hooks/useAgentPrefill";
+import {
+  clearPendingAgentPrompt,
+  readPendingAgentPrompt,
+  setAgentPrefillDirect,
+  useAgentPrefill,
+} from "@/hooks/useAgentPrefill";
 import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
 import { useWallet } from "@/hooks/useWallet";
 import { chatConvKey, chatListKey } from "@/lib/storage/chatKeys";
@@ -81,6 +87,7 @@ import {
   formatChainLabel,
   getEvmChainId,
   getNativeSymbol,
+  matchesBlockchainRow,
 } from "@/services/walletKit/chainInfo";
 import { ownedNamespaces } from "@/services/walletPresence";
 import * as walletService from "@/services/walletService";
@@ -229,6 +236,7 @@ export default function AgentMode() {
   // capability / spotlight / quick-prompt cards). Drained by an effect
   // below `sendTextMessage`, which the auto-send path depends on.
   const { prefill, clearPrefill } = useAgentPrefill();
+  const { isAuthenticated } = useIsAuthenticated();
 
   // Onboarding state
   const {
@@ -385,14 +393,29 @@ export default function AgentMode() {
 
   const executorContext: ExecutorContext | null = useMemo(() => {
     if (!activeWallet?.address) return null;
+    // CAIP-2 for the active chain, asked of the chain's own kit rather than
+    // derived from the numeric id (which is EVM-shaped and degenerates to 0
+    // elsewhere). Undefined when no row matches, which callers treat as
+    // "we cannot name this chain" rather than guessing one.
+    const activeRow = blockchains.find(
+      (row) => row.isActive && matchesBlockchainRow(activeChain, row),
+    );
     return {
       wallet: activeWallet,
       account: evmAccount,
       blockchains,
       wallets,
       activeChainId,
+      activeChainCaip2: activeRow?.caip2Id ?? undefined,
     };
-  }, [activeWallet, evmAccount, blockchains, wallets, activeChainId]);
+  }, [
+    activeWallet,
+    evmAccount,
+    blockchains,
+    wallets,
+    activeChainId,
+    activeChain,
+  ]);
 
   // Points / redemption auth hint for `wallet_context.points_authenticated`
   // (protocol v1.1 §13). Read locally from secure storage on every
@@ -1301,6 +1324,10 @@ export default function AgentMode() {
     // value (typed text or an earlier voice prefill) so the card sends
     // only its own prompt and the stale value isn't submitted later.
     setInput("");
+    // The durable copy is only cleared once the prompt actually reaches a
+    // turn, so an intent that arrived while the session was dead is still
+    // waiting after the sign-in detour (§12.5b).
+    clearPendingAgentPrompt();
     void sendTextMessage(prefill.text);
   }, [
     prefill,
@@ -1312,6 +1339,28 @@ export default function AgentMode() {
     hardResetAgent,
     activeWallet?.address,
   ]);
+
+  /**
+   * Resume a reminder intent that outlived a sign-in detour (§12.5b).
+   *
+   * A DCA nudge is the one prompt in this app produced days or weeks
+   * before it is consumed. If the JWT had expired when the user tapped it,
+   * the landing turn dead-ends on a sign-in error and — without this — the
+   * intent is simply lost, which is worse than never having reminded them.
+   * `armPendingAgentPrompt` persisted it; once a session exists again, put
+   * it back on the same one-shot channel the push tap used.
+   *
+   * Deliberately NOT auto-fired here: it re-arms the prefill and lets the
+   * effect above own the "start a fresh turn" behaviour, so there is one
+   * code path that sends, not two racing ones.
+   */
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (prefill) return;
+    const pending = readPendingAgentPrompt();
+    if (!pending) return;
+    setAgentPrefillDirect(pending, { autoSend: true });
+  }, [isAuthenticated, prefill]);
 
   const handlePromptSelect = useCallback(
     async (prompt: string) => {

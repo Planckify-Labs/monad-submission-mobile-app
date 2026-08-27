@@ -37,6 +37,23 @@ export type AnalyticsEventProps = {
     chain_id?: string | number;
     passed_before?: string;
   };
+  /**
+   * Quick Invest entry surface (docs/defi-quick-invest-spec.md §10). These
+   * three are what actually validate the redesign: does leading with an
+   * outcome shorten "card shown" → "deposit confirmed", and how often does
+   * a user drop to the pool-by-pool browse list instead?
+   *
+   * `entry_state` is 1 (user stated an amount), 2 (goal/tier only) or 3
+   * (no specifics — recommendation first). No wallet address, no balance.
+   */
+  defi_quick_invest_shown: { entry_state: number };
+  defi_quick_invest_submitted: {
+    entry_state: number;
+    tier: string;
+    legs: number;
+    amount_usd: number;
+  };
+  defi_quick_invest_browse: { entry_state: number };
   defi_deposit_completed: {
     chain: string;
     protocol_slug?: string;

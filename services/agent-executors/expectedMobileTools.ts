@@ -88,6 +88,9 @@ export const EXPECTED_MOBILE_TOOLS: ReadonlyArray<string> = [
   "defi_rebalance",
   "defi_cross_chain_deposit",
   "defi_compound",
+  // defi DCA v1 (docs/defi-quick-invest-spec.md §12.5)
+  "defi_set_recurring_invest",
+  "defi_list_recurring_invest",
   // defi Sui Intent Engine (spec §7.1) — onchain reads/writes, executor: mobile
   "defi_intent_preview",
   "defi_intent_execute",
@@ -161,6 +164,10 @@ export const MOBILE_WRITE_TOOLS: ReadonlySet<string> = new Set<string>([
   "defi_rebalance",
   "defi_cross_chain_deposit",
   "defi_compound",
+  // DCA v1 — a standing plan is a write even though no funds move at
+  // setup time: it creates a recurring obligation the user will be
+  // prompted to act on (quick-invest spec §12.5).
+  "defi_set_recurring_invest",
   // sui intent engine write
   "defi_intent_execute",
   // bridge write — moves value cross-chain, irreversible mid-flight

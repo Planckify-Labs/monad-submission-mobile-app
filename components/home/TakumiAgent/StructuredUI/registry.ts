@@ -8,6 +8,8 @@ import PendingTxCard from "./cards/PendingTxCard";
 import PositionListCard from "./cards/PositionListCard";
 import ProductDetailCard from "./cards/ProductDetailCard";
 import RebalancePreviewCard from "./cards/RebalancePreviewCard";
+import RecurringInvestCard from "./cards/RecurringInvestCard";
+import RecurringPlanListCard from "./cards/RecurringPlanListCard";
 import RedemptionCatalogCard from "./cards/RedemptionCatalogCard";
 import SolanaPendingTxCard from "./cards/SolanaPendingTxCard";
 import SpendingApprovalCard from "./cards/SpendingApprovalCard";
@@ -100,6 +102,12 @@ export const toolComponents: Record<string, ToolComponent<any, any>> = {
   defi_intent_preview: IntentPreviewCard,
   defi_intent_execute: SuiPendingTxCard,
   defi_get_config: StrategyConfigCard,
+  // DCA v1 (docs/defi-quick-invest-spec.md §12.5). The set-up card renders
+  // `WriteApprovalGate` ITSELF — `capability: "write"` tagging alone shows
+  // no prompt (`feedback_write_card_approval_gate_required`). The list card
+  // doubles as the v1 plan-management surface (pause / resume / cancel).
+  defi_set_recurring_invest: RecurringInvestCard,
+  defi_list_recurring_invest: RecurringPlanListCard,
   // Bridge (docs/bridge-capability-spec.md §7). The quote card is the
   // full disclosure surface; the progress card owns the post-submit half
   // of the UX, which `bridge_execute` and `bridge_status` both feed.
