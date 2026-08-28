@@ -789,7 +789,8 @@ are two distinct populations per §9.
 
 ### 10.6 What this pass did not cover (residual scope, stated honestly per §1)
 
-- **Sui pins (§9.3)** — completely untouched by this pass, still unsigned.
+- **Sui pins (§9.3)** — completely untouched by this pass, still unsigned as
+  of this Solana section (closed later the same day — see §11).
 - **Per-brand solvency/incident history** for each of the 16 LST brand names
   (Phantom, DeFi Development Corp, Hylo, BONK, Helius, Bybit, The Vault,
   DoubleZero, BlazeStake, JPool, Binance, JagPool, SOL Strategies) was not
@@ -820,6 +821,276 @@ four are appended pending the same signature.
 nine requirements; this is one. Requirement 9 (a human running the full journey
 on a real device with real funds) remains outstanding and is not something this
 review can substitute for.
+
+---
+
+## 11. Sui address-book security sign-off — 2026-08-27
+
+Closes §9.3, the last open half of the non-EVM pass. Same bar as §2.2/§9.4 (on
+Sui, the object's on-chain **type-origin package** stands in for a checksummed
+address), same method discipline as §10.
+
+### 11.1 Scope
+
+Sui has no single `address-book/` directory either (§9.1). Nine independently
+deployed venues, each with its own config file, plus a shared LST venue table:
+
+| Population | Where | Distinct addresses |
+|---|---|---:|
+| Scallop core (protocolPkg, version, market) + 3 pinned fallback coinTypes (SUI/USDC/USDT) | `adapters/scallop.config.ts` ⇄ `api/.../scallop.resolver.ts` | 6 |
+| NAVI core (package + Storage/PriceOracle/IncentiveV2/IncentiveV3) | `adapters/navi.config.ts` ⇄ `api/.../navi.resolver.ts` | 5 |
+| Ember core (package + ProtocolConfig) | `adapters/ember.config.ts` ⇄ `api/.../ember.resolver.ts` | 2 |
+| Kai (MVR-resolved package + 11 pinned vault/coinType pairs) | `adapters/kai.config.ts` ⇄ `api/.../kai.resolver.ts` | 12 |
+| Suilend (UpgradeCap id, current package, LendingMarket, MARKET_TYPE) | `adapters/suilend.config.ts` ⇄ `api/.../suilend.resolver.ts` | 4 |
+| Current (package, TYPE_PKG, ProtocolApp) | `adapters/current.config.ts` ⇄ `api/.../current.resolver.ts` | 3 |
+| Cetus (CLMM package, Integrate package, GlobalConfig) | `adapters/cetus.config.ts` | 3 |
+| Turbos (package, Positions, Versioned) | `adapters/turbos.config.ts` | 3 |
+| Bluefin Spot (package, GlobalConfig) | `adapters/bluefin.config.ts` | 2 |
+| Sui LST venue table (Haedal 4, Volo 4, SpringSui 3, Aftermath 6) | `adapters/sui/lst.config.ts` ⇄ `api/.../sui-lst.config.ts` | 17 |
+| **Total** | | **57** |
+
+Out of scope, same reasoning §10.1 gives for Solana's per-instance rows:
+Cetus/Turbos/Bluefin's individual pool addresses (discovered live from each
+venue's own stats API and validated on-chain every resolve, never a static
+pin), Scallop's ~30 non-pinned per-asset coinTypes and NAVI's ~34 reserves
+(same — live-fetched and cross-checked per call), and Current's per-asset rows
+within its 5 markets (live-fetched from Current's own API, doubling as
+validation per `current.resolver.ts`'s header).
+
+### 11.2 Method actually used
+
+- **Cross-repo parity.** `nonEvmPinParity.test.ts`'s Sui assertions plus
+  `services/defi/safety/providers/suiProvider.test.ts` (targeted run,
+  2026-08-27: **14/14 pass**), and the api-side `sui-resolvers.spec.ts` +
+  `sui-lst.source.spec.ts` (**59/59 pass**). Per §1.1/§9.2, this proves the two
+  repos agree and exercises the resolvers' own logic — not that either is
+  right. Every check below is independent of it.
+- **Leg 1 (protocol's own registry).** Scallop's own address API
+  (`sui.apis.scallop.io`), NAVI's own package + pools APIs
+  (`open-api.naviprotocol.io`), Bluefin's own Ember Vaults API
+  (`vaults.api.sui-prod.bluefin.io`) and Spot Pools API
+  (`swap.api.sui-prod.bluefin.io`), Cetus's own stats API
+  (`api-sui.cetus.zone`) plus its developer docs, Turbos's own hosted
+  `contract.json` (`s3.amazonaws.com/app.turbos.finance`), Suilend's own
+  on-chain `UpgradeCap` (id pinned from `@suilend/sdk`'s `client.js`), Kai's
+  Sui Move Registry entry (`@kai/sav` via `mainnet.mvr.mystenlabs.com`,
+  independently confirmed as Kai's own registration by its returned
+  `contact: dev@kunalabs.io` / `homepage_url: kai.finance` /
+  `repository_url: github.com/kunalabs-io/sui-smart-contracts` metadata),
+  Current's own market-list API (`api.current.finance`, per-asset data only —
+  package identity has no such source, see Finding Su1), and DeFiLlama's own
+  protocol registry (`api.llama.fi/protocol/<slug>`, all 13 slugs resolve) plus
+  its `yield-server` adaptor source for `kai-finance` (all 11 pinned vaults
+  matched byte-for-byte against the live adaptor file).
+- **Leg 2 (second source / on-chain corroboration).** Live queries against
+  Sui's public GraphQL RPC (`graphql.mainnet.sui.io/graphql` — the JSON-RPC
+  migration `sui-rpc.ts`'s own header already documents) for every package and
+  shared object pinned: every package confirmed a real `MovePackage` with
+  module names matching its protocol's known feature set (e.g. Current's
+  `deposit`/`borrow`/`emode`/`flash_loan`; NAVI's `storage`/`incentive_v3`);
+  every shared object confirmed to carry the exact Move type the code's own
+  comments claim (Scallop's `market::Market`, NAVI's four stable objects,
+  Suilend's `LendingMarket<MAIN_POOL>`, Ember's `admin::ProtocolConfig`,
+  Turbos's `Positions`/`Versioned`, Cetus's and Bluefin's `config::GlobalConfig`,
+  all four LST pool objects and Aftermath's `Safe`/`ReferralVault`); all four
+  LST receipt coins' on-chain `coinMetadata.symbol` matched exactly.
+- **Leg 2b (liveness, not just existence).** Fresh, real, successful mainnet
+  transactions found via GraphQL's `transactions(filter:{function/
+  affectedObject})` for the venues with no live-fetch self-healing — Current's
+  `deposit` (SUCCESS, 2026-08-27T23:15:39Z), Cetus's `pool::*` (3/3 SUCCESS)
+  and `router::swap` (9/20 SUCCESS, and one FAILURE traced down to
+  `utils::check_coin_threshold_v1` — a slippage guard, not a version-gate
+  abort, which positively rules out staleness rather than merely noting a
+  failure rate — see §1.3 on why that distinction matters), Bluefin's `pool::*`
+  (3/3 SUCCESS), SpringSui's `liquid_staking::mint` (3/3 SUCCESS), Aftermath's
+  `staked_sui_vault` module (5/5 recent SUCCESS), and Haedal's pool object
+  (live traffic as recently as minutes before this review). All within the
+  review window, five days after the original 2026-08-22 pins — direct
+  evidence none of them had silently gone stale since.
+- **Leg 3 (venue question, §1.4).** All 13 DeFiLlama slugs resolve with an
+  official URL matching the HTTPS domain this codebase already calls, and
+  live, material Sui TVL ($1.4M Kai to $141M Suilend) — closing the "is this
+  protocol solvent and operating" question the same way §1.4/§10.2's Leg 3
+  did. Per-brand incident research was not repeated for each venue (§11.7).
+
+### 11.3 Verdict summary
+
+| Family / group | Addresses | Verdict |
+|---|---:|---|
+| Scallop core + 3 coins | 6 | **PASS** — live API matches the pinned fallback exactly; `Market`'s on-chain type is `market::Market`, and its type-origin equals the same API's own separately-named `object` field (an unplanned second witness) |
+| NAVI core | 5 | **PASS** — all 4 stable objects confirmed on-chain with the exact expected type; the live package has already moved past the 2026-07-03 pinned fallback, as designed (fetched, never trusted stale) |
+| Ember core | 2 | **PASS** — `ProtocolConfig` unchanged since the pin; the live package has moved since (fetched, not pinned, so no exposure) |
+| Kai (package + 11 vaults) | 12 | **PASS** — all 11 vault + coinType pairs match DeFiLlama's own `kai-finance` adaptor byte-for-byte; MVR registration independently confirmed as Kai's own; live package has moved (v15→v16) since the pin, fetched not exposed |
+| Suilend | 4 | **PASS** — `UpgradeCap` read live: package has moved again (v22→v23) in the 5 days since the pin, fetched not exposed; `LendingMarket`'s on-chain type matches `MARKET_TYPE` exactly |
+| Current | 3 | **PASS, with Finding Su1** — package reverified via a fresh successful `deposit` call minutes before this review; still the only Sui venue with zero first-party document naming it |
+| Cetus | 3 | **PASS** — both packages reconfirmed via fresh successful transactions (one `router::swap` failure traced to a slippage guard, not staleness); `GlobalConfig`'s type-origin matches the address the SDK's config names |
+| Turbos | 3 | **PASS** — the live hosted config is byte-identical to the 2026-08-22 pin; `Positions`/`Versioned` confirmed on-chain |
+| Bluefin Spot | 2 | **PASS** — package reconfirmed via 3/3 fresh successful transactions; `GlobalConfig`'s type-origin matches the address the SDK's config names |
+| Sui LST (Haedal/Volo/SpringSui/Aftermath) | 17 | **PASS** — every package/pool/ancillary object confirmed on-chain with the exact expected Move type; all 4 receipt coins' on-chain symbol matches; 3 of 4 venues reconfirmed via fresh successful stake transactions |
+
+**Result: 57/57 addresses signed off, 0 wrong addresses.** Two findings
+recorded, neither a wrong address — see §11.4.
+
+### 11.4 Findings
+
+#### Finding Su1 — Current Finance's call package carries no first-party provenance at all, reverified live — LOW (documented gap, §2.2 rule 3)
+
+`current.config.ts`, `CURRENT_PACKAGE`.
+
+Of all nine Sui venues, Current is the only one with no protocol-published
+document, SDK, address API, or Sui Move Registry entry naming its package.
+Checked again this pass: `@current/protocol` and `@current/current` both
+return "Package not found" on MVR; `api.current.finance` still serves only
+market/reward data. The pin exists only because the code's own header found it
+the only way available — reading which package a real, recent, successful
+`deposit::deposit`/`withdraw::withdraw` transaction called.
+
+This review cannot close that; it can only re-run the same check and report
+the result honestly. Five days after the pin was written, a fresh query for
+transactions calling
+`0x45bae0425e9098ce5cba3d3fa2836220ad24c9f88aa0dffffb5a52b49319fc70::deposit`
+returned a real transaction that **succeeded at 2026-08-27T23:15:39Z, minutes
+before this section was written** — the pin has not gone stale. `PROTOCOL_APP`
+and `TYPE_PKG` were independently confirmed on-chain too (`app::ProtocolApp`
+lives at exactly the pinned address, and its own type-origin equals `TYPE_PKG`).
+
+**Why this is still worth recording rather than closing.** Every other Sui
+venue's provenance traces to something a third party publishes and maintains —
+a docs page, an SDK, an address API, an on-chain `UpgradeCap`, a Move Registry
+entry — giving a future reviewer something to re-check. Current has none: the
+only available fact is "this package answered a real call recently," which has
+to be re-derived by hand, forever, unless Current ships one of those sources in
+the future.
+
+**Recommendation.** Unchanged from `current.config.ts`'s own header: check
+whether Current has since shipped an MVR entry or an address API before
+repeating the transaction-history recovery.
+
+#### Finding Su2 — answering §9.3: a compromised vendor endpoint could still choose the moveCall package for 4 of 9 venues, with no independent device-side check — MEDIUM (informational, fail-closed in practice)
+
+`services/defi/safety/providers/sui.ts` `isAllowlisted`; `scallop.config.ts`,
+`navi.config.ts`, `ember.config.ts`, `turbos.config.ts`, `kai.config.ts`.
+
+§9.3 asked, before this pass: does the device's Layer-1 check close the gap
+opened by resolving a moveCall package from a vendor's own HTTPS endpoint
+rather than a static pin? Checked against the actual code rather than assumed:
+**not for most of them.**
+
+`isAllowlisted`'s venue-identity check only has a second, independent fact to
+compare against when the `DepositTarget` itself carries a declared
+`marketType` — today that is exactly two kinds, `suilend-market` and
+`current-market`. For every other backend-resolved kind — `scallop-market`,
+`navi-pool`, `ember-vault`, `kai-vault`, `cetus-clmm-pool`,
+`turbos-clmm-pool`, `bluefin-spot-pool` — there is no declared type to compare
+against, so the function's own documented fallback applies: it returns `true`
+once the target object merely exists and has *some* parseable type-origin,
+regardless of whether that origin is this venue's package or any other. The
+function's own comment names the compensating control for this case:
+"`targetExists` + the Layer-4 call binding carry it."
+
+That compensating control (`isAllowedDestination`, via `venuePackagesFor`) is
+sound for the venues whose package is a static pin (Cetus, Bluefin). But for
+the four venues whose package is fetched live over plain HTTPS with no
+on-chain or second-source check on the response — Scallop, NAVI, Ember,
+Turbos — `venuePackagesFor` calls the *exact same fetch function* the adapter
+used to build the PTB in the first place. A single compromised or spoofed
+response from `sui.apis.scallop.io`, `open-api.naviprotocol.io`,
+`vaults.api.sui-prod.bluefin.io`, or `s3.amazonaws.com/app.turbos.finance`
+would be read once, cached, and then agree with itself at both the
+call-construction step and the "independent" check step — because they are the
+same data path queried twice, not two anchors. Kai's MVR fetch
+(`mainnet.mvr.mystenlabs.com`) sits in between: compromising Mysten Labs' own
+registry service is a materially higher bar than compromising one DeFi
+protocol's web server, but the response is still trusted by regex-shape alone
+(`kai.config.ts`'s `fetchPackageId`), with no on-chain cross-check.
+
+**Why this is fail-closed in practice, not a demonstrated fund-loss path.**
+Sui's Move VM statically type-checks every call argument against the callee's
+declared parameter types before executing any bytecode — passing a shared
+object of the wrong struct type into a `mint::mint`/`request_stake_coin`/etc.
+call aborts the whole transaction. A malicious package would additionally need
+to expose a function with the exact expected `module::function` name and
+argument shape to avoid an instant abort, and even then the mandatory
+`simulate()` dry-run and the guardian's balance-effect diff sit between that
+and a signature. This finding is a control gap, not an exploit — the same
+standard §1.2 sets for a fail-closed finding.
+
+**This formalizes a disclosed tradeoff rather than uncovering a silent one.**
+Every one of these config files' own header comments, and `providers/sui.ts`'s
+own file header, already say the package is fetched from a vendor endpoint and
+that this is a supply-chain assumption recorded rather than closed. This
+review's contribution is confirming exactly which venues and which layers that
+applies to, rather than leaving it as a general caveat.
+
+**A concrete partial remediation, evidenced in this pass.** Scallop's own
+address API already publishes the protocol's `UpgradeCap` id
+(`packages.protocol.upgradeCap`) alongside the package id it wants trusted.
+This review read that `UpgradeCap` on-chain and confirmed `UpgradeCap.package`
+(`0xde5c09ad171544aa3724dc67216668c80e754860f419136a68d78504eb2e2805`) equals
+the API's own `packages.protocol.id` exactly — meaning Scallop could adopt the
+same on-chain-anchored pattern `suilend.config.ts` already uses, closing its
+share of this finding without depending on the HTTPS response at all.
+NAVI/Ember/Turbos were not confirmed to expose an `UpgradeCap` id through their
+own APIs in this pass (§11.7) — that lookup is the next step for those three.
+
+### 11.5 Notes that are not findings
+
+- **Kai's own package literally contains `scallop_sui`/`scallop_whusdce`/
+  `scallop_whusdte` modules** (confirmed on-chain, `getObject` module list) —
+  some Kai vaults compose into Scallop under the hood. Composability, not a
+  defect; recorded so a future reviewer doesn't mistake it for cross-protocol
+  contamination.
+- **"Config not constants" caught doing its job.** NAVI's, Ember's, Kai's, and
+  Suilend's pinned fallback packages already differ from the live current
+  value just 5 days after being written, precisely because each is
+  live-fetched at runtime and the pin is only a safety net for when the fetch
+  fails — exactly as designed. Turbos's fetched config, by contrast, is
+  byte-identical to its 2026-08-22 pin today — direct evidence the live fetch
+  and the pinned fallback still agree.
+- **All 13 DeFiLlama slugs used across the Sui book resolve**, each with an
+  official URL matching the HTTPS domain the code already calls and live,
+  material TVL — no dead or rebranded protocol found the way Radiant was in
+  the EVM pass (Finding 2).
+
+### 11.6 Sign-off status
+
+| Requirement | Status |
+|---|---|
+| Every Sui pinned address reviewed | **COMPLETE — 57/57 addresses signed off 2026-08-27, 0 wrong addresses.** Two findings recorded (Su1: a venue with no first-party provenance, not a wrong address; Su2: a documented supply-chain assumption formalized to 4 specific venues, not a demonstrated exploit). Outstanding: a **named Security counter-signature** (below) and the NAVI/Ember/Turbos `UpgradeCap` lookup Su2's recommendation needs. |
+
+### 11.7 What this pass did not cover
+
+- Whether NAVI/Ember/Turbos publish an `UpgradeCap` id the way Scallop's own
+  API already does (Su2's remediation path) — not checked in this pass.
+- Per-brand solvency/incident research for each venue, the way Radiant's
+  wind-down was surfaced in §1.4 — substituted with the DeFiLlama TVL/URL
+  liveness check (§11.2 Leg 3), the same weaker-but-real substitute §10.6
+  recorded for Solana's LST brands.
+- Individual dynamically-resolved instances — Cetus/Turbos/Bluefin's per-pool
+  addresses, Scallop/NAVI's non-pinned per-asset coinTypes, Current's
+  per-asset rows within its 5 markets — by design not book entries (§11.1).
+
+### Sign-off log (Sui)
+
+| Date | Reviewer | Scope | Result |
+|---|---|---|---|
+| 2026-08-27 | Automated review, pending Security counter-signature | 57 Sui pinned addresses: 9 protocol package/core-object families (Scallop, NAVI, Ember, Kai + 11 vaults, Suilend, Current, Cetus, Turbos, Bluefin Spot) + the 4-venue LST table (Haedal/Volo/SpringSui/Aftermath) — full on-chain corroboration via live Sui GraphQL RPC for all, first-party API/SDK/registry/DeFiLlama match for all but one venue (Su1), fresh successful-transaction reverification for every venue with no live-fetch self-healing | **57/57 PASS.** 0 wrong addresses. 2 findings (Su1, Su2), neither a wrong address. |
+
+> Same rule as §7's and §10's sign-off logs: a row here needs a **named
+> human**. The 2026-08-27 row is a prepared review, not a signature — a
+> Security reviewer countersigns after checking this section's evidence.
+
+**Running total (Sui): 57 addresses signed off, 0 corrections needed.** Tracked
+separately from the EVM (129) and Solana (51) running totals per §9 — three
+distinct populations.
+
+**Grand total across all three chains: 129 + 51 + 57 = 237 addresses signed
+off**, each pending its own named Security counter-signature (§7, §10's log,
+and this section's log). This document still does not by itself clear any
+tier for production — §12.3 requirement 9 (a human running the full journey on
+a real device with real funds) is untouched by any of the three passes.
+
+---
 
 ### 6.1 Remediation applied 2026-08-21
 
@@ -952,8 +1223,8 @@ automated layers already give us.
 
 ## 9. Non-EVM pins — NOT covered by this sign-off
 
-**Status: Solana signed off 2026-08-21 → 2026-08-27, see §10. Sui remains
-unsigned.** Everything in §§1-8 concerns
+**Status: Solana signed off 2026-08-21 → 2026-08-27, see §10. Sui signed off
+2026-08-27, see §11.** Everything in §§1-8 concerns
 `api/src/strategies/targets/address-book/`, which is EVM-only. The Solana and
 Sui expansions added a second population of pinned identities that had never
 had an equivalent pass, and the numbers are no longer small. §10 closes the
@@ -995,6 +1266,14 @@ does not close it, because a package upgrade legitimately changes the call
 target while the type origin stays fixed. **This is the open question a Sui
 sign-off has to answer**, and it has no EVM equivalent — an EVM address book
 entry cannot change under you between two reads.
+
+**Answered in §11.4, Finding Su2: not fully.** The type-origin check only has
+an independent fact to compare against for two of nine venues; for the other
+seven it falls back to a compensating control that, for four specific venues,
+turns out to query the same vendor endpoint it's supposed to be checking
+independently. See §11.4 for exactly which venues, why it is still fail-closed
+in practice, and a concrete partial fix already evidenced against Scallop's own
+API.
 
 ### 9.4 The bar, when the pass is run
 
