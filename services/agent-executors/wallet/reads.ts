@@ -18,6 +18,7 @@
 
 import { type Abi, erc20Abi, formatUnits } from "viem";
 import { blockchainApi } from "@/api/endpoints/blockchains";
+import { portfolioApi } from "@/api/endpoints/portfolio";
 import { tokenApi } from "@/api/endpoints/tokens";
 import type { TBlockchain } from "@/api/types/blockchain";
 import type { TToken } from "@/api/types/token";
@@ -388,6 +389,12 @@ interface NormalizedToken {
   is_stable_coin: boolean;
   logo_url?: string;
   pegged_currency?: string;
+  /**
+   * True when this row came from wallet discovery rather than the curated
+   * catalogue. Surfaced so the model can caveat it: nobody has vetted the
+   * token, only observed that the wallet touches it.
+   */
+  is_discovered?: boolean;
 }
 
 const ZERO_ADDRESS =
@@ -512,6 +519,57 @@ async function loadCachedTokensForChain(
 }
 
 /**
+ * Cap on discovered rows per chain. Each one costs a `balanceOf` in the scan
+ * below, so an airdrop-spammed wallet must not be able to turn one question
+ * into hundreds of RPC reads.
+ */
+const MAX_DISCOVERED_PER_CHAIN = 50;
+
+/**
+ * Held-but-uncatalogued tokens for this chain, as `NormalizedToken` rows.
+ *
+ * Identity only — the balance still comes from the on-chain read below, same
+ * as every catalogued row. Best-effort: discovery failing just means the
+ * agent sees the catalogue, which is what it saw before this existed.
+ */
+async function loadDiscoveredTokensForChain(
+  chainId: number,
+  known: Set<string>,
+): Promise<NormalizedToken[]> {
+  try {
+    const result = await portfolioApi.getDiscoveredAssets({
+      chains: [chainId],
+    });
+    const rows: NormalizedToken[] = [];
+    for (const asset of result.data) {
+      if (rows.length >= MAX_DISCOVERED_PER_CHAIN) break;
+      // Native is added separately, and non-EVM rows can't be read by the
+      // EVM scan that consumes this.
+      if (!asset.address || asset.namespace !== "eip155") continue;
+      const address = asset.address.toLowerCase();
+      if (known.has(address)) continue;
+      known.add(address);
+      rows.push({
+        symbol: asset.symbol,
+        name: asset.name,
+        address: address as `0x${string}`,
+        decimals: asset.decimals,
+        is_native: false,
+        is_stable_coin: false,
+        logo_url: asset.logoUrl || undefined,
+        is_discovered: true,
+      });
+    }
+    return rows;
+  } catch (err) {
+    if (__DEV__) {
+      console.warn("[reads] token discovery unavailable", err);
+    }
+    return [];
+  }
+}
+
+/**
  * Run the full single-chain token scan for one chainId and return the
  * wire-format `{ chain_id, tokens }` pair. Extracted so multi-chain
  * (`chain_ids: [...]`) calls can fan out in parallel with `Promise.all`.
@@ -596,6 +654,26 @@ async function scanChainTokens(
     logo_url: t.logoUrl || undefined,
     pegged_currency: t.peggedCurrency ?? undefined,
   }));
+
+  // Held-but-uncatalogued tokens extend the list the balance fan-out below
+  // already works through. The catalogue stays the source of truth for known
+  // tokens; this only stops a held token from being invisible because nobody
+  // registered it.
+  const discovered = await loadDiscoveredTokensForChain(
+    chainId,
+    new Set(tokens.map((t) => t.address.toLowerCase())),
+  );
+  if (discovered.length > 0) {
+    const passesFilters = (t: NormalizedToken) => {
+      // Discovery carries no stablecoin flag, so an explicit
+      // `is_stable_coin` request can only be answered from the catalogue.
+      if (typeof input.is_stable_coin === "boolean") return false;
+      if (!symFilter) return true;
+      const s = t.symbol.toLowerCase();
+      return s === symFilter || s.startsWith(symFilter);
+    };
+    tokens = [...tokens, ...discovered.filter(passesFilters)];
+  }
 
   if (includeNative) {
     // Only include native if it survives the symbol filter (e.g. the

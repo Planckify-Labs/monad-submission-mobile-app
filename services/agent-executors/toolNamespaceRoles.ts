@@ -58,6 +58,7 @@ export const TOOL_NAMESPACE_ROLES: Readonly<Record<string, ToolNamespaceSpec>> =
     // chain argument, so they cannot be aimed at a chain the user lacks.
     get_native_balance: ACTIVE,
     get_wallet_assets: ACTIVE,
+    get_wallet_nfts: ACTIVE,
     send_native: ACTIVE,
     send_token: ACTIVE,
 

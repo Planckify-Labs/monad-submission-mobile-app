@@ -29,7 +29,7 @@ export type TExtendedCryptoAsset = TCryptoAsset & {
   contractAddress?: string;
 };
 
-export type TAssetTabType = "my-assets" | "explore-assets";
+export type TAssetTabType = "my-assets" | "explore-assets" | "collectibles";
 
 // ============================================
 // AssetItem DTOs

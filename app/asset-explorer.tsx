@@ -14,7 +14,10 @@ import AddTokenForm from "@/components/asset-explorer/AddTokenForm";
 import AssetExplorerHeader from "@/components/asset-explorer/AssetExplorerHeader";
 import AssetWalletSelectorModal from "@/components/asset-explorer/AssetWalletSelectorModal";
 import AvailableAssetList from "@/components/asset-explorer/AvailableAssetList";
-import AssetExplorerTabs from "@/components/asset-explorer/MyAssetsAndExploreAssetTabs";
+import CollectiblesList from "@/components/asset-explorer/CollectiblesList";
+import AssetExplorerTabs, {
+  COLLECTIBLES_TAB_ENABLED,
+} from "@/components/asset-explorer/MyAssetsAndExploreAssetTabs";
 import NetworkRadioButtons from "@/components/asset-explorer/NetworkRadioButtons";
 import NetworkSelectorModal from "@/components/asset-explorer/NetworkSelectorModal";
 import UserAssetList from "@/components/asset-explorer/UserAssetList";
@@ -23,6 +26,8 @@ import TrustAssetConfirmModal from "@/components/wallet/TrustAssetConfirmModal";
 import { SAMPLE_ASSETS } from "@/constants/dummyData/assets";
 import type { TCryptoAsset } from "@/constants/types/assetTypes";
 import { useBlockchains } from "@/hooks/queries/useBlockchains";
+import { useDiscoveredAssets } from "@/hooks/queries/useDiscoveredAssets";
+import { useNFTsQuery } from "@/hooks/queries/useNFTs";
 import { useTokens } from "@/hooks/queries/useTokens";
 import {
   useActiveNetwork,
@@ -33,6 +38,7 @@ import { useAssetSelection } from "@/hooks/useAssetSelection";
 import { useUserAssetsWithBalances } from "@/hooks/useUserAssetsWithBalances";
 import { useWallet } from "@/hooks/useWallet";
 import { resolveNamespace } from "@/hooks/useWallet.helpers";
+import { foldAddressForKey } from "@/services/chains/addressCompare";
 import {
   adaptAssetForNetwork,
   filterAssets,
@@ -69,6 +75,55 @@ export default function AssetExplorer() {
   const walletsForActiveNamespace = useMemo(
     () => wallets.filter((w) => w.namespace === activeNamespace),
     [wallets, activeNamespace],
+  );
+
+  // Chain selector for the portfolio read layer. EVM chains are addressed by
+  // their numeric id; chains that have none (Solana) go by namespace.
+  // `null` means "this chain has no discovery coverage", which is NOT the same
+  // as `undefined`. An absent chain filter tells the server "every chain you
+  // support", so returning undefined here would make a Sui or Stellar wallet
+  // spend a request querying its address against every EVM chain, for a result
+  // that can only be empty.
+  const portfolioChains = useMemo(() => {
+    const blockchain = blockchains?.find((b) => b.id === activeBlockchainId);
+    if (typeof blockchain?.chainId === "number") return [blockchain.chainId];
+    if (activeNamespace === "solana") return ["solana"];
+    return null;
+  }, [blockchains, activeBlockchainId, activeNamespace]);
+
+  // Tokens this wallet actually holds, including ones missing from the
+  // curated catalogue. Identity only: balances are still read on-chain, so
+  // this only lengthens the list the balance readers already work through.
+  const {
+    assets: discoveredAssets,
+    refreshFromSource: refreshDiscoveredAssets,
+  } = useDiscoveredAssets({
+    chains: portfolioChains ?? undefined,
+    enabled: Boolean(activeWallet?.address) && portfolioChains !== null,
+  });
+
+  // Collectibles. Unlike token balances, NFT ownership cannot be read from
+  // plain RPC, so this goes through the indexer registry.
+  const evmChainId = useMemo(() => {
+    const blockchain = blockchains?.find((b) => b.id === activeBlockchainId);
+    return typeof blockchain?.chainId === "number" ? blockchain.chainId : 0;
+  }, [blockchains, activeBlockchainId]);
+
+  const {
+    collections: nftCollections,
+    isLoading: isLoadingNFTs,
+    isError: isNFTsError,
+    hasNextPage: hasMoreNFTs,
+    isFetchingNextPage: isFetchingMoreNFTs,
+    fetchNextPage: fetchMoreNFTs,
+  } = useNFTsQuery(
+    // Hidden behind COLLECTIBLES_TAB_ENABLED: pass no address while off so the
+    // hook's own `enabled: !!address` guard keeps this from firing at all —
+    // a hidden tab must not spend Zerion's NFT quota in the background.
+    COLLECTIBLES_TAB_ENABLED && evmChainId > 0
+      ? activeWallet?.address
+      : undefined,
+    evmChainId,
   );
 
   const {
@@ -111,11 +166,15 @@ export default function AssetExplorer() {
           exact: false,
         }),
       ]);
+      // The discovery endpoint is cache-first by default, so a plain refetch
+      // would re-serve the same list. Only this explicit call asks upstream
+      // for a newer one — that is the whole point of the pull.
+      await refreshDiscoveredAssets();
       refetchBalances();
     } finally {
       setRefreshing(false);
     }
-  }, [queryClient, refetchBalances]);
+  }, [queryClient, refetchBalances, refreshDiscoveredAssets]);
 
   const {
     selectionMode,
@@ -153,7 +212,43 @@ export default function AssetExplorer() {
         decimals: token.decimals,
       }));
 
-      setAvailableAssets(tokenAssets);
+      // Append held-but-uncatalogued tokens. The curated catalogue stays the
+      // primary, trusted list; discovery only adds rows it doesn't already
+      // have, so a token the user holds stops being invisible just because
+      // nobody registered it yet.
+      const catalogued = new Set(
+        tokenAssets
+          .map((a) =>
+            a.contractAddress
+              ? foldAddressForKey(a.contractAddress)
+              : undefined,
+          )
+          .filter((a): a is string => Boolean(a)),
+      );
+      const extras = discoveredAssets
+        .filter((asset) => {
+          // The native coin lives in the balance pill, not this list.
+          if (!asset.address) return false;
+          // Case rule is per address encoding, not per chain: EVM/Sui hex
+          // folds, Solana base58 does not. `foldAddressForKey` reads it off
+          // the address shape, so this stays chain-agnostic.
+          return !catalogued.has(foldAddressForKey(asset.address));
+        })
+        .map((asset) => ({
+          id: `discovered-${asset.chainId ?? asset.namespace}-${asset.address}`,
+          name: asset.name,
+          symbol: asset.symbol,
+          // `logoUrl` is nullable upstream, so keep the initial-letter
+          // placeholder every other row already falls back to.
+          logo: asset.logoUrl || asset.symbol.charAt(0) || "?",
+          balance: "0",
+          value: "0.00",
+          change: "0%",
+          contractAddress: asset.address ?? undefined,
+          decimals: asset.decimals,
+        }));
+
+      setAvailableAssets([...tokenAssets, ...extras]);
     } else if (!activeBlockchainId || !isLoadingTokens) {
       const networkAssets = getNetworkSpecificAssets(
         SAMPLE_ASSETS,
@@ -162,7 +257,13 @@ export default function AssetExplorer() {
       );
       setAvailableAssets(networkAssets);
     }
-  }, [tokens, isLoadingTokens, activeNetwork, activeBlockchainId]);
+  }, [
+    tokens,
+    isLoadingTokens,
+    activeNetwork,
+    activeBlockchainId,
+    discoveredAssets,
+  ]);
 
   const filteredAvailableAssets = useMemo(
     () =>
@@ -259,7 +360,17 @@ export default function AssetExplorer() {
               selectionMode={selectionMode}
             />
 
-            {activeTab === "my-assets" ? (
+            {COLLECTIBLES_TAB_ENABLED && activeTab === "collectibles" ? (
+              <CollectiblesList
+                collections={nftCollections}
+                searchQuery={searchQuery}
+                isLoading={isLoadingNFTs}
+                isError={isNFTsError}
+                hasMore={Boolean(hasMoreNFTs)}
+                isFetchingMore={isFetchingMoreNFTs}
+                onLoadMore={fetchMoreNFTs}
+              />
+            ) : activeTab === "my-assets" ? (
               <UserAssetList
                 data={{
                   userAssets,

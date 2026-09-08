@@ -18,6 +18,7 @@
  */
 
 import { formatUnits, parseUnits } from "viem";
+import { portfolioApi } from "@/api/endpoints/portfolio";
 import { tokenApi } from "@/api/endpoints/tokens";
 import type { TToken } from "@/api/types/token";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
@@ -291,6 +292,64 @@ export const sendSol: MobileToolExecutor = (input, context) =>
  * optionally resolves live on-chain balances via `kit.getTokenBalance`.
  * Native SOL is prepended as a pseudo-row (is_native: true) unless excluded.
  */
+/**
+ * Solana asset discovery is gated: the upstream provider lists Solana as
+ * early access, and its DeFi/NFT coverage is still incomplete, so this stays
+ * opt-in until that settles.
+ */
+const SOLANA_DISCOVERY_ENABLED =
+  process.env.EXPO_PUBLIC_SOLANA_ASSET_DISCOVERY === "true";
+
+/** Cap per call: each discovered mint costs a balance read below. */
+const MAX_DISCOVERED_MINTS = 50;
+
+/**
+ * Held-but-uncatalogued SPL mints, shaped as catalogue rows so the existing
+ * filter + balance-read path treats them identically. Identity only: the
+ * balance still comes from the on-chain read.
+ *
+ * Base58 mint addresses are case-SIGNIFICANT, so they are compared and stored
+ * verbatim — never lowercased.
+ */
+async function loadDiscoveredSplTokens(
+  blockchainId: string,
+  known: Set<string>,
+): Promise<TToken[]> {
+  try {
+    const result = await portfolioApi.getDiscoveredAssets({
+      chains: ["solana"],
+    });
+    const now = new Date().toISOString();
+    const rows: TToken[] = [];
+    for (const asset of result.data) {
+      if (rows.length >= MAX_DISCOVERED_MINTS) break;
+      if (asset.namespace !== "solana" || !asset.address) continue;
+      if (known.has(asset.address)) continue;
+      known.add(asset.address);
+      rows.push({
+        id: `discovered-${asset.address}`,
+        name: asset.name,
+        symbol: asset.symbol,
+        decimals: asset.decimals,
+        blockchainId,
+        contractAddress: asset.address,
+        logoUrl: asset.logoUrl,
+        isStablecoin: false,
+        isActive: true,
+        createdAt: now,
+        updatedAt: now,
+        isNativeCurrency: false,
+      });
+    }
+    return rows;
+  } catch (err) {
+    if (__DEV__) {
+      console.warn("[solana] token discovery unavailable", err);
+    }
+    return [];
+  }
+}
+
 export const getSolanaWalletTokens: MobileToolExecutor = (input, context) =>
   safeExecute(async () => {
     const kit = getSolanaKit();
@@ -370,6 +429,21 @@ export const getSolanaWalletTokens: MobileToolExecutor = (input, context) =>
           `failed to fetch SPL token list: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    }
+
+    // Held-but-uncatalogued mints. Solana discovery is behind a flag because
+    // the upstream provider still treats Solana as early access; when it is
+    // off, this is exactly the catalogue-only behaviour that shipped before.
+    if (SOLANA_DISCOVERY_ENABLED) {
+      const known = new Set(
+        allTokens
+          .map((t) => t.contractAddress)
+          .filter((a): a is string => Boolean(a)),
+      );
+      allTokens = [
+        ...allTokens,
+        ...(await loadDiscoveredSplTokens(solanaBlockchain.id, known)),
+      ];
     }
 
     const symFilter =

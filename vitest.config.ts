@@ -55,6 +55,10 @@ export default defineConfig({
   define: { __DEV__: "false" },
   test: {
     include: [
+      // Portfolio read layer (Zerion-backed). The endpoint test pins the
+      // cache-first contract: automatic reads must never send `refresh`.
+      "api/endpoints/portfolio.test.ts",
+      "services/indexer/ZerionNftProvider.test.ts",
       // Wallet-standards hardening spec
       // (docs/wallet-standards-hardening-spec.md) — phases B/C/D/F.
       "services/decoders/walletStandards.test.ts",

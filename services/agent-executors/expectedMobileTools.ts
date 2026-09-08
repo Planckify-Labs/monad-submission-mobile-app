@@ -17,6 +17,7 @@ export const EXPECTED_MOBILE_TOOLS: ReadonlyArray<string> = [
   // chain-agnostic capability tools (model-facing balance/asset/send surface)
   "get_native_balance",
   "get_wallet_assets",
+  "get_wallet_nfts",
   "send_native",
   "send_token",
   // blockchain reads

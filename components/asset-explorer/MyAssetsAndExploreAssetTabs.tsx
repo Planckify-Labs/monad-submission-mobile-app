@@ -1,4 +1,4 @@
-import { Coins, Compass } from "lucide-react-native";
+import { Coins, Compass, Images } from "lucide-react-native";
 import React, { useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -7,9 +7,45 @@ import {
   Text,
   View,
 } from "react-native";
+import type { TAssetTabType } from "@/constants/types/assetTypes";
 import { TAssetCategoryTabsProps } from "@/constants/types/assetTypes";
 
 const PADDING = 6; // p-1.5 = 6px
+
+/**
+ * Collectibles is built (Zerion-backed NFT read path, `CollectiblesList`,
+ * the indexer provider) but not something we want live yet. Flip this to
+ * bring the tab back — the screen wiring in `app/asset-explorer.tsx` reads
+ * the same flag to skip the NFT query entirely while hidden, so no quota is
+ * spent on a tab nobody can open.
+ */
+export const COLLECTIBLES_TAB_ENABLED = false;
+
+/** Tab order is the slide order, so the indicator maths follows the array. */
+const ALL_TABS: {
+  key: TAssetTabType;
+  label: string;
+  icon: typeof Coins;
+  activeColor: string;
+}[] = [
+  { key: "my-assets", label: "My Assets", icon: Coins, activeColor: "#c71c4b" },
+  {
+    key: "explore-assets",
+    label: "Explore",
+    icon: Compass,
+    activeColor: "#20222c",
+  },
+  {
+    key: "collectibles",
+    label: "Collectibles",
+    icon: Images,
+    activeColor: "#20222c",
+  },
+];
+
+const TABS = COLLECTIBLES_TAB_ENABLED
+  ? ALL_TABS
+  : ALL_TABS.filter((t) => t.key !== "collectibles");
 
 const MyAssetsAndExploreAssetTabs = ({
   activeTab,
@@ -19,16 +55,21 @@ const MyAssetsAndExploreAssetTabs = ({
   const slideAnim = useRef(new Animated.Value(0)).current;
   const [containerWidth, setContainerWidth] = useState(0);
 
-  const tabWidth = containerWidth > 0 ? (containerWidth - PADDING * 2) / 2 : 0;
+  const tabWidth =
+    containerWidth > 0 ? (containerWidth - PADDING * 2) / TABS.length : 0;
+  const activeIndex = Math.max(
+    TABS.findIndex((t) => t.key === activeTab),
+    0,
+  );
 
   useEffect(() => {
     Animated.spring(slideAnim, {
-      toValue: activeTab === "my-assets" ? 0 : 1,
+      toValue: activeIndex,
       useNativeDriver: true,
       tension: 80,
       friction: 10,
     }).start();
-  }, [activeTab, slideAnim]);
+  }, [activeIndex, slideAnim]);
 
   const onLayout = (event: LayoutChangeEvent) => {
     const { width } = event.nativeEvent.layout;
@@ -36,6 +77,8 @@ const MyAssetsAndExploreAssetTabs = ({
   };
 
   if (selectionMode) return null;
+
+  const activeColor = TABS[activeIndex].activeColor;
 
   return (
     <View className="my-4">
@@ -56,17 +99,16 @@ const MyAssetsAndExploreAssetTabs = ({
             style={{
               width: tabWidth,
               left: PADDING,
-              backgroundColor:
-                activeTab === "my-assets" ? "#c71c4b" : "#20222c",
+              backgroundColor: activeColor,
               transform: [
                 {
                   translateX: slideAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: [0, tabWidth],
+                    inputRange: TABS.map((_, i) => i),
+                    outputRange: TABS.map((_, i) => i * tabWidth),
                   }),
                 },
               ],
-              shadowColor: activeTab === "my-assets" ? "#c71c4b" : "#20222c",
+              shadowColor: activeColor,
               shadowOffset: { width: 0, height: 4 },
               shadowOpacity: 0.25,
               shadowRadius: 8,
@@ -75,45 +117,29 @@ const MyAssetsAndExploreAssetTabs = ({
           />
         )}
 
-        <Pressable
-          className="flex-1 py-3.5 items-center flex-row justify-center z-10"
-          onPress={() => setActiveTab("my-assets")}
-        >
-          <Coins
-            size={16}
-            color={activeTab === "my-assets" ? "#fff" : "#20222c"}
-            style={{ marginRight: 6 }}
-          />
-          <Text
-            className={`font-semibold text-sm ${
-              activeTab === "my-assets"
-                ? "text-white"
-                : "text-light-matte-black"
-            }`}
-          >
-            My Assets
-          </Text>
-        </Pressable>
-
-        <Pressable
-          className="flex-1 py-3.5 items-center flex-row justify-center z-10"
-          onPress={() => setActiveTab("explore-assets")}
-        >
-          <Compass
-            size={16}
-            color={activeTab === "explore-assets" ? "#fff" : "#20222c"}
-            style={{ marginRight: 6 }}
-          />
-          <Text
-            className={`font-semibold text-sm ${
-              activeTab === "explore-assets"
-                ? "text-white"
-                : "text-light-matte-black"
-            }`}
-          >
-            Explore
-          </Text>
-        </Pressable>
+        {TABS.map(({ key, label, icon: Icon }) => {
+          const isActive = key === activeTab;
+          return (
+            <Pressable
+              key={key}
+              className="flex-1 py-3.5 items-center flex-row justify-center z-10"
+              onPress={() => setActiveTab(key)}
+            >
+              <Icon
+                size={16}
+                color={isActive ? "#fff" : "#20222c"}
+                style={{ marginRight: 6 }}
+              />
+              <Text
+                className={`font-semibold text-xs ${
+                  isActive ? "text-white" : "text-light-matte-black"
+                }`}
+              >
+                {label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
     </View>
   );

@@ -21,9 +21,14 @@ import {
   SafeAreaView,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
+import type { TPortfolioPositionStatus } from "@/api/types/portfolio";
 import type { TOpportunity, TStrategyPosition } from "@/api/types/strategy";
 import SingleLoadingSekeleton from "@/components/common/SingleLoadingSekeleton";
 import { useBlockchains } from "@/hooks/queries/useBlockchains";
+import {
+  type PortfolioPositionGroup,
+  usePortfolioPositions,
+} from "@/hooks/queries/usePortfolioPositions";
 import {
   useStrategyOpportunities,
   useStrategyPositions,
@@ -341,6 +346,81 @@ function SectionLabel({
   );
 }
 
+/**
+ * A protocol position we discovered rather than opened.
+ *
+ * These are tracked, not managed: there is no in-app withdraw path, and the
+ * value is the data provider's estimate rather than an on-chain read, so the
+ * row says so instead of implying the same confidence as a managed position.
+ */
+function TrackedPositionGroup({
+  group,
+  showDivider,
+}: {
+  group: PortfolioPositionGroup;
+  showDivider: boolean;
+}) {
+  return (
+    <View
+      className={`px-4 py-3.5 ${showDivider ? "border-t border-light-matte-black/5" : ""}`}
+    >
+      <View className="flex-row items-center justify-between">
+        <View className="flex-1 pr-3">
+          <Text
+            className="text-light-matte-black font-semibold"
+            numberOfLines={1}
+          >
+            {group.protocolName}
+          </Text>
+          <Text className="text-light-matte-black/50 text-xs mt-0.5">
+            {group.positions.length}{" "}
+            {group.positions.length === 1 ? "position" : "positions"}
+          </Text>
+        </View>
+        <View className="items-end">
+          <Text className="text-light-matte-black font-semibold">
+            ${group.totalValueUsd.toFixed(2)}
+          </Text>
+          <Text className="text-light-matte-black/40 text-[10px] mt-0.5">
+            Estimated
+          </Text>
+        </View>
+      </View>
+
+      <View className="mt-2">
+        {group.positions.map((position) => (
+          <View
+            key={`${position.zerionChainId}-${position.assetContract ?? position.assetSymbol}-${position.status}`}
+            className="flex-row items-center justify-between py-1"
+          >
+            <Text className="text-light-matte-black/60 text-xs">
+              {position.assetSymbol}
+              {"  "}
+              <Text className="text-light-matte-black/40">
+                {trackedStatusLabel[position.status]}
+              </Text>
+            </Text>
+            <Text className="text-light-matte-black/60 text-xs">
+              {position.valueUsd === null
+                ? "N/A"
+                : `$${position.valueUsd.toFixed(2)}`}
+            </Text>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+}
+
+/** Plain-language labels. "deposit" and "borrowed" are jargon on their own. */
+const trackedStatusLabel: Record<TPortfolioPositionStatus, string> = {
+  deposit: "Supplied",
+  staked: "Staked",
+  locked: "Locked",
+  reward: "Claimable",
+  borrowed: "Borrowed",
+};
+
 export default function StrategiesIndex() {
   const router = useRouter();
   const { bottom } = useSafeAreaInsets();
@@ -364,6 +444,12 @@ export default function StrategiesIndex() {
     strategy ? { tier: strategy.tier } : {},
     hasStrategy,
   );
+
+  // Positions held outside this app, discovered from the wallet rather than
+  // recorded when we opened them.
+  const { groups: trackedGroups } = usePortfolioPositions({
+    enabled: Boolean(activeWallet?.address),
+  });
 
   if (strategyLoading) {
     return (
@@ -628,6 +714,29 @@ export default function StrategiesIndex() {
               )}
             </View>
           </View>
+
+          {/* Tracked elsewhere: discovered positions we don't manage */}
+          {trackedGroups.length > 0 && (
+            <View className="mx-4 mb-6">
+              <SectionLabel label="Tracked elsewhere" />
+              <View
+                className="bg-light rounded-2xl overflow-hidden"
+                style={CARD_SHADOW}
+              >
+                {trackedGroups.map((group, idx) => (
+                  <TrackedPositionGroup
+                    key={group.dappId}
+                    group={group}
+                    showDivider={idx > 0}
+                  />
+                ))}
+              </View>
+              <Text className="text-light-matte-black/40 text-[11px] mt-2 ml-1">
+                Found in your wallet, opened outside this app. You can view
+                these here, but withdrawals happen in the app you used.
+              </Text>
+            </View>
+          )}
 
           {/* Opportunities */}
           <View className="mx-4 mb-4">

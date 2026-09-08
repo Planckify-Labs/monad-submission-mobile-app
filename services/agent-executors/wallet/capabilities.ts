@@ -26,6 +26,7 @@ import {
   type ToolInput,
   type ToolResult,
 } from "../types";
+import { getWalletNfts } from "./nfts";
 import { getWalletBalance, getWalletTokens } from "./reads";
 import {
   getSolanaWalletTokens,
@@ -273,6 +274,7 @@ export const sendToken: MobileToolExecutor = (input, context) =>
 export const CAPABILITY_EXECUTORS: Record<string, MobileToolExecutor> = {
   get_native_balance: getNativeBalance,
   get_wallet_assets: getWalletAssets,
+  get_wallet_nfts: getWalletNfts,
   send_native: sendNative,
   send_token: sendToken,
 };
