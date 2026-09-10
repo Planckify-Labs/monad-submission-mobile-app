@@ -21,7 +21,7 @@ consumer.
   1. **Idempotent install gate** — `if (window.__takumi_solana_installed) return;`.
   2. **Build `takumiSolanaWallet: Wallet`** per §4.2b:
      - `version: "1.0.0"` literal.
-     - `name: "TakumiAI Wallet"`.
+     - `name: "TakumiPay"`.
      - `icon` — embedded SVG data URL ≤ 100 KB, one of
        `svg+xml|webp|png|gif`.
      - `chains` — `IdentifierArray` of all 6 entries (3 short + 3
@@ -85,7 +85,7 @@ consumer.
 - [ ] Script size ≤ 3 KB gzipped (measure with `gzip -c | wc -c`).
 - [ ] `pnpm check:syntax` clean.
 - [ ] Manual: load Phantom's `wallet-standard-dapp` demo in the in-app
-      browser; "TakumiAI Wallet" appears in picker without a manual
+      browser; "TakumiPay" appears in picker without a manual
       adapter.
 - [ ] Manual: `__takumi_solana_installed` short-circuit verified by
       logging inside the IIFE on `onLoadEnd` re-inject (no second

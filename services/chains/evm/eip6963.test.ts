@@ -27,8 +27,8 @@ describe("eip6963 — UUID v4 generation (TWV-2026-031)", () => {
 });
 
 describe("eip6963 — rdns invariant", () => {
-  it("pins our rdns to com.takumi.wallet", () => {
-    assert.match(src, /OUR_RDNS\s*=\s*"com\.takumi\.wallet"/);
+  it("pins our rdns to com.planckify.takumiwallet (matches the bundle ID)", () => {
+    assert.match(src, /OUR_RDNS\s*=\s*"com\.planckify\.takumiwallet"/);
   });
 
   it("exports an assertion helper", () => {

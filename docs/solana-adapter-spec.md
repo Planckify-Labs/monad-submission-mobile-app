@@ -159,7 +159,7 @@ The object handed to `register` must conform to `Wallet` from `@wallet-standard/
 const takumiSolanaWallet: Wallet = {
   // Literal string `"1.0.0"` — the Wallet Standard version, NOT our app version.
   version: "1.0.0",
-  name: "TakumiAI Wallet",
+  name: "TakumiPay",
   // WalletIcon = `data:image/${"svg+xml"|"webp"|"png"|"gif"};base64,${string}`.
   // Must be ≤ 100KB; dApps render it in a wallet-picker list.
   icon: "data:image/svg+xml;base64,…takumi-logo…",
@@ -805,7 +805,7 @@ These all introduce **new transports or protocol surfaces that live outside the 
 | `altResolver.ts` | Unit — resolves a known Jupiter ALT (fixture) into full account list; falls back on missing table |
 | `simulate.ts` | Unit — post/pre balance diffing, token-balance diffing including token-2022, warning emission |
 | `SolanaSimulationInspector` | Unit via `inspector.test.ts` harness — emits correct patch, never modifies `transaction` field |
-| Wallet Standard announce | Manual — load Phantom's `wallet-standard-dapp` demo in the in-app browser, verify "TakumiAI Wallet" appears in the picker without manual adapter |
+| Wallet Standard announce | Manual — load Phantom's `wallet-standard-dapp` demo in the in-app browser, verify "TakumiPay" appears in the picker without manual adapter |
 | SIWS round-trip | Manual — Phantom demo SIWS page; Magic Eden app-login |
 | Versioned tx | Manual — Jupiter mainnet swap (v0 w/ ALT); Raydium concentrated-LP add (legacy) |
 | Sign-all | Manual — pump.fun token launch (sign-all with N=3-5) |

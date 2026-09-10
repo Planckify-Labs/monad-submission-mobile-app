@@ -44,7 +44,7 @@ import {
   canForwardCookies,
   refreshDappCookies,
 } from "./dappCookies";
-import { getInstallUuid } from "./eip6963";
+import { getInstallUuid, OUR_RDNS } from "./eip6963";
 // --- TWV-2026-010 — Allowlisted 7702 delegators. The authoritative list
 // lives in `./eip7702Guard.ts`; re-exported here for legacy callers
 // referencing this name. Bytecode-prologue sniff is also enforced
@@ -503,7 +503,8 @@ export class EvmAdapter implements ChainAdapter {
         uuid: getInstallUuid(),
         name: "TakumiPay",
         icon: takumipayLogoBase64,
-        rdns: "com.takumi.wallet",
+        // TWV-2026-031 — single source of truth is `OUR_RDNS`.
+        rdns: OUR_RDNS,
       },
       // TWV-2026-015 — closure-scoped nonce; rotated per nav.
       sessionNonce: ctx.sessionNonce,

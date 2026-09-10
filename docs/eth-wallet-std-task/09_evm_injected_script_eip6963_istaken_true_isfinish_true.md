@@ -30,8 +30,9 @@ painless when those adapters land.
 - Wire `EvmAdapter.getInjectedScript(ctx)` to return the concatenated
   script. `DappBridge` / the screen concatenates across adapters.
 - App-level config for the 6963 `info`:
-  - `name: "TakumiAI Wallet"`.
-  - `rdns: "com.takumi.wallet"` (stable reverse-DNS).
+  - `name: "TakumiPay"`.
+  - `rdns: "com.planckify.takumiwallet"` (stable reverse-DNS — the iOS
+    bundle ID / Android package / Play Store listing ID).
   - `uuid`: generate once per install, persist in `SecureStore`.
   - `icon`: base64 PNG of the app icon.
 
@@ -52,7 +53,7 @@ painless when those adapters land.
 - [ ] `services/chains/evm/injectedScript.ts` and `eip6963.ts` exist.
 - [ ] `EvmAdapter.getInjectedScript` returns the concatenated source.
 - [ ] Manual QA: open a dApp that uses EIP-6963 (e.g. the Rainbow
-      test page) and confirm "TakumiAI Wallet" appears in its wallet
+      test page) and confirm "TakumiPay" appears in its wallet
       picker.
 - [ ] Manual QA: open a legacy dApp that reads `window.ethereum`
       directly; it still detects us.

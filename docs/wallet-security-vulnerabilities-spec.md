@@ -710,10 +710,10 @@ A "Critical" finding triggers release-block; "High" triggers must-fix in next re
 - **Description:** A malicious wallet extension impersonates a legitimate one by announcing the same `EIP6963ProviderInfo.name/icon`. dApps that naively pick by name may surface the attacker's provider; transactions signed there go through attacker control.
 - **Root Cause:** EIP-6963 relies on event announcement; no cryptographic authenticity for `(uuid, name, icon, rdns)`.
 - **Mitigation (as wallet):**
-  - Always set a stable, unique `uuid` and a reverse-DNS `rdns` matching our domain.
+  - Always set a stable, unique `uuid` and a reverse-DNS `rdns`. Ours is pinned to `com.planckify.takumiwallet` (the iOS bundle ID / Android package / Play Store listing ID) via `OUR_RDNS` in `services/chains/evm/eip6963.ts`.
   - If ever operating as a dApp (agent calling out), pick providers by `rdns` over user-visible `name`.
   - If ever rendering an SVG icon from another provider, sanitise it (SVG XSS via embedded scripts is a documented risk).
-- **TakumiAI Applicability:** Applies. `services/chains/evm/eip6963.ts` — confirm provider info is stable; if the injected provider accepts inbound announcements, sanitise.
+- **TakumiAI Applicability:** Applies. `services/chains/evm/eip6963.ts` — `OUR_RDNS` is the single source of truth (`EvmAdapter` imports it; `eip6963.test.ts` pins it); confirm provider info is stable; if the injected provider accepts inbound announcements, sanitise.
 - **References:**
   - https://eips.ethereum.org/EIPS/eip-6963
   - https://reown.com/blog/eip6963-is-now-approved

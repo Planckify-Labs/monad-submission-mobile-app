@@ -28,10 +28,11 @@ function generateUuidV4(): string {
 
 /**
  * TWV-2026-031 — runtime invariant. Our `rdns` MUST be the package's
- * reverse-DNS. Any other value is either a build mistake or an
+ * reverse-DNS (the iOS bundle ID / Android package, also the Play Store
+ * listing ID). Any other value is either a build mistake or an
  * impersonation attempt; surface it loudly.
  */
-const OUR_RDNS = "com.takumi.wallet" as const;
+export const OUR_RDNS = "com.planckify.takumiwallet" as const;
 export function assertOurRdns(rdns: string): void {
   if (rdns !== OUR_RDNS) {
     if (__DEV__) {

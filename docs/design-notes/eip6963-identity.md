@@ -8,9 +8,12 @@
 1. **`uuid`** — UUIDv4, generated once per install via the OS CSPRNG
    (`crypto.getRandomValues` polyfill), persisted in MMKV. **NOT a
    build-time constant** — see "Why per-install" below.
-2. **`rdns`** — pinned to `com.takumi.wallet`. Never drifts from the
-   bundle ID.
-3. **`name`** — `"TakumiAI Wallet"`. Bundled at build time, not
+2. **`rdns`** — pinned to `com.planckify.takumiwallet`, the iOS bundle
+   ID / Android package / Play Store listing ID. Never drifts from the
+   bundle ID. (Was `com.takumi.wallet` through 5.21.0 — a stale value
+   that predated the `planckify` / `takumipay` naming; realigned under
+   TWV-2026-031.)
+3. **`name`** — `"TakumiPay"`. Bundled at build time, not
    user-editable, not fetched at runtime.
 4. **`icon`** — `assets/images/takumipay-logo.png`, encoded inline as
    base64 (`takumipayLogoBase64`). No runtime fetch, no SVG.
