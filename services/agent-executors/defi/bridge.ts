@@ -55,6 +55,18 @@ import {
   type ToolInput,
 } from "../types";
 
+/**
+ * Gas top-up is PARKED — see the note above `BlockerRow` in
+ * `components/home/TakumiAgent/StructuredUI/cards/BridgeQuoteCard.tsx`.
+ *
+ * The card no longer renders the "Add $X of gas" action. This mirror flag
+ * makes the executor ALSO ignore a `gas_top_up_usd` argument, so a
+ * manually typed "add $2 of gas" cannot slip past the hidden UI and
+ * submit an unproven, untested second transaction. Flip both flags to
+ * restore.
+ */
+const GAS_TOP_UP_ENABLED = false;
+
 // ── input helpers ─────────────────────────────────────────────────────
 
 function requireCaip2(input: ToolInput, key: string): string {
@@ -537,7 +549,12 @@ export const bridgeExecute: MobileToolExecutor = (input, context) =>
     // `gasTopUp`, and the absence is the correct signal.
     const gasTopUpUsd = optionalNumber(input, "gas_top_up_usd");
     let gasTopUp: { tx_hash: string; amount_usd: number } | null = null;
-    if (gasTopUpUsd && gasTopUpUsd > 0 && adapter.gasTopUp) {
+    if (
+      GAS_TOP_UP_ENABLED &&
+      gasTopUpUsd &&
+      gasTopUpUsd > 0 &&
+      adapter.gasTopUp
+    ) {
       gasTopUp = await runGasTopUp({
         adapter,
         quote,

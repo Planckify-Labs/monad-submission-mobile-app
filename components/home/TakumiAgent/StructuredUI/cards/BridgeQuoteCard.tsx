@@ -390,6 +390,33 @@ function DestinationAddress({
 // ── §7.5 destination readiness ────────────────────────────────────────
 
 /**
+ * Gas top-up ("Add $X of gas") is PARKED pending infra work.
+ *
+ * The whole path is wired (this button -> a chat prompt -> the agent
+ * rebuilding `bridge_execute` with `gas_top_up_usd` -> `POST
+ * /bridge/gas-top-up` -> a LI.FI gas-zip leg -> a SECOND signed tx), but
+ * it is unproven on our current stack:
+ *
+ *   - no test coverage anywhere, mobile or backend;
+ *   - silent by design — `runGasTopUp` swallows every failure and lets
+ *     the main bridge proceed, so a broken leg is indistinguishable from
+ *     a working one and the user still lands with no gas;
+ *   - it only works if the model faithfully reconstructs the entire
+ *     `bridge_execute` call from chat history after the tap, which is
+ *     exactly what fell over in the field (rejected transfer -> tap ->
+ *     "interrupted before you approved it" -> dead conversation).
+ *
+ * Until that path is exercised end to end we withhold the ACTION and keep
+ * only the warning message, which is useful on its own. Proceeding
+ * without a top-up is already the non-blocking default (this blocker is
+ * `severity: "warning"`), so nothing is stranded.
+ *
+ * To restore: flip `GAS_TOP_UP_ENABLED` to true here AND the mirror flag
+ * in `services/agent-executors/defi/bridge.ts`.
+ */
+const GAS_TOP_UP_ENABLED = false;
+
+/**
  * Renders every namespace's blockers through ONE component. Adding a
  * namespace means implementing `checkBridgeDestinationReadiness` on its
  * wallet kit, not editing this card (§7.5).
@@ -407,7 +434,9 @@ function BlockerRow({
   const blocking = blocker.severity === "blocking";
   const remedyLabel =
     blocker.remedy.kind === "gas_top_up"
-      ? `Add $${blocker.remedy.suggestedUsd} of gas`
+      ? GAS_TOP_UP_ENABLED
+        ? `Add $${blocker.remedy.suggestedUsd} of gas`
+        : null
       : blocker.remedy.kind === "establish_trustline"
         ? "Set up this asset"
         : null;
