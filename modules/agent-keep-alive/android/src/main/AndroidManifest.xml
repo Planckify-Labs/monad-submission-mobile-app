@@ -1,0 +1,26 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Library manifests merge into the app manifest, so the module carries its
+    own permissions (the same way expo-notifications declares
+    POST_NOTIFICATIONS). `FOREGROUND_SERVICE_DATA_SYNC` is mandatory from
+    targetSdk 34 for a `dataSync` service; Google Play additionally requires a
+    Foreground Service permissions declaration justifying it at submission.
+    POST_NOTIFICATIONS is already declared by expo-notifications; without it
+    the service still runs, only its notification is hidden.
+  -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+  <application>
+    <!--
+      The keep-alive foreground service. `dataSync` is the Android 14+ type that
+      matches "syncing data with a server over the network", which is exactly
+      what an in-flight agent turn (the SSE stream) is doing. Not exported: only
+      this app may start it.
+    -->
+    <service
+      android:name="expo.modules.agentkeepalive.AgentForegroundService"
+      android:exported="false"
+      android:foregroundServiceType="dataSync" />
+  </application>
+</manifest>

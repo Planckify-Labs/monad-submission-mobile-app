@@ -23,6 +23,7 @@ import { DeepLinkNoticeHost } from "@/components/deeplinks/DeepLinkNoticeHost";
 import { PerformanceProvider } from "@/components/providers/PerformanceProvider";
 import LockScreen from "@/components/security/LockScreen";
 import QKEY_Wallets from "@/constants/queryKeys/walletQueryKeys";
+import { useAgentBackgroundKeepAlive } from "@/hooks/useAgentBackgroundKeepAlive";
 import { useAppSessionTracking } from "@/hooks/useAppSessionTracking";
 // Ordering (spec §6.2): polyfill import → bootWalletKits() → any screen/provider.
 import { useWallet } from "@/hooks/useWallet";
@@ -188,6 +189,7 @@ function AppShell() {
   usePushNotificationHandler();
   usePushRegistrationRetry();
   useAppSessionTracking(locked);
+  useAgentBackgroundKeepAlive();
 
   // Keep the non-React mirrors of app state current. The root bridge
   // context reads the wallet list from a holder (never the active
