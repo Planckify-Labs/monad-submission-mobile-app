@@ -218,6 +218,8 @@ export default defineConfig({
       "services/backup/seedBackupCrypto.test.ts",
       "services/backup/bytes.test.ts",
       "services/backup/passphrasePolicy.test.ts",
+      // App PIN store: hashed at rest, legacy plaintext migrated once.
+      "services/security/pinStore.test.ts",
     ],
   },
 });

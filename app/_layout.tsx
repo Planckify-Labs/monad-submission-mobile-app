@@ -22,6 +22,7 @@ import { ChainSwitchingOverlay } from "@/components/common/ChainSwitchingOverlay
 import { DeepLinkNoticeHost } from "@/components/deeplinks/DeepLinkNoticeHost";
 import { PerformanceProvider } from "@/components/providers/PerformanceProvider";
 import LockScreen from "@/components/security/LockScreen";
+import { PinGateHost } from "@/components/security/PinGateHost";
 import QKEY_Wallets from "@/constants/queryKeys/walletQueryKeys";
 import { useAgentBackgroundKeepAlive } from "@/hooks/useAgentBackgroundKeepAlive";
 import { useAppSessionTracking } from "@/hooks/useAppSessionTracking";
@@ -57,6 +58,10 @@ import {
 } from "@/services/push";
 import { installQRMatrixCache } from "@/services/qrMatrixCache";
 import { setAppLocked } from "@/services/security/appLockState";
+import {
+  getCachedDeviceSecurityLevel,
+  refreshDeviceSecurityLevel,
+} from "@/services/security/deviceSecurityLevel";
 import { hydrateSigningMode } from "@/services/security/signingMode";
 import { bootTransports } from "@/services/transports/boot";
 import { bootWalletKits } from "@/services/walletKit/boot";
@@ -71,9 +76,22 @@ bootWalletKits();
 // host to render in. Needs the kits above; the browser screen's own
 // `bootBridge()` becomes a rebind.
 bootBridgeAtRoot();
+/**
+ * Boot-time lock decision, made synchronously from the MMKV mirror of the
+ * device's screen-lock posture so the first render is already right:
+ * a device with no biometric and no PIN / pattern / passcode gets no
+ * `LockScreen` (the OS can't authenticate anyone there; the per-action
+ * PIN is the gate instead). `InitializeApp` re-confirms against the live
+ * OS value before the splash hides, so a screen lock added or removed
+ * since the last launch is still honoured this launch.
+ */
+function shouldLockAtBoot(): boolean {
+  return hasStoredWallets() && getCachedDeviceSecurityLevel() !== "none";
+}
+
 // Seed the lock mirror before the first render so the root approval host
 // never paints during the one frame before `AppShell`'s effect runs.
-setAppLocked(hasStoredWallets());
+setAppLocked(shouldLockAtBoot());
 // Session transports (WalletConnect today). Eager only when there are
 // active sessions or the launch link is a pairing; lazy otherwise.
 void bootTransports();
@@ -148,9 +166,12 @@ export const queryClient = new QueryClient({
 function InitializeApp({
   didUnlockThisSession,
   onShouldLock,
+  onSkipLock,
 }: {
   didUnlockThisSession: boolean;
   onShouldLock: (locked: boolean) => void;
+  /** Device has no screen lock: open without a LockScreen this session. */
+  onSkipLock: () => void;
 }) {
   const isRestoring = useIsRestoring();
   const { wallets, isLoading } = require("@/hooks/useWallet").useWallet();
@@ -159,8 +180,22 @@ function InitializeApp({
     if (isRestoring || isLoading) return;
 
     if (hasStoredWallets() && !didUnlockThisSession) {
-      onShouldLock(true);
-    } else if (wallets.length === 0 && !hasStoredWallets()) {
+      // Live posture, not the mirror `shouldLockAtBoot` was seeded from.
+      // The splash stays up until this settles so neither branch shows
+      // the wrong screen first.
+      let cancelled = false;
+      void refreshDeviceSecurityLevel().then((level) => {
+        if (cancelled) return;
+        if (level === "none") onSkipLock();
+        else onShouldLock(true);
+        SplashScreen.hideAsync();
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (wallets.length === 0 && !hasStoredWallets()) {
       onShouldLock(false);
       router.replace("/login");
     } else {
@@ -174,6 +209,7 @@ function InitializeApp({
     wallets.length,
     didUnlockThisSession,
     onShouldLock,
+    onSkipLock,
   ]);
 
   return null;
@@ -181,7 +217,7 @@ function InitializeApp({
 
 function AppShell() {
   const queryClient = useQueryClient();
-  const [locked, setLocked] = useState<boolean>(hasStoredWallets());
+  const [locked, setLocked] = useState<boolean>(shouldLockAtBoot);
   const [didUnlockThisSession, setDidUnlockThisSession] = useState(false);
   const { wallets } = useWallet();
   const pathname = usePathname();
@@ -221,6 +257,16 @@ function AppShell() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletKey]);
 
+  // Deep-link spec §4.8: drain the link inbox only after unlock. A
+  // link that arrived behind the lock screen already pointed the
+  // router at the interstitial; this covers the case where something
+  // else navigated away in between.
+  const drainLinkInbox = useCallback(() => {
+    if (linkInbox.peek() && pathname !== INBOX_ROUTE) {
+      router.push(INBOX_ROUTE as never);
+    }
+  }, [pathname]);
+
   // Two-phase unlock — lift the gate first (so all `useAppLocked()`
   // consumers fire their gated effects + the React re-render cascade
   // runs), then dismiss the LockScreen after a short settle window.
@@ -257,20 +303,25 @@ function AppShell() {
     // any heavy work.
     await new Promise((r) => setTimeout(r, 100));
     setLocked(false);
-    // Deep-link spec §4.8: drain the link inbox only after unlock. A
-    // link that arrived behind the lock screen already pointed the
-    // router at the interstitial; this covers the case where something
-    // else navigated away in between.
-    if (linkInbox.peek() && pathname !== INBOX_ROUTE) {
-      router.push(INBOX_ROUTE as never);
-    }
-  }, [pathname]);
+    drainLinkInbox();
+  }, [drainLinkInbox]);
+
+  // No screen lock on the device, so no LockScreen this session. The
+  // wallets query loads the bundle on its own (the read isn't OS-gated);
+  // the priming LockScreen does is a post-unlock perf measure that has
+  // nothing to hide behind here.
+  const handleSkipLock = useCallback(() => {
+    setDidUnlockThisSession(true);
+    setLocked(false);
+    drainLinkInbox();
+  }, [drainLinkInbox]);
 
   return (
     <AppLockedContext.Provider value={locked}>
       <InitializeApp
         didUnlockThisSession={didUnlockThisSession}
         onShouldLock={setLocked}
+        onSkipLock={handleSkipLock}
       />
       <Stack
         screenOptions={{
@@ -286,6 +337,10 @@ function AppShell() {
           `null` while locked (it subscribes to the lock mirror itself). */}
       <ApprovalHost />
       <DeepLinkNoticeHost />
+      {/* In-app PIN sheet for `authenticateUser()` callers on a device
+          with no screen lock. Mounted last so it stacks above the
+          approval sheets that request it. */}
+      <PinGateHost />
     </AppLockedContext.Provider>
   );
 }

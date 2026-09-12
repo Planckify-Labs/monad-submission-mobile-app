@@ -16,6 +16,14 @@ function createMemoryStore() {
   const mem = new Map<string, string>();
   return {
     getString: (key: string): string | undefined => mem.get(key),
+    getBoolean: (key: string): boolean | undefined => {
+      const v = mem.get(key);
+      return v === undefined ? undefined : v === "true";
+    },
+    getNumber: (key: string): number | undefined => {
+      const v = mem.get(key);
+      return v === undefined ? undefined : Number(v);
+    },
     set: (key: string, value: string | number | boolean): void => {
       mem.set(key, String(value));
     },

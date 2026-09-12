@@ -357,6 +357,7 @@ Also used by `wallet_scanQRCode` (§10.1 of bridge spec, P2 method) — dApps ca
 - **Lock triggers**: app foreground after >30s background, or on-demand via lock button.
 - **Per-action authentication**: signing, sending, exporting keys, revoking approvals — always re-prompt biometric/PIN regardless of lock state. Configurable: user can disable per-action auth for small amounts (threshold they set).
 - **Implementation**: `expo-local-authentication` for biometrics. PIN stored as argon2 hash in `expo-secure-store`.
+- **Device with no screen lock** (no biometric, no PIN / pattern / passcode): the OS cannot authenticate anyone, so there is no cold-start lock screen on such a device. The app opens as usual and every per-action gate (send, sign, dApp approve, seed view / export, backup, sign-in) falls back to the in-app PIN, walking the user through PIN setup on first use with the same sheet the send / redeem flows already use. Posture is read via `getEnrolledLevelAsync()` at boot and before every gate (`services/security/deviceSecurityLevel.ts`); OS auth resumes automatically once the user adds a screen lock.
 
 #### 4.11b Address-poisoning detection
 

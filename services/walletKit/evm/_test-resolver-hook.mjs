@@ -49,6 +49,8 @@ const STUB_SOURCES = {
     const mem = new Map();
     export const storage = {
       getString: (k) => (mem.has(k) ? mem.get(k) : undefined),
+      getBoolean: (k) => (mem.has(k) ? mem.get(k) === "true" : undefined),
+      getNumber: (k) => (mem.has(k) ? Number(mem.get(k)) : undefined),
       set: (k, v) => { mem.set(k, String(v)); },
       remove: (k) => { mem.delete(k); },
       delete: (k) => { mem.delete(k); },

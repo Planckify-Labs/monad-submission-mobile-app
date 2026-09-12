@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  walletSecureDelete,
-  walletSecureGet,
-  walletSecureSet,
-} from "@/services/security/walletSecureStore";
+  clearPin,
+  isPinSet,
+  setPin as storePin,
+  verifyPin as verifyStoredPin,
+} from "@/services/security/pinStore";
 
-const PIN_KEY = "takumipay_user_pin";
-
+/**
+ * React face of `services/security/pinStore.ts`. The hook owns only the
+ * `hasPin` flag the modals branch on; hashing, storage and the legacy
+ * plaintext migration all live in the store.
+ */
 interface UsePinReturn {
   hasPin: boolean;
   isLoading: boolean;
@@ -22,10 +26,9 @@ export function usePin(): UsePinReturn {
   const checkForExistingPin = useCallback(async () => {
     try {
       setIsLoading(true);
-      const storedPin = await walletSecureGet(PIN_KEY);
-      setHasPin(!!storedPin);
+      setHasPin(await isPinSet());
     } catch (error) {
-      console.error("Error checking for PIN:", error);
+      if (__DEV__) console.warn("[usePin] isPinSet failed", error);
     } finally {
       setIsLoading(false);
     }
@@ -35,35 +38,34 @@ export function usePin(): UsePinReturn {
     checkForExistingPin();
   }, [checkForExistingPin]);
 
-  const verifyPin = async (pin: string): Promise<boolean> => {
+  const verifyPin = useCallback(async (pin: string): Promise<boolean> => {
     try {
-      const storedPin = await walletSecureGet(PIN_KEY);
-      return storedPin === pin;
+      return await verifyStoredPin(pin);
     } catch (error) {
-      console.error("Error verifying PIN:", error);
+      if (__DEV__) console.warn("[usePin] verify failed", error);
       return false;
     }
-  };
+  }, []);
 
-  const setPin = async (pin: string): Promise<void> => {
+  const setPin = useCallback(async (pin: string): Promise<void> => {
     try {
-      await walletSecureSet(PIN_KEY, pin);
+      await storePin(pin);
       setHasPin(true);
     } catch (error) {
-      console.error("Error setting PIN:", error);
+      if (__DEV__) console.warn("[usePin] set failed", error);
       throw new Error("Failed to save PIN");
     }
-  };
+  }, []);
 
-  const resetPin = async (): Promise<void> => {
+  const resetPin = useCallback(async (): Promise<void> => {
     try {
-      await walletSecureDelete(PIN_KEY);
+      await clearPin();
       setHasPin(false);
     } catch (error) {
-      console.error("Error resetting PIN:", error);
+      if (__DEV__) console.warn("[usePin] reset failed", error);
       throw new Error("Failed to reset PIN");
     }
-  };
+  }, []);
 
   return {
     hasPin,

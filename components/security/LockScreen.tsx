@@ -50,6 +50,7 @@ import { warmWalletSigner } from "@/hooks/useWallet";
 import { groupWalletsIntoAccounts } from "@/hooks/useWallet.helpers";
 import { storage } from "@/lib/storage/mmkv";
 import type { Namespace } from "@/services/chains/types";
+import { isNoCredentialError } from "@/services/security/deviceSecurityLevel";
 import { deriveWalletsFromMnemonic } from "@/services/walletKit/deriveAll";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import {
@@ -96,7 +97,14 @@ export default function LockScreen({ onUnlocked }: Props) {
         disableDeviceFallback: false,
         cancelLabel: "Cancel",
       });
-      if (!result.success) return;
+      // A device with no screen lock at all never gets this far: the
+      // boot check in `InitializeApp` skips the LockScreen for it. The
+      // one race left is a screen lock removed between that check and
+      // this tap. The OS then returns `not_enrolled` / `passcode_not_set`
+      // without showing a sheet, so treat it like the boot path would
+      // and continue the unlock; the per-action PIN is the gate on such
+      // a device (`services/security/deviceSecurityLevel.ts`).
+      if (!result.success && !isNoCredentialError(result.error)) return;
 
       // One frame is enough for React to commit + paint the label —
       // `loadWalletsFromStorage` is native async so it doesn't block
