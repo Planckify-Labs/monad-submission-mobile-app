@@ -15,14 +15,22 @@ import {
   type DappConnectionWallet,
   useDappConnections,
 } from "@/hooks/useDappConnections";
+import {
+  allTransports,
+  useTransportSessions,
+} from "@/hooks/useTransportSessions";
 import { useWalletAccountGroups } from "@/hooks/useWalletAccountGroups";
 import { originHost } from "@/services/permissions/caip";
+import type {
+  TransportAdapter,
+  TransportSession,
+} from "@/services/transports/types";
 import { chainBadgeLabel } from "@/services/walletKit/chainInfo";
 import {
   groupWalletSections,
   type WalletAccountGroup,
 } from "@/utils/walletGrouping";
-import ConnectedSitesList from "./ConnectedSitesList";
+import ConnectedAppsList from "./ConnectedAppsList";
 import ConnectedWalletRow from "./ConnectedWalletRow";
 
 interface ConnectionManagerSheetProps {
@@ -60,9 +68,12 @@ const SectionLabel = ({ children }: { children: string }) => (
  *   - "Wallets" — the wallet list. When a dApp is open it shows the wallets
  *     connected to that site (each with Disconnect) plus the rest as "Not
  *     connected"; on the hub it shows the user's wallets.
- *   - "Connected sites" — a global manager for every site a wallet is
- *     connected to, with a count badge. Disconnecting fires the live
- *     wallet→dApp disconnect event via `DappBridge.revokeConnection`.
+ *   - "Connected apps" — one card per app, with a count badge, folding
+ *     together the browser grant and any WalletConnect / MWA / app-link
+ *     session for the same host (`ConnectedAppsList`). Disconnecting a
+ *     browser row fires the live wallet→dApp disconnect event via
+ *     `DappBridge.revokeConnection`; disconnecting a session row ends that
+ *     session. Settings → Connected apps is the same list.
  */
 export default function ConnectionManagerSheet({
   visible,
@@ -80,6 +91,11 @@ export default function ConnectionManagerSheet({
     disconnectWallet,
     disconnectSite,
   } = useDappConnections({ origin: currentOrigin, wallets });
+
+  // Passive read: only sessions the transports already hold, so opening
+  // the sheet never starts WalletConnect / MWA on its own.
+  const transports = allTransports();
+  const sessions = useTransportSessions(transports, { eager: false });
 
   // Lowercased addresses with an in-flight disconnect (spinner + tap guard).
   const [pending, setPending] = useState<Set<string>>(() => new Set());
@@ -231,19 +247,22 @@ export default function ConnectionManagerSheet({
                 <HubWalletsBody hubWallets={hubWallets} />
               )
             ) : (
-              <SitesBody
+              <ConnectedAppsBody
                 sites={sites}
                 pending={pending}
                 onDisconnectWallet={onDisconnectWallet}
                 onDisconnectSite={onDisconnectSite}
                 onVisitSite={onVisitSite}
+                sessions={sessions}
+                transports={transports}
+                wallets={wallets}
               />
             )}
           </ScrollView>
 
           <ConnectionTabs
             activeTab={activeTab}
-            siteCount={sites.length}
+            connectionCount={sites.length + sessions.length}
             indicator={indicator}
             onSelectTab={onSelectTab}
           />
@@ -255,12 +274,12 @@ export default function ConnectionManagerSheet({
 
 function ConnectionTabs({
   activeTab,
-  siteCount,
+  connectionCount,
   indicator,
   onSelectTab,
 }: {
   activeTab: ConnectionTab;
-  siteCount: number;
+  connectionCount: number;
   indicator: Animated.Value;
   onSelectTab: (tab: ConnectionTab, index: number) => void;
 }) {
@@ -312,9 +331,9 @@ function ConnectionTabs({
                   : "text-light-matte-black/50"
               } text-center font-bold`}
             >
-              Connected sites
+              Connected apps
             </Text>
-            {siteCount > 0 && (
+            {connectionCount > 0 && (
               <View
                 className={`min-w-5 h-5 px-1.5 rounded-full items-center justify-center ${
                   activeTab === "sites"
@@ -323,7 +342,7 @@ function ConnectionTabs({
                 }`}
               >
                 <Text className="text-[11px] font-bold text-white">
-                  {siteCount}
+                  {connectionCount}
                 </Text>
               </View>
             )}
@@ -512,18 +531,24 @@ function HubWalletsBody({
   );
 }
 
-function SitesBody({
+function ConnectedAppsBody({
   sites,
   pending,
   onDisconnectWallet,
   onDisconnectSite,
   onVisitSite,
+  sessions,
+  transports,
+  wallets,
 }: {
   sites: ReturnType<typeof useDappConnections>["sites"];
   pending: Set<string>;
   onDisconnectWallet: (origin: string, wallet: DappConnectionWallet) => void;
   onDisconnectSite: (origin: string, addresses: string[]) => void;
   onVisitSite?: (origin: string) => void;
+  sessions: TransportSession[];
+  transports: TransportAdapter[];
+  wallets: TWallet[];
 }) {
   // Connections only. Browsing history used to be cleared from the bottom
   // of this list, and a red full-width button under six rows of "1 wallet"
@@ -531,10 +556,20 @@ function SitesBody({
   // off every site when nothing had been revoked. It lives in Settings now
   // (`app/browser-privacy.tsx`), and single entries are removed from the
   // address-bar suggestion that shows them.
+  if (sites.length === 0 && sessions.length === 0) {
+    return (
+      <Text className="text-sm text-light-matte-black py-3 mt-2">
+        No connected apps yet.
+      </Text>
+    );
+  }
   return (
     <View className="mt-2">
-      <ConnectedSitesList
+      <ConnectedAppsList
         sites={sites}
+        sessions={sessions}
+        transports={transports}
+        wallets={wallets}
         pending={pending}
         onDisconnectWallet={onDisconnectWallet}
         onDisconnectSite={onDisconnectSite}

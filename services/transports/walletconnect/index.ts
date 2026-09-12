@@ -966,7 +966,7 @@ class WalletConnectTransport implements TransportAdapter {
       return [];
     }
     return Object.values(active).map((s) => {
-      const { originKey } = this.sessionOrigin(s);
+      const { originKey, verified } = this.sessionOrigin(s);
       const chains = Object.values(s.namespaces).flatMap((n) => n.chains ?? []);
       const accounts = Object.values(s.namespaces).flatMap(
         (n) => n.accounts as string[],
@@ -993,6 +993,7 @@ class WalletConnectTransport implements TransportAdapter {
         originKey,
         createdAt: 0,
         expiresAt: s.expiry ? s.expiry * 1000 : undefined,
+        verification: verified.validation,
       };
     });
   }

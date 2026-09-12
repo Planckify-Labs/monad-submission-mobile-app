@@ -10,7 +10,10 @@ import {
   PermissionStore,
 } from "@/services/permissions/store";
 import type { TransportSession } from "@/services/transports/types";
-import { chainBadgeLabel } from "@/services/walletKit/chainInfo";
+import {
+  canonicalizeAddress,
+  chainBadgeLabel,
+} from "@/services/walletKit/chainInfo";
 import {
   disconnectTransportSession,
   useTransportSessions,
@@ -71,6 +74,10 @@ interface UseDappConnectionsParams {
   wallets: TWallet[];
 }
 
+function walletKey(namespace: Namespace, address: string): string {
+  return `${namespace}:${canonicalizeAddress(namespace, address)}`;
+}
+
 function shortName(address: string): string {
   if (address.length <= 10) return address;
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
@@ -116,10 +123,14 @@ export function useDappConnections({
     };
   }, []);
 
-  // address (lowercased) -> local wallet, for name/casing resolution.
+  // `namespace:canonical address` -> local wallet, for name/casing
+  // resolution. Keyed through the kit's own case rule rather than
+  // `toLowerCase()`: EVM grants are stored EIP-55 checksummed, so a
+  // lowercased map missed every one of them and rows fell back to the
+  // short-address name; Solana / Stellar addresses must not be folded.
   const walletByAddress = useMemo(() => {
     const m = new Map<string, TWallet>();
-    for (const w of wallets) m.set(w.address.toLowerCase(), w);
+    for (const w of wallets) m.set(walletKey(w.namespace, w.address), w);
     return m;
   }, [wallets]);
 
@@ -140,10 +151,10 @@ export function useDappConnections({
         byAddress.set(g.walletAddress, list);
       }
       const rows: DappConnectionWallet[] = [];
-      for (const [addrLower, list] of byAddress) {
-        const wallet = walletByAddress.get(addrLower);
+      for (const [grantAddress, list] of byAddress) {
         const namespace = namespaceForChainKey(list[0].chainId);
-        const address = wallet?.address ?? addrLower;
+        const wallet = walletByAddress.get(walletKey(namespace, grantAddress));
+        const address = wallet?.address ?? grantAddress;
         rows.push({
           address,
           name: wallet?.name ?? shortName(address),

@@ -21,6 +21,13 @@ export interface TransportSession {
   originKey: string;
   createdAt: number;
   expiresAt?: number;
+  /**
+   * WalletConnect Verify API state captured when the session was approved
+   * (`VALID` = domain match, `UNKNOWN` = unverified, `INVALID` = mismatch
+   * the user connected to anyway; a flagged "threat" never becomes a
+   * session). Other transports leave it unset.
+   */
+  verification?: "VALID" | "INVALID" | "UNKNOWN";
 }
 
 export interface TransportAdapter {

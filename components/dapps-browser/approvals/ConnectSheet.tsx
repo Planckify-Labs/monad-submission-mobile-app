@@ -435,8 +435,12 @@ export function ConnectSheet({
         <View className="px-4 pb-1">
           <View className="bg-light rounded-2xl p-3">
             <Text className="text-light-matte-black/60 text-xs text-center">
-              Only connect to websites you trust. Takumi will never ask for your
-              private keys or seed phrase.
+              {isLink
+                ? // A transport session (WalletConnect / MWA / app link) has
+                  // no browser tab to go back to, so say where it can be
+                  // revoked while the user is looking at it.
+                  "Only connect to apps you trust. Takumi will never ask for your private keys or seed phrase. Disconnect anytime from Settings, under Connected apps."
+                : "Only connect to websites you trust. Takumi will never ask for your private keys or seed phrase."}
             </Text>
           </View>
         </View>

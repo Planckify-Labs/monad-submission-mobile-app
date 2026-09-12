@@ -26,6 +26,12 @@ interface ConnectedWalletRowProps {
   action: WalletRowAction;
   /** Hairline divider above the row — set for every row after the first. */
   divider?: boolean;
+  /**
+   * Pill naming where the connection lives ("Browser") for lists that mix
+   * sources. A transport row names its own from `wallet.via`; this only
+   * fills in for rows that have none.
+   */
+  sourceLabel?: string;
 }
 
 /**
@@ -34,7 +40,10 @@ interface ConnectedWalletRowProps {
  * only; the parent owns connection state and disconnect handlers.
  */
 const ConnectedWalletRow = memo<ConnectedWalletRowProps>(
-  function ConnectedWalletRow({ wallet, action, divider }) {
+  function ConnectedWalletRow({ wallet, action, divider, sourceLabel }) {
+    const source = wallet.via
+      ? TRANSPORT_LABEL[wallet.via.transport]
+      : sourceLabel;
     return (
       <View
         className={`flex-row items-center py-3 ${
@@ -72,10 +81,10 @@ const ConnectedWalletRow = memo<ConnectedWalletRowProps>(
                 {wallet.badge}
               </Text>
             </View>
-            {wallet.via ? (
+            {source ? (
               <View className="px-1.5 py-0.5 rounded bg-emerald-50">
                 <Text className="text-[10px] font-semibold text-emerald-700">
-                  {TRANSPORT_LABEL[wallet.via.transport]}
+                  {source}
                 </Text>
               </View>
             ) : null}

@@ -126,7 +126,7 @@ const DirectoryRow = memo<DirectoryRowProps>(function DirectoryRow({
       </View>
 
       {/* Same tile the connection manager puts on a connected site
-          (`ConnectedSiteRow`): brand-red `ExternalLink` on a tinted disc.
+          (`ConnectedAppsList`): brand-red `ExternalLink` on a tinted disc.
           "Leave the app for this site" already looks like this elsewhere in
           the browser, so it should not look like something else here. */}
       <View className="ml-3 w-8 h-8 rounded-full bg-light-primary-red/10 items-center justify-center">
