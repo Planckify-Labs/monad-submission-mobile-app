@@ -1,134 +1,37 @@
 /**
- * Deep link URI router — maps schemes to screens.
+ * Legacy classifier — reduced to what in-app callers still need (spec
+ * §13.2 "router.ts"): `classifyURI` answers "is this a third-party web
+ * page to open in the dApp browser, or one of our own links?" for the
+ * agent's markdown link handler. Everything that carries intent goes
+ * through `services/deeplinks/intake.ts`; the old `handleDeepLink` with
+ * its direct `router.push("/send")` is gone (invariant S-1) and the
+ * duplicate ERC-681 parser with it (F8 — `walletUri.ts` is the single
+ * parser, reached through `services/chains/evm/deeplinks.ts`).
+ *
+ * No `new URL`: RN's implementation is a regex shim
+ * (`feedback_rn_url_is_regex_shim`); `splitUri` / `hostnameOfHttps` are
+ * explicit.
  */
 
-import { router } from "expo-router";
-import { VERIFIED_HOST } from "../security/deeplinkGate";
-import { type EIP681Intent, parseEIP681 } from "./eip681";
+import { VERIFIED_HOST } from "@/services/security/deeplinkGate";
+import { hostnameOfHttps, splitUri } from "./uri";
 
 export type DeepLinkResult =
-  | {
-      type: "send";
-      to: string;
-      amount?: string;
-      chainId?: number;
-      eip681?: EIP681Intent;
-    }
-  | { type: "wc"; uri: string }
+  /** A third-party http(s) page — open in the in-app browser. */
   | { type: "dapp"; url: string }
+  /** One of our own links (verified host or own scheme) — the kernel owns it. */
+  | { type: "own"; raw: string }
+  /** Anything with a non-web scheme — hand it to the kernel / OS. */
   | { type: "unknown"; raw: string };
 
 export function classifyURI(uri: string): DeepLinkResult {
-  // EIP-681: ethereum:0x...
-  if (uri.startsWith("ethereum:")) {
-    const parsed = parseEIP681(uri);
-    if (parsed) {
-      return {
-        type: "send",
-        to: parsed.targetAddress,
-        amount: parsed.value,
-        chainId: parsed.chainId,
-        eip681: parsed,
-      };
-    }
+  const split = splitUri(uri);
+  if (!split) return { type: "unknown", raw: uri };
+  if (split.scheme === "https" || split.scheme === "http") {
+    const host = hostnameOfHttps(uri.replace(/^http:/i, "https:"));
+    if (!host) return { type: "unknown", raw: uri };
+    if (host === VERIFIED_HOST) return { type: "own", raw: uri };
+    return { type: "dapp", url: uri };
   }
-
-  // WalletConnect: wc:...
-  if (uri.startsWith("wc:")) {
-    return { type: "wc", uri };
-  }
-
-  // Custom scheme: takumiwallet://
-  if (uri.startsWith("takumiwallet://")) {
-    return parseCustomScheme(uri);
-  }
-
-  // Raw Ethereum address
-  if (uri.startsWith("0x") && uri.length === 42) {
-    return { type: "send", to: uri };
-  }
-
-  // Bare https/http link to a third-party site. Android's generic
-  // VIEW/BROWSABLE intent-filter (no host, not autoVerify'd — see
-  // app.config.ts) puts TakumiPay in the system "Open with" chooser
-  // alongside every other wallet for ANY link, not just our own
-  // domain. Route it straight into the sandboxed dApp browser, same
-  // as if the user had typed it into the browser's own address bar.
-  //
-  // `takumipay.xyz` itself is excluded here — that's our own verified
-  // App Link host and is already routed by expo-router's file-based
-  // linking config, not this dispatcher.
-  if (uri.startsWith("https://") || uri.startsWith("http://")) {
-    try {
-      const parsed = new URL(uri);
-      if (parsed.hostname.toLowerCase() !== VERIFIED_HOST) {
-        return { type: "dapp", url: uri };
-      }
-    } catch {
-      // fall through to unknown
-    }
-  }
-
   return { type: "unknown", raw: uri };
-}
-
-function parseCustomScheme(uri: string): DeepLinkResult {
-  const url = new URL(uri);
-  const path = url.hostname;
-
-  switch (path) {
-    case "send": {
-      return {
-        type: "send",
-        to: url.searchParams.get("to") ?? "",
-        amount: url.searchParams.get("amount") ?? undefined,
-        chainId: url.searchParams.get("chain")
-          ? parseInt(url.searchParams.get("chain")!, 10)
-          : undefined,
-      };
-    }
-    case "dapp": {
-      return {
-        type: "dapp",
-        url: url.searchParams.get("url") ?? "",
-      };
-    }
-    case "connect": {
-      const wcUri = url.searchParams.get("uri");
-      if (wcUri) return { type: "wc", uri: wcUri };
-      break;
-    }
-  }
-
-  return { type: "unknown", raw: uri };
-}
-
-export function handleDeepLink(uri: string): void {
-  const result = classifyURI(uri);
-
-  switch (result.type) {
-    case "send":
-      router.push({
-        pathname: "/send",
-        params: {
-          to: result.to,
-          amount: result.amount,
-          chainId: result.chainId?.toString(),
-        },
-      });
-      break;
-    case "dapp":
-      router.push({
-        pathname: "/dapps-browser",
-        params: { url: result.url },
-      });
-      break;
-    case "wc":
-      // WC pairing handled by WalletConnect service
-      // Dispatch event for WC transport to pick up
-      break;
-    case "unknown":
-      // Toast handled by caller
-      break;
-  }
 }

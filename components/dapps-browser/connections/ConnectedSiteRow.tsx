@@ -6,7 +6,10 @@ import {
 } from "lucide-react-native";
 import React, { memo, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
-import type { DappConnectionSite } from "@/hooks/useDappConnections";
+import type {
+  DappConnectionSite,
+  DappConnectionWallet,
+} from "@/hooks/useDappConnections";
 import { originHost } from "@/services/permissions/caip";
 import ConnectedWalletRow from "./ConnectedWalletRow";
 
@@ -16,7 +19,7 @@ const MATTE_MUTED = "rgba(32,34,44,0.45)"; // secondary controls (chevron)
 
 interface ConnectedSiteRowProps {
   site: DappConnectionSite;
-  onDisconnectWallet: (address: string) => void;
+  onDisconnectWallet: (wallet: DappConnectionWallet) => void;
   onDisconnectSite: () => void;
   pendingAddresses: Set<string>;
   /** Opens the site in the browser. Hidden when not provided. */
@@ -87,7 +90,7 @@ const ConnectedSiteRow = memo<ConnectedSiteRowProps>(function ConnectedSiteRow({
               divider={i > 0}
               action={{
                 type: "disconnect",
-                onPress: () => onDisconnectWallet(w.address),
+                onPress: () => onDisconnectWallet(w),
                 pending: pendingAddresses.has(w.address.toLowerCase()),
               }}
             />

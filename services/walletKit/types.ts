@@ -31,6 +31,11 @@ import type { TBlockchain } from "@/api/types/blockchain";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import type { TWallet } from "@/constants/types/walletTypes";
 import type { Namespace } from "@/services/chains/types";
+import type {
+  ExternalApprovalDraft,
+  Provenance,
+} from "@/services/deeplinks/types";
+import type { PaymentIntent } from "@/services/paymentIntent/types";
 
 export type { Namespace };
 
@@ -1521,4 +1526,67 @@ export interface WalletKitAdapter {
    * the historical "solana or evm" mapping.
    */
   preferredPaymentRail?: "evm" | "solana";
+
+  // ── Deep-link / session-transport capabilities ─────────────────────
+  // (docs/deeplink-wallet-interactions-spec.md §4.5). Presence-checked,
+  // never namespace-checked (`feedback_space_docking`). A chain that
+  // omits `walletConnectNamespace` is simply absent from a WalletConnect
+  // session's `supportedNamespaces`.
+
+  /**
+   * CAIP-2 chains, methods, events and CAIP-10 accounts this kit will
+   * advertise in a WalletConnect session. `chains` are CAIP-2 **as the
+   * WalletConnect ecosystem uses them** (Solana = genesis-hash form), the
+   * kit owns that translation. `null` when the kit has nothing to offer
+   * (no wallets, no chain rows).
+   */
+  walletConnectNamespace?(args: {
+    wallets: TWallet[];
+    chains: ChainConfig[];
+  }): {
+    chains: string[];
+    methods: string[];
+    events: string[];
+    accounts: string[];
+  } | null;
+
+  /**
+   * Translate a WalletConnect JSON-RPC request into this kit's
+   * `ChainRequest` method/params (and the adapter's result back into the
+   * WalletConnect response shape). `toChainRequest` returns `null` for a
+   * method the kit does not serve (→ JSON-RPC -32601). `chainId` is the
+   * request's CAIP-2 chain.
+   */
+  walletConnectCodec?: {
+    /**
+     * The adapter's own connect request for a session proposal on
+     * `chainId`, so the transport never names a per-chain method
+     * (`eth_requestAccounts`, `standard:connect`, `REQUEST_ACCESS`).
+     */
+    connectRequest(chainId: string): { method: string; params: unknown };
+    toChainRequest(
+      method: string,
+      params: unknown,
+      chainId: string,
+      ctx: { accounts: string[] },
+    ):
+      | { method: string; params: unknown; chainOverride?: unknown }
+      | { transportResult: unknown }
+      | null;
+    fromChainResult(method: string, value: unknown, params: unknown): unknown;
+  };
+
+  /**
+   * Build the Class-A payment approval for this kit's payment URI
+   * (Solana Pay transfer, `sui:pay`, SEP-0007 `pay`). Runs only after the
+   * interstitial's Continue (it may hit the network). Throws
+   * `DeepLinkBuildError` with a typed code on refusal. Kits that leave it
+   * undefined route the payment to the send screen instead (EVM).
+   */
+  buildPaymentRequest?(args: {
+    wallet: TWallet;
+    chain: ChainConfig;
+    payment: PaymentIntent;
+    provenance: Provenance;
+  }): Promise<ExternalApprovalDraft>;
 }

@@ -2,3 +2,6 @@ nodeLinker: hoisted
 
 onlyBuiltDependencies:
   - '@biomejs/biome'
+
+patchedDependencies:
+  '@solana-mobile/mobile-wallet-adapter-walletlib@1.4.5': patches/@solana-mobile__mobile-wallet-adapter-walletlib@1.4.5.patch

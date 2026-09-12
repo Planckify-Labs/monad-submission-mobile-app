@@ -49,3 +49,27 @@ describe("inspectDeeplink", () => {
     if (!v.ok) assert.equal(v.code, "malformed");
   });
 });
+
+describe("inspectDeeplink — F4 scoping (deep-link spec S-8)", () => {
+  it("passes a signed SEP-0007 request: `signature=` is a protocol parameter, not seed material", () => {
+    const v = inspectDeeplink(
+      "web+stellar:pay?destination=GCALNQQBXAPZ2WIRSDDBMSTAKCUH5SG6U76YBFLQLIXJTF7FE5AX7AOO&amount=1&origin_domain=someDomain.com&signature=abc%3D%3D",
+    );
+    assert.equal(v.ok, true);
+  });
+  it("still blocks a fragment carrying seed material on any scheme", () => {
+    const v = inspectDeeplink("web+stellar:pay?destination=G#seed=abandon");
+    assert.equal(v.ok, false);
+    if (!v.ok) assert.equal(v.code, "fragment_blocked");
+  });
+  it("blocks seed-shaped query keys on our own scheme", () => {
+    const v = inspectDeeplink("takumiwallet://send?mnemonic=abandon");
+    assert.equal(v.ok, false);
+    if (!v.ok) assert.equal(v.code, "fragment_blocked");
+  });
+  it("does not use the RN URL shim: a custom scheme keeps its path", () => {
+    const v = inspectDeeplink("takumiwallet://wallet");
+    assert.equal(v.ok, true);
+    if (v.ok) assert.equal(v.route, "/wallet");
+  });
+});

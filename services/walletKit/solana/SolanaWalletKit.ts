@@ -73,10 +73,15 @@ import {
   fetchSolanaAccountData,
   resolveSolanaClearSigningDescriptor,
 } from "./clearSigning.ts";
+import { buildSolanaPaymentRequest } from "./paymentRequest.ts";
 import {
   assertSolanaSigner,
   signX402SvmPaymentWithSigner,
 } from "./signX402SvmPayment.ts";
+import {
+  solanaWalletConnectCodec,
+  solanaWalletConnectNamespace,
+} from "./walletConnect.ts";
 
 // 5,000 lamports signature fee + 890,880 lamports minimum rent-exempt
 // buffer (empty account) so native transfer never drains below rent.
@@ -104,6 +109,11 @@ export function createSolanaWalletKit(): WalletKitAdapter {
     brandColor: "#9945FF",
     preferredPaymentRail: "solana",
     requireBiometricForConnect: true,
+    // Deep-link spec §4.5 — Solana Pay transfer builder + WalletConnect
+    // `solana` namespace / codec (`docs/deeplink-wallet-interactions-spec.md`).
+    buildPaymentRequest: buildSolanaPaymentRequest,
+    walletConnectNamespace: solanaWalletConnectNamespace,
+    walletConnectCodec: solanaWalletConnectCodec,
     formatConnectChipLabel(payload: unknown): string {
       const cluster = (payload as { cluster?: string } | null)?.cluster;
       const label =

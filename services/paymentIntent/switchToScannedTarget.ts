@@ -45,6 +45,11 @@ export type SwitchToScannedTargetResult =
       params: NavParams;
     }
   | {
+      /** WalletConnect pairing QR: hand the URI to the session transport. */
+      kind: "pair";
+      uri: string;
+    }
+  | {
       kind: "unsupported";
       reason: string;
     };
@@ -92,6 +97,11 @@ export const switchToScannedTarget = (
           merchantName: channel.merchantName ?? channel.qris?.merchantName,
         },
       };
+    }
+    case "wc": {
+      // Deep-link spec D-10: a scanned pairing QR goes straight to the
+      // ConnectSheet (the sheet is the consent), never to a form.
+      return { kind: "pair", uri: channel.uri };
     }
     case "x402": {
       // Task 39 / Path C M5: hand the raw resource URL to the dedicated

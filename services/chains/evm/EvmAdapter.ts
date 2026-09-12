@@ -481,12 +481,19 @@ export class EvmAdapter implements ChainAdapter {
     // the origin's wallet without a chain preference. Bailing here used to
     // hand `eth_accounts` the home-screen wallet during that window.
     const config = this.resolveConfig(ctx);
+    // Deep-link spec D-12: only a WebView page may inherit the "global or
+    // first EVM wallet" fallback. An external transport (WalletConnect,
+    // MWA, deep link) with no grant for its origin key stays unbound, so
+    // the only thing it can reach is a `connect` sheet.
     const effective = pickEvmWalletForOrigin(
       ctx,
       req.origin.url,
       config?.chain.id,
+      isWebViewOrigin(req.origin),
     );
-    if (!effective) return ctx;
+    if (!effective) {
+      return isWebViewOrigin(req.origin) ? ctx : { ...ctx, activeWallet: null };
+    }
     if (ctx.activeWallet?.address === effective.address) return ctx;
     return { ...ctx, activeWallet: effective };
   }
@@ -1962,10 +1969,31 @@ function err(e: ProviderRpcError): ChainResult {
  * `viem: Address "Gspcn..." is invalid` at the dApp's address validator
  * — the dApp receives a "connect success" but immediately errors.
  */
+/**
+ * `true` for the in-app WebView (and the agent, which reads the home
+ * screen on purpose); `false` for every external transport, which must
+ * never inherit a wallet it was not explicitly bound to (deep-link spec
+ * S-4 / D-12, `feedback_dapp_bridge_isolation`).
+ */
+function isWebViewOrigin(origin: { via?: string }): boolean {
+  return (
+    origin.via === undefined ||
+    origin.via === "webview" ||
+    origin.via === "agent"
+  );
+}
+
 function pickEvmWalletForOrigin(
   ctx: AdapterContext,
   origin: string,
   chainId?: number,
+  /**
+   * Whether the "active-if-EVM, else first EVM wallet" fallback applies
+   * when the origin holds no grant. Defaults to `true` for the
+   * `eth_requestAccounts` sheet (it needs a default to highlight); the
+   * silent paths pass `isWebViewOrigin(req.origin)`.
+   */
+  allowFallback = true,
 ): TWallet | null {
   const evmWallets = ctx.wallets.filter((w) => w.namespace === "eip155");
   if (evmWallets.length === 0) return null;
@@ -1989,6 +2017,7 @@ function pickEvmWalletForOrigin(
     );
     if (match) return match;
   }
+  if (!allowFallback) return null;
   if (ctx.activeWallet && ctx.activeWallet.namespace === "eip155") {
     return ctx.activeWallet;
   }

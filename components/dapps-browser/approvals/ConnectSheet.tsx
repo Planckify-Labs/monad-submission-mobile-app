@@ -21,6 +21,7 @@
 import {
   Check,
   Globe,
+  Link2,
   Search,
   ShieldCheck,
   Sparkles,
@@ -36,6 +37,11 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { describeOrigin } from "@/components/deeplinks/originDisplay";
+import {
+  findProvenance,
+  provenanceRequiresStrongAuth,
+} from "@/components/deeplinks/ProvenanceBanner";
 import { MissingWalletNotice } from "@/components/wallet/MissingWalletNotice";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { useAddWalletPrompt } from "@/hooks/useAddWalletPrompt";
@@ -145,14 +151,18 @@ export function ConnectSheet({
     });
   }, [chainWallets, searchQuery, chipDisplayName]);
 
-  const isSecure = intent.origin.url.startsWith("https://");
-  const host = (() => {
-    try {
-      return new URL(intent.origin.url).hostname;
-    } catch {
-      return intent.origin.url;
-    }
-  })();
+  // Deep-link spec §11 / D-14 / S-18: external transports name the peer
+  // through `displayUrl`; an unverified or domain-mismatched peer needs
+  // an explicit acknowledgement and a second factor before connecting.
+  const originInfo = describeOrigin(intent.origin);
+  const isSecure = originInfo.security === "secure";
+  const isLink = originInfo.security === "link";
+  const host = originInfo.host;
+  const provenance = findProvenance(intent.annotations);
+  const verifyInvalid =
+    provenance?.verification.kind === "wc-verify" &&
+    provenance.verification.validation === "INVALID";
+  const [riskAcknowledged, setRiskAcknowledged] = useState(false);
 
   const onDemandInspectors = InspectorRegistry.list("on-demand").filter(
     (i) => !i.namespaces || i.namespaces.includes(intent.namespace),
@@ -201,7 +211,12 @@ export function ConnectSheet({
   // with it. The hook's return values are inert when the kit opts out, so
   // the ungated path just maps `gatedApprove` → `approve` below.
   const biometric = useBiometricApproval(`Approve connect to ${host}`, approve);
-  const requireBiometric = kit?.requireBiometricForConnect === true;
+  // S-18: an external peer that is unverified, failed verification or
+  // domain-mismatched always needs the device-owner check, whatever the
+  // kit's own default.
+  const requireBiometric =
+    kit?.requireBiometricForConnect === true ||
+    provenanceRequiresStrongAuth(provenance);
   const onApprove = requireBiometric
     ? () => {
         void biometric.gatedApprove();
@@ -225,14 +240,22 @@ export function ConnectSheet({
               Connect Wallet
             </Text>
             <View className="flex-row items-center">
-              <Globe size={11} color={isSecure ? "#059669" : "#ea580c"} />
+              {isLink ? (
+                <Link2 size={11} color="#6b7280" />
+              ) : (
+                <Globe size={11} color={isSecure ? "#059669" : "#ea580c"} />
+              )}
               <Text
                 className="ml-1 text-light-matte-black/60 text-xs flex-1"
                 numberOfLines={1}
               >
                 {host}
               </Text>
-              {isSecure ? (
+              {isLink ? (
+                <Text className="text-xs text-light-matte-black/50">
+                  {originInfo.viaLabel}
+                </Text>
+              ) : isSecure ? (
                 <ShieldCheck size={11} color="#059669" />
               ) : (
                 <Text className="text-xs text-orange-600">insecure</Text>
@@ -385,14 +408,39 @@ export function ConnectSheet({
         )}
       </ScrollView>
 
-      <View className="px-4 pb-1">
-        <View className="bg-light rounded-2xl p-3">
-          <Text className="text-light-matte-black/60 text-xs text-center">
-            Only connect to websites you trust. Takumi will never ask for your
-            private keys or seed phrase.
-          </Text>
+      {verifyInvalid ? (
+        // D-14: INVALID (domain mismatch, the phishing signature) is
+        // blocked by default; "Connect anyway" needs this explicit
+        // acknowledgement AND the biometric/PIN gate above.
+        <View className="px-4 pb-1">
+          <Pressable
+            onPress={() => setRiskAcknowledged((v) => !v)}
+            className="flex-row items-start bg-red-50 border border-red-200 rounded-2xl p-3"
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: riskAcknowledged }}
+            accessibilityLabel="acknowledge-domain-mismatch"
+          >
+            <View
+              className={`w-5 h-5 rounded border mr-3 items-center justify-center ${riskAcknowledged ? "bg-red-700 border-red-700" : "border-red-400"}`}
+            >
+              {riskAcknowledged ? <Check size={14} color="#fff" /> : null}
+            </View>
+            <Text className="flex-1 text-xs text-red-900">
+              This app's domain does not match what it claims. I understand the
+              risk and want to connect anyway.
+            </Text>
+          </Pressable>
         </View>
-      </View>
+      ) : (
+        <View className="px-4 pb-1">
+          <View className="bg-light rounded-2xl p-3">
+            <Text className="text-light-matte-black/60 text-xs text-center">
+              Only connect to websites you trust. Takumi will never ask for your
+              private keys or seed phrase.
+            </Text>
+          </View>
+        </View>
+      )}
 
       {biometricError && (
         <Text
@@ -404,11 +452,19 @@ export function ConnectSheet({
       )}
 
       <PrimaryActions
-        approveLabel={pending ? "Authenticating…" : "Connect"}
+        approveLabel={
+          pending
+            ? "Authenticating…"
+            : verifyInvalid
+              ? "Connect anyway"
+              : "Connect"
+        }
         onApprove={onApprove}
         onReject={reject}
         loading={pending}
-        disabled={chainWallets.length === 0}
+        disabled={
+          chainWallets.length === 0 || (verifyInvalid && !riskAcknowledged)
+        }
       />
 
       {addWalletSheet}

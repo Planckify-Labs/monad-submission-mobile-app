@@ -2,6 +2,7 @@ import { Link2Off, Unlink } from "lucide-react-native";
 import React, { memo } from "react";
 import { ActivityIndicator, Text, TouchableOpacity, View } from "react-native";
 import type { DappConnectionWallet } from "@/hooks/useDappConnections";
+import { TRANSPORT_LABEL } from "@/hooks/useTransportSessions";
 import { truncateAddress, walletAvatarInitials } from "@/utils/walletUtils";
 
 // Brand palette (tailwind.config.js `light.*`) for the lucide icons, which
@@ -71,6 +72,13 @@ const ConnectedWalletRow = memo<ConnectedWalletRowProps>(
                 {wallet.badge}
               </Text>
             </View>
+            {wallet.via ? (
+              <View className="px-1.5 py-0.5 rounded bg-emerald-50">
+                <Text className="text-[10px] font-semibold text-emerald-700">
+                  {TRANSPORT_LABEL[wallet.via.transport]}
+                </Text>
+              </View>
+            ) : null}
           </View>
           <Text
             className="text-xs text-light-matte-black mt-0.5"

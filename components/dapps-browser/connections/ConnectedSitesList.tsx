@@ -1,13 +1,16 @@
 import React from "react";
 import { Text, View } from "react-native";
-import type { DappConnectionSite } from "@/hooks/useDappConnections";
+import type {
+  DappConnectionSite,
+  DappConnectionWallet,
+} from "@/hooks/useDappConnections";
 import ConnectedSiteRow from "./ConnectedSiteRow";
 
 interface ConnectedSitesListProps {
   sites: DappConnectionSite[];
   /** Lowercased addresses with an in-flight disconnect. */
   pending: Set<string>;
-  onDisconnectWallet: (origin: string, address: string) => void;
+  onDisconnectWallet: (origin: string, wallet: DappConnectionWallet) => void;
   onDisconnectSite: (origin: string, addresses: string[]) => void;
   /** Opens a site in the browser. Per-row button hidden when omitted. */
   onVisitSite?: (origin: string) => void;
@@ -39,8 +42,8 @@ export default function ConnectedSitesList({
           key={site.origin}
           site={site}
           pendingAddresses={pending}
-          onDisconnectWallet={(address) =>
-            onDisconnectWallet(site.origin, address)
+          onDisconnectWallet={(wallet) =>
+            onDisconnectWallet(site.origin, wallet)
           }
           onDisconnectSite={() =>
             onDisconnectSite(

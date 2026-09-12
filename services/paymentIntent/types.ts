@@ -32,10 +32,30 @@ export type PayChannel =
       target?:
         | { namespace: "eip155"; chainId: number }
         | { namespace: "solana"; cluster: "mainnet-beta" | "devnet" }
-        | { namespace: "sui"; network: "mainnet" | "testnet" | "devnet" };
+        | { namespace: "sui"; network: "mainnet" | "testnet" | "devnet" }
+        | { namespace: "stellar"; network: "mainnet" | "testnet" };
       amount?: bigint;
       /** ERC-20 / SPL token address when the URI specifies one. */
       token?: string;
+      /**
+       * Amount in the asset's **human** units as the URI spelled it
+       * (Solana Pay `amount`, SEP-0007 `amount`). Set when base units
+       * cannot be computed without a network lookup (SPL decimals) and
+       * for display on the deep-link interstitial. `amount` stays the
+       * base-unit form when it is known.
+       */
+      amountDecimal?: string;
+      /** Display label for the asset (`"SOL"`, `"USDC"`, `"XLM"`), from the URI. */
+      assetLabel?: string;
+      /**
+       * Protocol-specific fields the family's `buildPaymentRequest` needs
+       * beyond the shared shape (Solana Pay `reference`/`memo`, SEP-0007
+       * `memo_type`/`asset_issuer`, `sui:pay` `nonce`/`registry`). Opaque
+       * to the classifier, the router and the send screen; owned by the
+       * per-namespace parser + builder pair
+       * (docs/deeplink-wallet-interactions-spec.md §6).
+       */
+      protocol?: { id: string; params: Record<string, unknown> };
     }
   | {
       kind: "merchant";
@@ -96,7 +116,13 @@ export type PayChannel =
         postalCode?: string;
       };
     }
-  | { kind: "x402"; resourceUrl: string };
+  | { kind: "x402"; resourceUrl: string }
+  /**
+   * WalletConnect pairing URI scanned as a QR (deep-link spec §7.3). Not a
+   * payment: the scan screen hands it to the session transport, never to
+   * `/send`.
+   */
+  | { kind: "wc"; uri: string };
 
 export interface PaymentIntent {
   source: "qr" | "deeplink" | "paste";

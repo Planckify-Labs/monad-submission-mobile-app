@@ -123,6 +123,18 @@ export type AnalyticsEventProps = {
   // curated TBackupErrorCode from services/backup/errors.ts, never raw error
   // text.
   wallet_backup_failed: { stage: string; reason?: string };
+  // Deep-link kernel (docs/deeplink-wallet-interactions-spec.md §13.2).
+  // Never a URL: `class` is the DeepLinkIntent kind, `transport` the
+  // carrier, `verification` the Provenance verification kind.
+  deeplink_received: {
+    class: string;
+    transport: string;
+    verification: string;
+    namespace?: string;
+    source: string;
+  };
+  deeplink_rejected: { code: string };
+  deeplink_approved: { class: string; transport: string };
 };
 
 export type AnalyticsEvent = keyof AnalyticsEventProps;

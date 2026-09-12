@@ -1,0 +1,171 @@
+diff --git a/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/SolanaMobileWalletAdapterWalletLibModule.kt b/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/SolanaMobileWalletAdapterWalletLibModule.kt
+index fd0f166..08ea1db 100644
+--- a/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/SolanaMobileWalletAdapterWalletLibModule.kt
++++ b/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/SolanaMobileWalletAdapterWalletLibModule.kt
+@@ -206,6 +206,27 @@ class SolanaMobileWalletAdapterWalletLibModule(val reactContext: ReactApplicatio
+         }
+     }
+ 
++    /**
++     * TakumiPay fork: the value the dapp must present as `h` for `challenge`
++     * (`base64(SHA256("attest-origin" || challenge || session_secret))`), computed
++     * natively because only the session holds the secret. Resolves `null` when the
++     * request is unknown or no encrypted session secret is available.
++     */
++    @ReactMethod
++    fun computeAttestOriginBinding(requestId: String, challengeBase64: String, promise: Promise) {
++        val pending = pendingRequests[requestId] as? MobileWalletAdapterRemoteRequest.AuthorizeDapp
++        if (pending == null) {
++            promise.resolve(null)
++            return
++        }
++        try {
++            val challenge = android.util.Base64.decode(challengeBase64, android.util.Base64.NO_WRAP)
++            promise.resolve(pending.request.computeAttestOriginBinding(challenge))
++        } catch (e: Exception) {
++            promise.reject("ERROR_ATTEST_ORIGIN_BINDING", e.message, e)
++        }
++    }
++
+     @ReactMethod
+     fun resolve(requestJson: String, responseJson: String) {
+         launch {
+@@ -247,6 +268,17 @@ class SolanaMobileWalletAdapterWalletLibModule(val reactContext: ReactApplicatio
+                                     ?.request
+                                     ?.completeWithDecline()
+ 
++                            // TakumiPay fork: origin attestation challenge.
++                            is AttestOriginRequiredResponse ->
++                                (pendingRequest as?
++                                        MobileWalletAdapterRemoteRequest.AuthorizeDapp)
++                                    ?.request
++                                    ?.completeWithAttestOriginRequired(
++                                        response.context,
++                                        response.challenge,
++                                        Uri.parse(response.attestOriginUri)
++                                    )
++
+                             else ->
+                                 completeWithInvalidResponse()
+                         }
+@@ -480,7 +512,9 @@ class SolanaMobileWalletAdapterWalletLibModule(val reactContext: ReactApplicatio
+                         request.request.addresses
+                             ?.asList(),
+                         request.request
+-                            .signInPayload
++                            .signInPayload,
++                        request.request
++                            .attestOrigin
+                     )
+ 
+                 is MobileWalletAdapterRemoteRequest.ReauthorizeDapp ->
+diff --git a/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterRequest.kt b/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterRequest.kt
+index 7f75760..4d0a8b1 100644
+--- a/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterRequest.kt
++++ b/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterRequest.kt
+@@ -26,7 +26,9 @@ data class AuthorizeDapp(
+     override val iconRelativeUri: String?,
+     val features: List<String>? = null,
+     val addresses: List<String>? = null,
+-    @Serializable(with = SignInPayloadSerializer::class) val signInPayload: SignInWithSolana.Payload? = null
++    @Serializable(with = SignInPayloadSerializer::class) val signInPayload: SignInWithSolana.Payload? = null,
++    /** TakumiPay fork: `attest_origin` token from a retried authorize (MWA origin attestation). */
++    val attestOrigin: String? = null
+ ) : MobileWalletAdapterRequest()
+ 
+ @Serializable
+diff --git a/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterResponse.kt b/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterResponse.kt
+index a8ceb1e..f0f913a 100644
+--- a/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterResponse.kt
++++ b/js/packages/mobile-wallet-adapter-walletlib/android/src/main/java/com/solanamobile/mobilewalletadapterwalletlib/reactnative/model/MobileWalletAdapterResponse.kt
+@@ -29,6 +29,19 @@ object AuthorizationNotValidResponse : MobileWalletAdapterFailureResponse()
+ @SerialName("INVALID_SIGNATURES")
+ data class InvalidSignaturesResponse(val valid: BooleanArray) : MobileWalletAdapterFailureResponse()
+ 
++/**
++ * TakumiPay fork: answer an authorize with `ERROR_ATTEST_ORIGIN_ANDROID` so the
++ * dapp attests its origin (MWA spec "Identity verification" > Android) and
++ * retries with `attest_origin`.
++ */
++@Serializable
++@SerialName("ATTEST_ORIGIN_REQUIRED")
++data class AttestOriginRequiredResponse(
++    val context: String,
++    @Serializable(with = ByteArrayAsMapSerializer::class) val challenge: ByteArray,
++    val attestOriginUri: String
++) : MobileWalletAdapterFailureResponse()
++
+ @Serializable
+ data class AuthorizedAccount(
+     @Serializable(with = ByteArrayAsMapSerializer::class) val publicKey: ByteArray,
+diff --git a/js/packages/mobile-wallet-adapter-walletlib/src/resolve.ts b/js/packages/mobile-wallet-adapter-walletlib/src/resolve.ts
+index 4ea2bfa..d861f9f 100644
+--- a/js/packages/mobile-wallet-adapter-walletlib/src/resolve.ts
++++ b/js/packages/mobile-wallet-adapter-walletlib/src/resolve.ts
+@@ -91,6 +91,8 @@ export type AuthorizeDappRequest = Readonly<{
+     features?: IdentifierArray;
+     addresses?: [string];
+     signInPayload?: SignInPayload;
++    /** TakumiPay fork: `attest_origin` token from a retried authorize (MWA origin attestation). */
++    attestOrigin?: string;
+ }> &
+     IMWARequest;
+ 
+@@ -150,6 +152,8 @@ export enum MWARequestFailReason {
+     TooManyPayloads = 'TOO_MANY_PAYLOADS',
+     InvalidSignatures = 'INVALID_SIGNATURES',
+     AuthorizationNotValid = 'AUTHORIZATION_NOT_VALID',
++    /** TakumiPay fork: answers authorize with ERROR_ATTEST_ORIGIN_ANDROID. */
++    AttestOriginRequired = 'ATTEST_ORIGIN_REQUIRED',
+ }
+ 
+ export type UserDeclinedResponse = Readonly<{
+@@ -169,6 +173,14 @@ export type InvalidSignaturesResponse = Readonly<{
+     valid: boolean[];
+ }>;
+ 
++/** TakumiPay fork: MWA origin-attestation challenge (spec "Identity verification" > Android). */
++export type AttestOriginRequiredResponse = Readonly<{
++    failReason: MWARequestFailReason.AttestOriginRequired;
++    context: string;
++    challenge: Uint8Array;
++    attestOriginUri: string;
++}>;
++
+ /* Authorize Dapp */
+ export type AuthorizedAccount = Readonly<{
+     publicKey: Uint8Array;
+@@ -189,7 +201,10 @@ export type AuthorizeDappCompleteResponse = Readonly<{
+     authorizationScope?: Uint8Array;
+     signInResult?: SignInResult;
+ }>;
+-export type AuthorizeDappResponse = AuthorizeDappCompleteResponse | UserDeclinedResponse;
++export type AuthorizeDappResponse =
++    | AuthorizeDappCompleteResponse
++    | UserDeclinedResponse
++    | AttestOriginRequiredResponse;
+ 
+ /* Reauthorize Dapp */
+ export type ReauthorizeDappCompleteResponse = Readonly<{
+@@ -230,3 +245,21 @@ export function resolve(request: SignAndSendTransactionsRequest, response: SignA
+ export function resolve(request: MWARequest, response: MWAResponse): void {
+     SolanaMobileWalletAdapterWalletLib.resolve(JSON.stringify(request), JSON.stringify(response));
+ }
++
++/**
++ * TakumiPay fork: the value the dapp must present as `h` for `challenge`
++ * (`base64(SHA256("attest-origin" || challenge || session_secret))`). Computed
++ * natively because only the session holds the secret. Resolves `null` when the
++ * request is unknown or no encrypted session secret is available.
++ */
++export async function computeAttestOriginBinding(
++    request: AuthorizeDappRequest,
++    challenge: Uint8Array,
++): Promise<string | null> {
++    let binary = '';
++    for (let i = 0; i < challenge.length; i++) {
++        binary += String.fromCharCode(challenge[i]);
++    }
++    const challengeBase64 = typeof btoa === 'function' ? btoa(binary) : Buffer.from(challenge).toString('base64');
++    return await SolanaMobileWalletAdapterWalletLib.computeAttestOriginBinding(request.requestId, challengeBase64);
++}

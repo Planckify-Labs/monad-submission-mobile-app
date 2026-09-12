@@ -2,9 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { blockchainApi } from "@/api/endpoints/blockchains";
 import type { TBlockchain } from "@/api/types/blockchain";
 import { storage } from "@/lib/storage/mmkv";
+import {
+  BLOCKCHAIN_STORAGE_KEY as BLOCKCHAINS_KEY,
+  BLOCKCHAIN_TIMESTAMP_KEY as BLOCKCHAINS_TIMESTAMP_KEY,
+} from "@/services/blockchains/cache";
 
-const BLOCKCHAINS_KEY = "cached_blockchains";
-const BLOCKCHAINS_TIMESTAMP_KEY = "cached_blockchains_timestamp";
 const OFFLINE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours — offline fallback only
 const STALE_TIME = 5 * 60 * 1000; // 5 minutes — after this, fetch from API on next mount
 

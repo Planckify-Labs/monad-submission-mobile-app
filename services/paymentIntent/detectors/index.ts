@@ -37,6 +37,7 @@ import { takumipayJwsDetector } from "./takumipayJws.ts";
 import { walletAddressStellarDetector } from "./walletAddress.stellar.ts";
 import { walletAddressSuiDetector } from "./walletAddress.sui.ts";
 import { walletAddressDetector } from "./walletAddress.ts";
+import { walletConnectDetector } from "./walletConnect.ts";
 import { walletUriDetector } from "./walletUri.ts";
 import { x402Detector } from "./x402.ts";
 
@@ -51,6 +52,7 @@ const _bootDetectors = [
   walletAddressDetector,
   walletAddressStellarDetector,
   walletAddressSuiDetector,
+  walletConnectDetector,
   walletUriDetector,
   x402Detector,
 ];
@@ -66,6 +68,7 @@ export {
   walletAddressDetector,
   walletAddressStellarDetector,
   walletAddressSuiDetector,
+  walletConnectDetector,
   walletUriDetector,
   x402Detector,
 };

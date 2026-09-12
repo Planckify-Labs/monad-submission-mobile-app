@@ -20,6 +20,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { rejectCopy } from "@/services/deeplinks/copy";
 import {
   classify,
   NoQrInImageError,
@@ -28,6 +29,7 @@ import {
   pickQrFromGallery,
   switchToScannedTarget,
 } from "@/services/paymentIntent";
+import { walletConnectTransport } from "@/services/transports/walletconnect";
 
 /**
  * Cross-platform toast shim. `ToastAndroid` is Android-only; on iOS we
@@ -73,6 +75,21 @@ export default function ScanToPay() {
       if (next.kind === "unsupported") {
         showToast(next.reason);
         setScanned(false);
+        return;
+      }
+      if (next.kind === "pair") {
+        // Deep-link spec D-10 / §7.3: a scanned WalletConnect QR pairs
+        // directly; the ConnectSheet (root ApprovalHost) is the consent.
+        // "QR code scans should not trigger app redirects" (vendor).
+        const r = await walletConnectTransport.pair(next.uri, {
+          fromDeepLink: false,
+        });
+        if (!r.ok) {
+          showToast(rejectCopy(r.code).body);
+          setScanned(false);
+          return;
+        }
+        router.back();
         return;
       }
 

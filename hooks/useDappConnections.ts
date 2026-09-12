@@ -2,13 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { getDappBridge } from "@/services/bridge/DappBridge";
 import type { Namespace } from "@/services/chains/types";
-import { originKey } from "@/services/permissions/caip";
+import { isExternalOriginKey } from "@/services/deeplinks/originKey";
+import { originHost, originKey } from "@/services/permissions/caip";
 import {
   namespaceForChainKey,
   type PermissionGrant,
   PermissionStore,
 } from "@/services/permissions/store";
+import type { TransportSession } from "@/services/transports/types";
 import { chainBadgeLabel } from "@/services/walletKit/chainInfo";
+import {
+  disconnectTransportSession,
+  useTransportSessions,
+} from "./useTransportSessions";
 
 /** A wallet row as shown in the connection manager. */
 export interface DappConnectionWallet {
@@ -22,6 +28,16 @@ export interface DappConnectionWallet {
   /** When the connection was first granted (0 for non-connected rows). */
   grantedAt: number;
   connected: boolean;
+  /**
+   * Set when the connection is a transport session (WalletConnect, MWA,
+   * app link) whose peer URL is this site, rather than a WebView grant.
+   * Disconnecting such a row ends the session.
+   */
+  via?: {
+    transport: TransportSession["transport"];
+    sessionId: string;
+    originKey: string;
+  };
 }
 
 /** A connected site, grouped for the hub-level "Connected sites" list. */
@@ -43,6 +59,7 @@ export interface UseDappConnections {
   disconnectWallet: (args: {
     origin: string;
     address: string;
+    via?: DappConnectionWallet["via"];
   }) => Promise<void>;
   disconnectSite: (args: { origin: string }) => Promise<void>;
 }
@@ -79,6 +96,12 @@ export function useDappConnections({
   const [grants, setGrants] = useState<PermissionGrant[]>(() =>
     PermissionStore.listAll(),
   );
+  // Deep-link spec §4.9 / §7.6: a dApp opened in this browser may have
+  // connected over WalletConnect (its modal navigated to `wc:`), which
+  // lands under `wc+https://<host>#<topic>`, not the WebView origin. Match
+  // those sessions to the open site by the peer's URL so the sheet shows
+  // the connection the page is actually using.
+  const sessions = useTransportSessions(undefined, { eager: false });
 
   useEffect(() => {
     let active = true;
@@ -101,11 +124,15 @@ export function useDappConnections({
   }, [wallets]);
 
   const originForKey = origin ? originKey(origin) : null;
+  const hostForSite = origin ? originHost(origin) : null;
 
   // Collapse a wallet's grants for one origin (it may hold several, one
   // per chain of the same namespace) into a single connection row.
   const buildWalletRows = useCallback(
-    (originGrants: PermissionGrant[]): DappConnectionWallet[] => {
+    (
+      originGrants: PermissionGrant[],
+      via?: DappConnectionWallet["via"],
+    ): DappConnectionWallet[] => {
       const byAddress = new Map<string, PermissionGrant[]>();
       for (const g of originGrants) {
         const list = byAddress.get(g.walletAddress) ?? [];
@@ -124,6 +151,7 @@ export function useDappConnections({
           badge: chainBadgeLabel(namespace),
           grantedAt: Math.min(...list.map((g) => g.grantedAt)),
           connected: true,
+          ...(via ? { via } : {}),
         });
       }
       return rows.sort((a, b) => a.grantedAt - b.grantedAt);
@@ -141,6 +169,18 @@ export function useDappConnections({
     }
     const originGrants = grants.filter((g) => g.origin === originForKey);
     const connected = buildWalletRows(originGrants);
+    // Transport sessions whose peer is this site, one row set per session.
+    for (const s of sessions) {
+      if (!hostForSite || originHost(s.peer.url) !== hostForSite) continue;
+      const sessionGrants = grants.filter((g) => g.origin === s.originKey);
+      connected.push(
+        ...buildWalletRows(sessionGrants, {
+          transport: s.transport,
+          sessionId: s.id,
+          originKey: s.originKey,
+        }),
+      );
+    }
     const connectedSet = new Set(connected.map((w) => w.address.toLowerCase()));
     const other: DappConnectionWallet[] = wallets
       .filter((w) => !connectedSet.has(w.address.toLowerCase()))
@@ -157,11 +197,15 @@ export function useDappConnections({
       otherWallets: other,
       isConnected: connected.length > 0,
     };
-  }, [grants, originForKey, wallets, buildWalletRows]);
+  }, [grants, originForKey, hostForSite, sessions, wallets, buildWalletRows]);
 
   const sites = useMemo(() => {
     const byOrigin = new Map<string, PermissionGrant[]>();
     for (const g of grants) {
+      // Session-transport grants (WalletConnect, MWA, app links) are
+      // listed by the transports' own section with peer metadata; they
+      // are not browser sites (deep-link spec §4.9, §7.6).
+      if (isExternalOriginKey(g.origin)) continue;
       const list = byOrigin.get(g.origin) ?? [];
       list.push(g);
       byOrigin.set(g.origin, list);
@@ -180,8 +224,20 @@ export function useDappConnections({
   }, [grants, buildWalletRows]);
 
   const disconnectWallet = useCallback(
-    async ({ origin: o, address }: { origin: string; address: string }) => {
+    async ({
+      origin: o,
+      address,
+      via,
+    }: {
+      origin: string;
+      address: string;
+      via?: DappConnectionWallet["via"];
+    }) => {
       try {
+        if (via) {
+          await disconnectTransportSession(via.transport, via.sessionId);
+          return;
+        }
         const bridge = getDappBridge();
         if (bridge) {
           await bridge.revokeConnection({ origin: o, walletAddress: address });

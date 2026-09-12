@@ -18,6 +18,7 @@ import { installSuiSigner } from "@/services/chains/sui/signer";
 import type { AdapterContext } from "@/services/chains/types";
 import { PermissionStore } from "@/services/permissions/store";
 import { proxyAuthHeaders } from "@/services/rpc/proxyAuth";
+import { subscribeAppLocked } from "@/services/security/appLockState";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import { initDappBridge } from "./DappBridge";
 import { bridgeEventBus } from "./events";
@@ -58,18 +59,62 @@ interface BootOpts {
 let booted = false;
 
 /**
+ * Live EVM chain resolvers. The EVM adapter is created once (first
+ * `bootBridge`), but the root layout boots the bridge before the dApps
+ * browser mounts (deep-link spec F3), and the browser's resolvers read
+ * its own `activeChain` closure. Holding them here and re-binding on
+ * every `bootBridge` call keeps the browser's behaviour byte-for-byte
+ * once it mounts, while the root boot supplies feed-backed defaults
+ * before that.
+ */
+const evmResolvers: {
+  resolveChainConfig: BootOpts["resolveEvmChain"];
+  resolveSupportedChain: BootOpts["resolveSupportedEvmChain"];
+  resolveDefaultChain: BootOpts["resolveDefaultEvmChain"];
+  onWatchAsset: BootOpts["onWatchAsset"];
+  onShowCallsStatus: BootOpts["onShowCallsStatus"];
+} = {
+  resolveChainConfig: () => null,
+  resolveSupportedChain: undefined,
+  resolveDefaultChain: undefined,
+  onWatchAsset: undefined,
+  onShowCallsStatus: undefined,
+};
+
+function bindEvmResolvers(opts: BootOpts): void {
+  evmResolvers.resolveChainConfig = opts.resolveEvmChain;
+  evmResolvers.resolveSupportedChain = opts.resolveSupportedEvmChain;
+  evmResolvers.resolveDefaultChain = opts.resolveDefaultEvmChain;
+  // Screen-owned callbacks only rebind when the caller supplies them, so
+  // a root re-boot never wipes the browser's handlers.
+  if (opts.onWatchAsset) evmResolvers.onWatchAsset = opts.onWatchAsset;
+  if (opts.onShowCallsStatus)
+    evmResolvers.onShowCallsStatus = opts.onShowCallsStatus;
+}
+
+/**
  * One-shot boot — registers adapters, inspectors, renderers, and the
  * DappBridge. Safe to call more than once: the guard short-circuits repeat
- * calls, but re-binds the per-screen getters.
+ * calls, but re-binds the per-screen getters and the EVM resolvers.
  */
 export function bootBridge(opts: BootOpts) {
   const bridge = initDappBridge({
     getContext: opts.getContext,
     getWebView: opts.getWebView,
   });
+  bindEvmResolvers(opts);
 
   if (booted) return bridge;
   booted = true;
+
+  // Deep-link spec S-9: freeze the approval queue while the app is locked
+  // so a transport request that arrives behind the PIN screen is held,
+  // never presented. `ApprovalHost` hides in step; this keeps the store
+  // itself consistent even when no host is mounted.
+  subscribeAppLocked((locked) => {
+    if (locked) pendingIntentsStore.pause();
+    else pendingIntentsStore.resume();
+  });
 
   InspectorRegistry.register(HttpsInspector);
   InspectorRegistry.register(HeuristicInspector);
@@ -90,11 +135,16 @@ export function bootBridge(opts: BootOpts) {
   for (const r of evmRenderers) registerRenderer(r);
 
   const evmAdapter = createEvmAdapter({
-    resolveChainConfig: opts.resolveEvmChain,
-    resolveSupportedChain: opts.resolveSupportedEvmChain,
-    resolveDefaultChain: opts.resolveDefaultEvmChain,
-    onWatchAsset: opts.onWatchAsset,
-    onShowCallsStatus: opts.onShowCallsStatus,
+    resolveChainConfig: (ctx) => evmResolvers.resolveChainConfig(ctx),
+    resolveSupportedChain: (chainId) =>
+      evmResolvers.resolveSupportedChain?.(chainId) ?? null,
+    resolveDefaultChain: () => evmResolvers.resolveDefaultChain?.() ?? null,
+    onWatchAsset: async (payload) => {
+      await evmResolvers.onWatchAsset?.(payload);
+    },
+    onShowCallsStatus: (bundleId) => {
+      evmResolvers.onShowCallsStatus?.(bundleId);
+    },
   });
   ChainAdapterRegistry.register(evmAdapter);
 

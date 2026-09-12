@@ -90,6 +90,11 @@ import {
   fetchSorobanContractWasm,
   resolveStellarClearSigningDescriptor,
 } from "./clearSigning";
+import { buildStellarPaymentRequest } from "./paymentRequest";
+import {
+  stellarWalletConnectCodec,
+  stellarWalletConnectNamespace,
+} from "./walletConnect";
 
 const STELLAR_NAMESPACE = "stellar" as const;
 
@@ -144,6 +149,11 @@ export function createStellarWalletKit(): WalletKitAdapter {
     supportsPointDeposit: true,
     displayName: "Stellar",
     requireBiometricForConnect: true,
+    // Deep-link spec §4.5 — SEP-0007 `pay` builder + WalletConnect
+    // `stellar` namespace / codec.
+    buildPaymentRequest: buildStellarPaymentRequest,
+    walletConnectNamespace: stellarWalletConnectNamespace,
+    walletConnectCodec: stellarWalletConnectCodec,
 
     getChainId(chain) {
       return chain.namespace === STELLAR_NAMESPACE ? chain.network : null;

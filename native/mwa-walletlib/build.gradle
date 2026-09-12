@@ -1,0 +1,40 @@
+// TakumiPay fork of `com.solanamobile:mobile-wallet-adapter-walletlib:2.0.2`
+// (+ `mobile-wallet-adapter-common`), vendored so the wallet can implement the
+// MWA spec's origin-attestation flow (`ERROR_ATTEST_ORIGIN_ANDROID` /
+// `attest_origin`), which the published artifact defines but never emits.
+// See docs/upstream/mwa-origin-attestation/README.md for the diff against
+// upstream and the proposal to land it there. Wired into the app by
+// `plugins/withSolanaMobileWalletAdapter.js` (settings include + dependency
+// substitution), so the React Native bridge's `implementation
+// "com.solanamobile:mobile-wallet-adapter-walletlib:2.0.2"` resolves here.
+apply plugin: 'com.android.library'
+
+android {
+    namespace = "com.solana.mobilewalletadapter.walletlib"
+    compileSdk rootProject.ext.has('compileSdkVersion') ? rootProject.ext.compileSdkVersion : 35
+
+    defaultConfig {
+        minSdk rootProject.ext.has('minSdkVersion') ? rootProject.ext.minSdkVersion : 24
+        consumerProguardFiles "consumer-rules.pro"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    compileOnly 'androidx.annotation:annotation:1.7.1'
+    implementation 'org.java-websocket:Java-WebSocket:1.5.5'
+    implementation 'org.slf4j:slf4j-android:1.7.36' // SLF4J logging facility for Java-WebSocket
+    // `common/signin/SignInWithSolana.java` uses `kotlin.text.Regex` (upstream
+    // gets it from the Kotlin Android plugin applied at its root project).
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:${rootProject.ext.has('kotlinVersion') ? rootProject.ext.kotlinVersion : '2.0.21'}"
+}

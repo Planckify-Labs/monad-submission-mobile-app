@@ -1,0 +1,21 @@
+// Same shape as `create-expo-module --local` for SDK 54 (expo-module-template-local@0.7.10).
+// `expo-module-gradle-plugin` applies kotlin-android, adds `compileOnly project(':expo-modules-core')`
+// (which provides `expo.modules.kotlin.*`), and inherits the host app's compile/min/target SDK.
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.appminimizer'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.appminimizer"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}

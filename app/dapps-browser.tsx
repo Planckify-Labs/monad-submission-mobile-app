@@ -147,7 +147,6 @@ import { useBlockchainsWithStorage } from "@/hooks/useBlockchainsWithStorage";
 import { useDappConnections } from "@/hooks/useDappConnections";
 import { useWallet } from "@/hooks/useWallet";
 import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
-import { ApprovalHost } from "@/services/bridge/ApprovalHost";
 import { bootBridge } from "@/services/bridge/boot";
 import { ChainAdapterRegistry } from "@/services/chains/registry";
 import type { AdapterContext } from "@/services/chains/types";
@@ -155,6 +154,7 @@ import { FaviconStore } from "@/services/dappsBrowser/faviconStore";
 import { BrowserHistoryStore } from "@/services/dappsBrowser/historyStore";
 import { displayHost, parseOmnibox } from "@/services/dappsBrowser/omnibox";
 import type { Suggestion } from "@/services/dappsBrowser/suggest";
+import { intakeFromWebView } from "@/services/deeplinks/entry";
 import { isFlaggedHost } from "@/services/security/scamDomainFeed";
 import { getAccountForWallet } from "@/services/walletService";
 
@@ -743,6 +743,12 @@ export default function DappsBrowser() {
                 // here, so a flagged host is refused before a single
                 // request goes out.
                 onShouldStartLoadWithRequest={(request) => {
+                  // Deep-link spec §4.2: a page that navigates to `wc:`,
+                  // `ethereum:` or our own link stays in-app and goes to
+                  // the kernel as an `internal` link. Letting the WebView
+                  // hand it to the OS would bounce it back into us as an
+                  // external link (wallet chooser, "return to caller").
+                  if (intakeFromWebView(request.url)) return false;
                   if (!isBlockedSite(request.url)) return true;
                   setBlockedUrl(request.url);
                   return false;
@@ -883,7 +889,8 @@ export default function DappsBrowser() {
           )}
         </View>
       </View>
-      <ApprovalHost />
+      {/* `ApprovalHost` is mounted once at the root (`app/_layout.tsx`,
+          deep-link spec F3); this screen only rebinds the bridge. */}
       <ConnectionManagerSheet
         visible={showConnections}
         onClose={() => setShowConnections(false)}

@@ -1,0 +1,334 @@
+diff --git a/js/packages/mobile-wallet-adapter-protocol/src/attestOrigin.ts b/js/packages/mobile-wallet-adapter-protocol/src/attestOrigin.ts
+--- a/js/packages/mobile-wallet-adapter-protocol/src/attestOrigin.ts
++++ b/js/packages/mobile-wallet-adapter-protocol/src/attestOrigin.ts
+@@ -0,0 +1,139 @@
++import { SolanaMobileWalletAdapterError, SolanaMobileWalletAdapterErrorCode } from './errors.js';
++import { AttestBindingSecret } from './parseHelloRsp.js';
++
++/**
++ * Origin attestation for web dapp endpoints (spec: "Identity verification"
++ * > Android). On `ERROR_ATTEST_ORIGIN_ANDROID` the wallet hands us a
++ * challenge; we bind it to this session, load the wallet's attestation
++ * script in an iframe, and hand its signed answer back as `attest_origin`.
++ *
++ * Wire format of the iframe exchange (wallet-defined, see the wallet's
++ * attestation script for the authoritative version):
++ *   -> { m: 'origin-attest', h, context }
++ *   <- <token string>                                  success
++ *   <- { m: 'origin-attest-error', error }             failure; `error` is
++ *      'storage_access_required' when the browser partitions the script's
++ *      storage and needs a user gesture inside the frame. We then reveal
++ *      the frame so the user can grant it, and keep waiting.
++ */
++
++const ATTEST_ORIGIN_SILENT_TIMEOUT_MS = 15_000;
++const ATTEST_ORIGIN_INTERACTIVE_TIMEOUT_MS = 90_000;
++
++export type AttestOriginChallenge = Readonly<{
++    attest_origin_uri: string;
++    challenge: string;
++    context: string;
++}>;
++
++function base64ToBytes(b64: string): Uint8Array {
++    const bin = atob(b64);
++    const out = new Uint8Array(bin.length);
++    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
++    return out;
++}
++
++function bytesToBase64(bytes: ArrayBuffer | Uint8Array): string {
++    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
++    let s = '';
++    for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
++    return btoa(s);
++}
++
++/** `h = base64(SHA256("attest-origin" || challenge || session_secret))` */
++export async function computeAttestOriginBinding(
++    challengeBase64: string,
++    attestBindingSecret: AttestBindingSecret,
++): Promise<string> {
++    const prefix = new TextEncoder().encode('attest-origin');
++    const challenge = base64ToBytes(challengeBase64);
++    const secret = new Uint8Array(attestBindingSecret);
++    const input = new Uint8Array(prefix.length + challenge.length + secret.length);
++    input.set(prefix, 0);
++    input.set(challenge, prefix.length);
++    input.set(secret, prefix.length + challenge.length);
++    return bytesToBase64(await crypto.subtle.digest('SHA-256', input));
++}
++
++function assertAttestOriginUri(uri: string): URL {
++    let url: URL;
++    try {
++        url = new URL(uri);
++    } catch {
++        throw new SolanaMobileWalletAdapterError(
++            SolanaMobileWalletAdapterErrorCode.ERROR_ATTEST_ORIGIN_FAILED,
++            'Invalid attestation script URI supplied by wallet',
++        );
++    }
++    if (url.protocol !== 'https:') {
++        throw new SolanaMobileWalletAdapterError(
++            SolanaMobileWalletAdapterErrorCode.ERROR_ATTEST_ORIGIN_FAILED,
++            'Attestation script URIs supplied by wallets must be `https` URLs',
++        );
++    }
++    return url;
++}
++
++export async function attestOrigin(
++    data: AttestOriginChallenge,
++    attestBindingSecret: AttestBindingSecret,
++): Promise<string> {
++    if (typeof document === 'undefined') {
++        throw new SolanaMobileWalletAdapterError(
++            SolanaMobileWalletAdapterErrorCode.ERROR_ATTEST_ORIGIN_FAILED,
++            'Origin attestation requires a browser document',
++        );
++    }
++    const scriptUrl = assertAttestOriginUri(data.attest_origin_uri);
++    const h = await computeAttestOriginBinding(data.challenge, attestBindingSecret);
++    return new Promise<string>((resolve, reject) => {
++        const iframe = document.createElement('iframe');
++        iframe.setAttribute('aria-hidden', 'true');
++        iframe.style.cssText =
++            'position:fixed;width:0;height:0;border:0;opacity:0;pointer-events:none;bottom:0;right:0;';
++        let timeoutId = 0;
++        const cleanup = () => {
++            window.clearTimeout(timeoutId);
++            window.removeEventListener('message', onMessage);
++            iframe.remove();
++        };
++        const fail = (message: string) => {
++            cleanup();
++            reject(new SolanaMobileWalletAdapterError(SolanaMobileWalletAdapterErrorCode.ERROR_ATTEST_ORIGIN_FAILED, message));
++        };
++        const arm = (ms: number) => {
++            window.clearTimeout(timeoutId);
++            timeoutId = window.setTimeout(() => fail('Timed out waiting for the origin attestation script'), ms);
++        };
++        const onMessage = (evt: MessageEvent) => {
++            if (evt.origin !== scriptUrl.origin || evt.source !== iframe.contentWindow) return;
++            const msg = evt.data;
++            if (typeof msg === 'string') {
++                cleanup();
++                resolve(msg);
++                return;
++            }
++            if (msg && typeof msg === 'object' && msg.m === 'origin-attest-error') {
++                if (msg.error === 'storage_access_required') {
++                    // The script needs a tap inside its own frame to reach its
++                    // first-party storage; show it and give the user time.
++                    iframe.removeAttribute('aria-hidden');
++                    iframe.style.cssText =
++                        'position:fixed;left:0;right:0;bottom:0;width:100%;height:220px;border:0;' +
++                        'border-top:1px solid rgba(0,0,0,.15);background:#fff;z-index:2147483647;';
++                    arm(ATTEST_ORIGIN_INTERACTIVE_TIMEOUT_MS);
++                    return;
++                }
++                fail(`Origin attestation failed (${String(msg.error)})`);
++            }
++        };
++        window.addEventListener('message', onMessage);
++        iframe.addEventListener('load', () => {
++            iframe.contentWindow?.postMessage({ m: 'origin-attest', h, context: data.context }, scriptUrl.origin);
++        });
++        iframe.addEventListener('error', () => fail('Failed to load the origin attestation script'));
++        arm(ATTEST_ORIGIN_SILENT_TIMEOUT_MS);
++        iframe.src = scriptUrl.href;
++        document.body.appendChild(iframe);
++    });
++}
+diff --git a/js/packages/mobile-wallet-adapter-protocol/src/errors.ts b/js/packages/mobile-wallet-adapter-protocol/src/errors.ts
+--- a/js/packages/mobile-wallet-adapter-protocol/src/errors.ts
++++ b/js/packages/mobile-wallet-adapter-protocol/src/errors.ts
+@@ -7,6 +7,7 @@
+     ERROR_SESSION_TIMEOUT: 'ERROR_SESSION_TIMEOUT',
+     ERROR_WALLET_NOT_FOUND: 'ERROR_WALLET_NOT_FOUND',
+     ERROR_INVALID_PROTOCOL_VERSION: 'ERROR_INVALID_PROTOCOL_VERSION',
++    ERROR_ATTEST_ORIGIN_FAILED: 'ERROR_ATTEST_ORIGIN_FAILED',
+ } as const;
+ type SolanaMobileWalletAdapterErrorCodeEnum =
+     typeof SolanaMobileWalletAdapterErrorCode[keyof typeof SolanaMobileWalletAdapterErrorCode];
+@@ -23,6 +24,7 @@
+     [SolanaMobileWalletAdapterErrorCode.ERROR_SESSION_TIMEOUT]: undefined;
+     [SolanaMobileWalletAdapterErrorCode.ERROR_WALLET_NOT_FOUND]: undefined;
+     [SolanaMobileWalletAdapterErrorCode.ERROR_INVALID_PROTOCOL_VERSION]: undefined;
++    [SolanaMobileWalletAdapterErrorCode.ERROR_ATTEST_ORIGIN_FAILED]: undefined;
+ };
+ 
+ export class SolanaMobileWalletAdapterError<TErrorCode extends SolanaMobileWalletAdapterErrorCodeEnum> extends Error {
+diff --git a/js/packages/mobile-wallet-adapter-protocol/src/jsonRpcMessage.ts b/js/packages/mobile-wallet-adapter-protocol/src/jsonRpcMessage.ts
+--- a/js/packages/mobile-wallet-adapter-protocol/src/jsonRpcMessage.ts
++++ b/js/packages/mobile-wallet-adapter-protocol/src/jsonRpcMessage.ts
+@@ -32,6 +32,7 @@
+             jsonRpcMessage.id,
+             jsonRpcMessage.error.code,
+             jsonRpcMessage.error.message,
++            jsonRpcMessage.error.data,
+         );
+     }
+     return jsonRpcMessage as JSONRPCResponse<TMessage>;
+diff --git a/js/packages/mobile-wallet-adapter-protocol/src/parseHelloRsp.ts b/js/packages/mobile-wallet-adapter-protocol/src/parseHelloRsp.ts
+--- a/js/packages/mobile-wallet-adapter-protocol/src/parseHelloRsp.ts
++++ b/js/packages/mobile-wallet-adapter-protocol/src/parseHelloRsp.ts
+@@ -7,11 +7,25 @@
+  */
+ export type SharedSecret = CryptoKey;
+ 
++/**
++ * The `session_secret` used to bind origin-attestation challenges
++ * (spec: "Identity verification" > Android). Derived from the same ECDH
++ * shared secret and salt as the AES session key, with a distinct HKDF
++ * `info`, so the AES key itself stays non-extractable.
++ */
++export type AttestBindingSecret = ArrayBuffer;
++const ATTEST_BINDING_INFO = new TextEncoder().encode('mwa-attest-origin');
++
++export type SessionSecrets = Readonly<{
++    sharedSecret: SharedSecret;
++    attestBindingSecret: AttestBindingSecret;
++}>;
++
+ export default async function parseHelloRsp(
+     payloadBuffer: ArrayBuffer, // The X9.62-encoded wallet endpoint ephemeral ECDH public keypoint.
+     associationPublicKey: CryptoKey,
+     ecdhPrivateKey: CryptoKey,
+-): Promise<SharedSecret> {
++): Promise<SessionSecrets> {
+     const [associationPublicKeyBuffer, walletPublicKey] = await Promise.all([
+         crypto.subtle.exportKey('raw', associationPublicKey),
+         crypto.subtle.importKey(
+@@ -28,7 +42,7 @@
+         sharedSecret,
+         'HKDF',
+         false /* extractable */,
+-        ['deriveKey'] /* keyUsages */,
++        ['deriveKey', 'deriveBits'] /* keyUsages */,
+     );
+     const aesKeyMaterialVal = await crypto.subtle.deriveKey(
+         {
+@@ -42,5 +56,15 @@
+         false /* extractable */,
+         ['encrypt', 'decrypt'],
+     );
+-    return aesKeyMaterialVal as SharedSecret;
++    const attestBindingSecret = await crypto.subtle.deriveBits(
++        {
++            name: 'HKDF',
++            hash: 'SHA-256',
++            salt: new Uint8Array(associationPublicKeyBuffer),
++            info: ATTEST_BINDING_INFO,
++        },
++        ecdhSecretKey,
++        256,
++    );
++    return { sharedSecret: aesKeyMaterialVal as SharedSecret, attestBindingSecret };
+ }
+diff --git a/js/packages/mobile-wallet-adapter-protocol/src/transact.ts b/js/packages/mobile-wallet-adapter-protocol/src/transact.ts
+--- a/js/packages/mobile-wallet-adapter-protocol/src/transact.ts
++++ b/js/packages/mobile-wallet-adapter-protocol/src/transact.ts
+@@ -6,11 +6,13 @@
+     SolanaMobileWalletAdapterError,
+     SolanaMobileWalletAdapterErrorCode,
+     SolanaMobileWalletAdapterProtocolError,
++    SolanaMobileWalletAdapterProtocolErrorCode,
+ } from './errors.js';
+ import generateAssociationKeypair from './generateAssociationKeypair.js';
+ import generateECDHKeypair from './generateECDHKeypair.js';
+ import { decryptJsonRpcMessage, encryptJsonRpcMessage } from './jsonRpcMessage.js';
+-import parseHelloRsp, { SharedSecret } from './parseHelloRsp.js';
++import { attestOrigin } from './attestOrigin.js';
++import parseHelloRsp, { AttestBindingSecret, SharedSecret } from './parseHelloRsp.js';
+ import parseSessionProps from './parseSessionProps.js';
+ import { startSession } from './startSession.js';
+ import { AssociationKeypair, MobileWallet, SessionProperties, WalletAssociationConfig } from './types.js';
+@@ -37,7 +39,12 @@
+ >;
+ 
+ type State =
+-    | { __type: 'connected'; sharedSecret: SharedSecret; sessionProperties: SessionProperties }
++    | {
++          __type: 'connected';
++          sharedSecret: SharedSecret;
++          attestBindingSecret: AttestBindingSecret;
++          sessionProperties: SessionProperties;
++      }
+     | { __type: 'connecting'; associationKeypair: AssociationKeypair }
+     | { __type: 'disconnected' }
+     | { __type: 'hello_req_sent'; associationPublicKey: CryptoKey; ecdhPrivateKey: CryptoKey };
+@@ -169,7 +176,7 @@
+                     }
+                     break;
+                 case 'hello_req_sent': {
+-                    const sharedSecret = await parseHelloRsp(
++                    const { sharedSecret, attestBindingSecret } = await parseHelloRsp(
+                         responseBuffer,
+                         state.associationPublicKey,
+                         state.ecdhPrivateKey,
+@@ -185,9 +192,8 @@
+                             lastKnownInboundSequenceNumber = sequenceNumber;
+                             return parseSessionProps(sessionPropertiesBuffer, sharedSecret);
+                         })() : <SessionProperties> { protocol_version: 'legacy' };
+-                    state = { __type: 'connected', sharedSecret, sessionProperties };
+-                    const wallet = createMobileWalletProxy(sessionProperties.protocol_version,
+-                        async (method, params) => {
++                    state = { __type: 'connected', sharedSecret, attestBindingSecret, sessionProperties };
++                    const sendRequest = async (method: string, params: any) => {
+                             const id = nextJsonRpcMessageId++;
+                             socket.send(
+                                 await encryptJsonRpcMessage(
+@@ -225,6 +231,26 @@
+                                     reject,
+                                 };
+                             });
++                        };
++                    const wallet = createMobileWalletProxy(sessionProperties.protocol_version,
++                        async (method, params) => {
++                            try {
++                                return await sendRequest(method, params);
++                            } catch (e) {
++                                // Web dapp endpoints: answer the wallet's origin
++                                // attestation challenge once, then retry with the token.
++                                if (
++                                    e instanceof SolanaMobileWalletAdapterProtocolError &&
++                                    e.code === SolanaMobileWalletAdapterProtocolErrorCode.ERROR_ATTEST_ORIGIN_ANDROID &&
++                                    (method === 'authorize' || method === 'clone_authorization') &&
++                                    e.data != null &&
++                                    !(params as any)?.attest_origin
++                                ) {
++                                    const token = await attestOrigin(e.data as any, attestBindingSecret);
++                                    return sendRequest(method, { ...(params as any), attest_origin: token });
++                                }
++                                throw e;
++                            }
+                         })
+                     try {
+                         resolve(await callback(wallet));
+diff --git a/js/packages/mobile-wallet-adapter-protocol/src/types.ts b/js/packages/mobile-wallet-adapter-protocol/src/types.ts
+--- a/js/packages/mobile-wallet-adapter-protocol/src/types.ts
++++ b/js/packages/mobile-wallet-adapter-protocol/src/types.ts
+@@ -86,6 +86,8 @@
+         addresses?: string[]; 
+         auth_token?: AuthToken; 
+         sign_in_payload?: SignInPayload;
++        /** Origin-attestation token; filled in automatically by `transact` on `ERROR_ATTEST_ORIGIN_ANDROID`. */
++        attest_origin?: string;
+     }): Promise<AuthorizationResult>;
+ }
+ export interface CloneAuthorizationAPI {
+@@ -154,6 +156,12 @@
+ export const SolanaSignTransactions = 'solana:signTransactions'
+ export const SolanaCloneAuthorization = 'solana:cloneAuthorization'
+ export const SolanaSignInWithSolana = 'solana:signInWithSolana'
++/**
++ * Web dapp endpoints list this in `authorize.features` to ask the wallet to
++ * verify their origin through the attestation script (`ERROR_ATTEST_ORIGIN_ANDROID`
++ * round trip). Wallets that do not implement attestation ignore it.
++ */
++export const SolanaAttestOrigin = 'solana:attestOrigin'
+ 
+ export type SignInPayload = Readonly<{
+     domain?: string;

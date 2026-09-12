@@ -4,10 +4,22 @@ import type { ApprovalIntent } from "@/services/bridge/approval";
 export type Namespace = "eip155" | "solana" | "sui" | "stellar";
 
 export interface Origin {
+  /**
+   * The origin the permission stores key on. For the WebView this is the
+   * page URL; for external transports it is the transport-prefixed key
+   * from `services/deeplinks/originKey.ts` (deep-link spec §4.9), which
+   * can never collide with a page origin.
+   */
   url: string;
+  /**
+   * Human string to show instead of `url` when the two differ (peer
+   * metadata URL for a WalletConnect session, `identity.uri` for MWA).
+   * Display only; never used as a key.
+   */
+  displayUrl?: string;
   title?: string;
   icon?: string;
-  via?: "webview" | "agent";
+  via?: "webview" | "agent" | "deeplink" | "walletconnect" | "mwa";
 }
 
 export interface ChainRequest {

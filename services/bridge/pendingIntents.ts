@@ -45,9 +45,34 @@ class PendingIntentsStore {
   private hydrated = false;
   private hydratePromise: Promise<void> | null = null;
 
+  /**
+   * Presentation pause — spec deeplink §4.8 (S-9). While paused, intents
+   * still queue (a WalletConnect relay message that arrives behind the
+   * lock screen must not be lost or answered), but subscribers are told
+   * the queue is empty so nothing renders above the LockScreen. `resume`
+   * replays the real queue to every subscriber.
+   */
+  private paused = false;
+
+  pause(): void {
+    if (this.paused) return;
+    this.paused = true;
+    this.notify();
+  }
+
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    this.notify();
+  }
+
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
   subscribe(listener: Listener): () => void {
     this.listeners.add(listener);
-    listener([...this.intents]);
+    listener(this.paused ? [] : [...this.intents]);
     return () => this.listeners.delete(listener);
   }
 
@@ -113,7 +138,7 @@ class PendingIntentsStore {
   }
 
   private notify(): void {
-    const snap = [...this.intents];
+    const snap = this.paused ? [] : [...this.intents];
     for (const l of this.listeners) {
       try {
         l(snap);
@@ -230,6 +255,7 @@ class PendingIntentsStore {
   __resetForTest(): void {
     this.intents = [];
     this.lastResolveAt = 0;
+    this.paused = false;
   }
 }
 

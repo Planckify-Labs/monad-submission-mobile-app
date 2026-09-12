@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>TakumiPay verification</title>
+<!--
+  Mobile Wallet Adapter origin attestation script for the TakumiPay wallet.
+  Spec: https://solana-mobile.github.io/mobile-wallet-adapter/spec/spec.html
+  ("Identity verification" > Android). The wallet side lives in the
+  mobile-app repo: services/transports/mwa/attestation.ts.
+
+  Two modes, decided by how the document is loaded:
+
+  1. Provisioning (top-level, opened by the wallet in a Custom Tab):
+       /mwa/attest?m=provision&nonce=<hex>&return=<takumiwallet[-dev|-preview]-mwa://attest/return>
+     Generates a non-extractable ECDSA P-256 keypair in this origin's
+     IndexedDB under a fresh key id ("context") and redirects to
+       <return>?nonce=<same nonce>&context=<context>&jwk=<base64url public JWK>
+     The wallet only accepts a return that echoes the nonce it minted.
+
+  2. Attestation (loaded in an iframe by a web dApp):
+     The dApp posts { m: "origin-attest", h, context }. We sign
+       { typ: "mwa-origin-attest", origin: event.origin, h, context, iat }
+     as a compact JWS (ES256, raw r||s) with the key for `context` and
+     post the token string back to event.source at event.origin. `origin`
+     is set by the browser, never by the dApp: that is the whole point.
+     Failures are posted as { m: "origin-attest-error", error }.
+
+  Storage note: browsers partition third-party storage, so the key made
+  in the top-level Custom Tab is invisible to the iframe unless the
+  Storage Access API grants unpartitioned access. We ask for it silently
+  when it was granted before; otherwise we answer
+  "storage_access_required" and, if the dApp makes this frame visible,
+  offer a button so the user can grant it (that needs a tap here).
+-->
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; background: #fff; }
+  main { padding: 20px; max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 8px; }
+  p { margin: 0 0 12px; }
+  button, a.btn { display: inline-block; appearance: none; border: 0; border-radius: 12px; padding: 12px 18px; font: inherit; font-weight: 600; color: #fff; background: #c71c4b; text-decoration: none; }
+  .muted { color: #666; font-size: 13px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main id="ui" hidden>
+  <h1 id="title">TakumiPay verification</h1>
+  <p id="msg"></p>
+  <p id="action"></p>
+  <p class="muted" id="note"></p>
+</main>
+<script>
+(function () {
+  "use strict";
+
+  var DB_NAME = "takumipay-mwa-attest";
+  var STORE = "keys";
+  var MAX_KEYS = 24;
+  var TYP = "mwa-origin-attest";
+  var RETURN_RE = /^takumiwallet(?:-dev|-preview)?-mwa:\/\/attest\/return$/;
+
+  var ui = document.getElementById("ui");
+  var elTitle = document.getElementById("title");
+  var elMsg = document.getElementById("msg");
+  var elAction = document.getElementById("action");
+  var elNote = document.getElementById("note");
+
+  function show(title, msg, note) {
+    ui.hidden = false;
+    elTitle.textContent = title;
+    elMsg.textContent = msg || "";
+    elNote.textContent = note || "";
+  }
+
+  // --- encoding helpers -------------------------------------------------
+
+  function b64url(bytes) {
+    var s = "";
+    var u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    for (var i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+    return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+  function b64urlText(text) {
+    return b64url(new TextEncoder().encode(text));
+  }
+  function randomId() {
+    var b = new Uint8Array(16);
+    crypto.getRandomValues(b);
+    return b64url(b);
+  }
+
+  // --- storage ----------------------------------------------------------
+
+  function openDb(idb) {
+    return new Promise(function (resolve, reject) {
+      var req = idb.open(DB_NAME, 1);
+      req.onupgradeneeded = function () {
+        var db = req.result;
+        if (!db.objectStoreNames.contains(STORE)) {
+          db.createObjectStore(STORE, { keyPath: "context" });
+        }
+      };
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+      req.onblocked = function () { reject(new Error("blocked")); };
+    });
+  }
+  function tx(db, mode, fn) {
+    return new Promise(function (resolve, reject) {
+      var t = db.transaction(STORE, mode);
+      var store = t.objectStore(STORE);
+      var out;
+      t.oncomplete = function () { resolve(out); };
+      t.onerror = function () { reject(t.error); };
+      t.onabort = function () { reject(t.error || new Error("aborted")); };
+      var r = fn(store);
+      if (r && typeof r.then === "function") r.then(function (v) { out = v; });
+      else out = r;
+    });
+  }
+  function reqToPromise(req) {
+    return new Promise(function (resolve, reject) {
+      req.onsuccess = function () { resolve(req.result); };
+      req.onerror = function () { reject(req.error); };
+    });
+  }
+  function getKey(idb, context) {
+    return openDb(idb).then(function (db) {
+      return tx(db, "readonly", function (store) {
+        return reqToPromise(store.get(context));
+      }).finally(function () { db.close(); });
+    });
+  }
+  function putKey(idb, rec) {
+    return openDb(idb).then(function (db) {
+      return tx(db, "readwrite", function (store) {
+        store.put(rec);
+        // Keep the store bounded: drop the oldest entries past MAX_KEYS.
+        return reqToPromise(store.getAll()).then(function (all) {
+          all.sort(function (a, b) { return a.createdAt - b.createdAt; });
+          while (all.length > MAX_KEYS) store.delete(all.shift().context);
+        });
+      }).finally(function () { db.close(); });
+    });
+  }
+
+  // Unpartitioned IndexedDB when this document is a third-party frame and
+  // the Storage Access API already granted access; otherwise the frame's
+  // own (possibly partitioned) IndexedDB.
+  function storageFor(allowPrompt) {
+    var thirdParty = window.top !== window;
+    if (!thirdParty || !document.hasStorageAccess || !document.requestStorageAccess) {
+      return Promise.resolve({ idb: indexedDB, unpartitioned: !thirdParty });
+    }
+    return document.hasStorageAccess().then(function (has) {
+      if (!has && !allowPrompt) return { idb: indexedDB, unpartitioned: false };
+      return document.requestStorageAccess({ indexedDB: true }).then(function (handle) {
+        return { idb: handle && handle.indexedDB ? handle.indexedDB : indexedDB, unpartitioned: true };
+      }, function () {
+        return { idb: indexedDB, unpartitioned: false };
+      });
+    }, function () {
+      return { idb: indexedDB, unpartitioned: false };
+    });
+  }
+
+  // --- provisioning -----------------------------------------------------
+
+  function provision(params) {
+    var nonce = params.get("nonce") || "";
+    var ret = params.get("return") || "";
+    if (window.top !== window) {
+      show("Not available", "This page cannot set up verification inside another page.");
+      return;
+    }
+    if (!/^[0-9a-f]{16,64}$/i.test(nonce) || !RETURN_RE.test(ret)) {
+      show("Not available", "This link is incomplete. Please try again from the TakumiPay app.");
+      return;
+    }
+    show("Setting up verification", "One moment.");
+    var context = randomId();
+    crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign"])
+      .then(function (pair) {
+        return crypto.subtle.exportKey("jwk", pair.publicKey).then(function (jwk) {
+          var pub = { kty: "EC", crv: "P-256", x: jwk.x, y: jwk.y };
+          var rec = { context: context, privateKey: pair.privateKey, publicJwk: pub, createdAt: Date.now() };
+          return putKey(indexedDB, rec).then(function () { return pub; });
+        });
+      })
+      .then(function (pub) {
+        var target = ret + "?nonce=" + encodeURIComponent(nonce) +
+          "&context=" + encodeURIComponent(context) +
+          "&jwk=" + b64urlText(JSON.stringify(pub));
+        show("Verification ready", "Returning to TakumiPay.", "If nothing happens, tap Continue.");
+        var a = document.createElement("a");
+        a.className = "btn";
+        a.href = target;
+        a.textContent = "Continue to TakumiPay";
+        elAction.appendChild(a);
+        // Chrome may require a tap for app links without a gesture; try anyway.
+        setTimeout(function () { window.location.href = target; }, 50);
+      })
+      .catch(function () {
+        show("Something went wrong", "We couldn't set up verification in this browser. Please try again from the TakumiPay app.");
+      });
+  }
+
+  // --- attestation (iframe) --------------------------------------------
+
+  function originAllowed(origin) {
+    if (!origin || origin === "null") return false;
+    if (/^https:\/\/[^/]+$/.test(origin)) return true;
+    // Local development only.
+    return /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+  }
+
+  function signToken(rec, origin, h, context) {
+    var header = { alg: "ES256", typ: "JWT", kid: context };
+    var payload = { typ: TYP, origin: origin, h: h, context: context, iat: Math.floor(Date.now() / 1000) };
+    var input = b64urlText(JSON.stringify(header)) + "." + b64urlText(JSON.stringify(payload));
+    return crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, rec.privateKey, new TextEncoder().encode(input))
+      .then(function (sig) { return input + "." + b64url(sig); });
+  }
+
+  var pendingRequest = null; // { source, origin, h, context }
+
+  function reply(req, data) {
+    try { req.source.postMessage(data, req.origin); } catch (e) { /* frame gone */ }
+  }
+
+  function attest(req, allowPrompt) {
+    return storageFor(allowPrompt).then(function (s) {
+      return getKey(s.idb, req.context).then(function (rec) {
+        if (rec) return { rec: rec };
+        return { rec: null, unpartitioned: s.unpartitioned };
+      });
+    }).then(function (r) {
+      if (!r.rec) {
+        if (r.unpartitioned) {
+          // We looked at first-party storage and there is no such key:
+          // the wallet must provision again.
+          reply(req, { m: "origin-attest-error", error: "unknown_context" });
+          return;
+        }
+        // Partitioned storage: the key exists top-level but we cannot see
+        // it without the Storage Access API, which needs a user gesture.
+        reply(req, { m: "origin-attest-error", error: "storage_access_required" });
+        offerStorageAccess(req);
+        return;
+      }
+      return signToken(r.rec, req.origin, req.h, req.context).then(function (token) {
+        reply(req, token);
+        ui.hidden = true;
+      });
+    }).catch(function () {
+      reply(req, { m: "origin-attest-error", error: "internal" });
+    });
+  }
+
+  function offerStorageAccess(req) {
+    pendingRequest = req;
+    elAction.textContent = "";
+    show("Verify this app with TakumiPay",
+      "Allow TakumiPay to confirm which website is asking to connect.",
+      "Your browser will ask to let takumipay.xyz use its own site data here.");
+    var b = document.createElement("button");
+    b.type = "button";
+    b.textContent = "Verify";
+    b.onclick = function () {
+      b.disabled = true;
+      var r = pendingRequest;
+      if (!r) return;
+      attest(r, true);
+    };
+    elAction.appendChild(b);
+  }
+
+  window.addEventListener("message", function (ev) {
+    var d = ev.data;
+    if (!d || typeof d !== "object" || d.m !== "origin-attest") return;
+    var req = { source: ev.source, origin: ev.origin, h: d.h, context: d.context };
+    if (!originAllowed(ev.origin)) {
+      reply(req, { m: "origin-attest-error", error: "insecure_origin" });
+      return;
+    }
+    if (typeof d.h !== "string" || d.h.length < 40 || d.h.length > 64 ||
+        typeof d.context !== "string" || d.context.length < 8 || d.context.length > 64) {
+      reply(req, { m: "origin-attest-error", error: "bad_request" });
+      return;
+    }
+    attest(req, false);
+  });
+
+  // --- entry ------------------------------------------------------------
+
+  var params = new URLSearchParams(window.location.search);
+  var mode = params.get("m");
+  if (mode === "provision") {
+    provision(params);
+  } else if (window.top === window) {
+    show("TakumiPay verification",
+      "This page is used by the TakumiPay app to verify web apps. There is nothing to do here.");
+  }
+  // In an iframe with no mode, stay blank and wait for a message.
+})();
+</script>
+</body>
+</html>

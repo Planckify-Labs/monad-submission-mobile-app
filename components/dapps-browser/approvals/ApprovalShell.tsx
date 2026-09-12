@@ -1,6 +1,7 @@
-import { Globe, ShieldCheck, Sparkles } from "lucide-react-native";
+import { Globe, Link2, ShieldCheck, Sparkles } from "lucide-react-native";
 import React from "react";
 import { Text, TouchableOpacity, View } from "react-native";
+import { describeOrigin } from "@/components/deeplinks/originDisplay";
 import type { ApprovalIntent } from "@/services/bridge/approval";
 import { getDappBridge } from "@/services/bridge/DappBridge";
 import { InspectorRegistry } from "@/services/bridge/inspector";
@@ -42,13 +43,13 @@ export function ApprovalShell({
   // a wallet line — that case is a genuine bug in the dispatch path
   // and should be visible, not papered over by the global active row.
   const signingWallet = intent.wallet;
-  const isSecure = intent.origin.url.startsWith("https://");
-  let host = intent.origin.url;
-  try {
-    host = new URL(intent.origin.url).hostname;
-  } catch {
-    // keep raw url as fallback
-  }
+  // Deep-link spec §11: external transports carry a transport key in
+  // `origin.url` and the peer's human URL in `displayUrl`; the padlock
+  // must not read the key's scheme as "insecure".
+  const originInfo = describeOrigin(intent.origin);
+  const host = originInfo.host;
+  const isSecure = originInfo.security === "secure";
+  const isLink = originInfo.security === "link";
 
   const onDemandInspectors = InspectorRegistry.list("on-demand").filter(
     (i) => !i.namespaces || i.namespaces.includes(intent.namespace),
@@ -88,11 +89,17 @@ export function ApprovalShell({
           </Text>
         )}
         <View className="flex-row items-center mt-2">
-          <Globe size={14} color={isSecure ? "#059669" : "#ea580c"} />
+          {isLink ? (
+            <Link2 size={14} color="#6b7280" />
+          ) : (
+            <Globe size={14} color={isSecure ? "#059669" : "#ea580c"} />
+          )}
           <Text className="ml-1 text-xs text-gray-600 flex-1" numberOfLines={1}>
             {host}
           </Text>
-          {isSecure ? (
+          {isLink ? (
+            <Text className="text-xs text-gray-500">{originInfo.viaLabel}</Text>
+          ) : isSecure ? (
             <ShieldCheck size={12} color="#059669" />
           ) : (
             <Text className="text-xs text-orange-600">insecure</Text>

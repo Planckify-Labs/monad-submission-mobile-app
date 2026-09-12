@@ -118,3 +118,41 @@ export function accountToCaip10(
 ): string {
   return `${namespaceToCaip2(namespace, chainId)}:${address}`;
 }
+
+// ── Solana CAIP-2 references (deep-link spec §7.3) ────────────────────
+//
+// The CAIP-2 `solana` namespace uses `truncate(genesisHash, 32)` as the
+// reference (ChainAgnostic `solana/caip2.md`), and that is what AppKit /
+// WalletConnect dApps send. The app's internal keys (`solana:mainnet`,
+// MWA style, `PermissionStore`) are an alias. Both forms are accepted on
+// input; the kit emits the genesis-hash form on the wire.
+
+export const SOLANA_GENESIS_REFS = {
+  "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdp",
+  devnet: "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+  testnet: "4uhcVJyU9pJkvQyS88uRDiswHXSCkY3z",
+} as const;
+
+export type SolanaWcCluster = keyof typeof SOLANA_GENESIS_REFS;
+
+/** Cluster → WalletConnect CAIP-2 (`solana:<genesis prefix>`). */
+export function solanaClusterToWcCaip2(cluster: SolanaWcCluster): string {
+  return `solana:${SOLANA_GENESIS_REFS[cluster]}`;
+}
+
+/**
+ * Any accepted `solana:*` CAIP-2 form → cluster. Accepts the genesis-hash
+ * references, the app's `mainnet|devnet|testnet` aliases, and the legacy
+ * `mainnet-beta`. `null` for anything else.
+ */
+export function wcCaip2ToSolanaCluster(caip2: string): SolanaWcCluster | null {
+  const [ns, ref] = caip2.split(":");
+  if (ns !== "solana" || !ref) return null;
+  for (const [cluster, genesis] of Object.entries(SOLANA_GENESIS_REFS)) {
+    if (ref === genesis) return cluster as SolanaWcCluster;
+  }
+  if (ref === "mainnet" || ref === "mainnet-beta") return "mainnet-beta";
+  if (ref === "devnet") return "devnet";
+  if (ref === "testnet") return "testnet";
+  return null;
+}

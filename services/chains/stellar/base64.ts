@@ -31,3 +31,18 @@ export function bytesToBase64(bytes: Uint8Array): string {
   }
   return Buffer.from(bytes).toString("base64");
 }
+
+/**
+ * Inverse of {@link bytesToBase64} — `atob` on RN/Hermes, `Buffer` under
+ * Node. Throws on malformed input (callers map that to their own typed
+ * "malformed" outcome).
+ */
+export function base64ToBytes(b64: string): Uint8Array {
+  if (typeof atob === "function") {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  }
+  return new Uint8Array(Buffer.from(b64, "base64"));
+}

@@ -205,6 +205,13 @@ export type SolanaSignTxPayload = {
   /** base64 wire-format tx — primary source of truth. */
   transaction: string;
   options?: SolanaSendOptions;
+  /**
+   * Free text supplied by a Solana Pay transaction-request server
+   * (`message` in the POST response). Attacker-controlled: the sheet
+   * renders it in a separate "from the link" block, never as the
+   * counterparty label (deep-link spec D-13).
+   */
+  linkMessage?: string;
   simulation?: SolanaSimulationSummary;
   decoded?: SolanaDecodedInstruction[];
   /**

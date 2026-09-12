@@ -38,7 +38,7 @@ export interface AgentIntentContext {
     url: string;
     host?: string;
     title?: string;
-    via?: "webview" | "agent";
+    via?: "webview" | "agent" | "deeplink" | "walletconnect" | "mwa";
   };
   /** Annotations attached by the auto-pipeline (SIWS, simulation, decoder). */
   annotations: Array<{

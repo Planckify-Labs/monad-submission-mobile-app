@@ -64,7 +64,7 @@ const parseChainId = (raw: string): number | undefined => {
   }
 };
 
-const parseEthereum = (raw: RawScan): PayChannel | null => {
+export const parseEthereum = (raw: RawScan): PayChannel | null => {
   // Strip `ethereum:` (case-sensitive per EIP-681).
   const body = raw.slice("ethereum:".length);
   if (body === "") return null;
@@ -138,7 +138,7 @@ const parseEthereum = (raw: RawScan): PayChannel | null => {
   return channel;
 };
 
-const parseSolana = (raw: RawScan): PayChannel | null => {
+export const parseSolana = (raw: RawScan): PayChannel | null => {
   const body = raw.slice("solana:".length);
   if (body === "") return null;
 
@@ -161,6 +161,10 @@ const parseSolana = (raw: RawScan): PayChannel | null => {
   if (amountRaw !== null && amountRaw !== "" && !amountRaw.includes(".")) {
     amount = parseBigIntOrUndefined(amountRaw);
   }
+  // Human-unit spelling for the deep-link builder / interstitial — the
+  // QR path keeps its existing behaviour (`amount` only when integral).
+  const amountDecimal =
+    amountRaw !== null && amountRaw !== "" ? amountRaw : undefined;
 
   const token = params.get("spl-token") ?? undefined;
 
@@ -175,6 +179,7 @@ const parseSolana = (raw: RawScan): PayChannel | null => {
     target: { namespace: "solana", cluster },
   };
   if (amount !== undefined) channel.amount = amount;
+  if (amountDecimal !== undefined) channel.amountDecimal = amountDecimal;
   if (token !== undefined) channel.token = token;
 
   return channel;

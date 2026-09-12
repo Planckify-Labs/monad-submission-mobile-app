@@ -218,7 +218,7 @@ export function SolanaTransactionSheet({
       onDismiss={() => onDecision({ id: intent.id, outcome: "reject" })}
     >
       <ApprovalShell intent={intent} title="Approve Solana transaction">
-        <RiskBanner annotations={intent.annotations} />
+        <RiskBanner annotations={intent.annotations} showProvenance={false} />
         <ScrollView className="flex-1">
           <View className="flex-row items-center mb-3">
             <View className="px-2 py-0.5 rounded-full bg-violet-100">
@@ -237,6 +237,21 @@ export function SolanaTransactionSheet({
               </Text>
             </View>
           </View>
+          {p.linkMessage ? (
+            // Deep-link spec D-13: text a Solana Pay server sent with the
+            // transaction. Shown apart, labelled, never as the counterparty.
+            <View className="bg-amber-50 border border-amber-200 rounded-xl p-3 mb-3">
+              <Text className="text-xs text-amber-900/70 mb-1">
+                Message from the request (not verified)
+              </Text>
+              <Text
+                className="text-sm text-amber-900"
+                style={{ fontFamily: "monospace" }}
+              >
+                {p.linkMessage}
+              </Text>
+            </View>
+          ) : null}
           <View className="bg-gray-50 rounded-xl p-3">
             <Text className="text-xs text-gray-500">Fee payer</Text>
             <Text className="text-sm text-gray-900 mb-2" selectable>

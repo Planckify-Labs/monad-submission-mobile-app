@@ -14,15 +14,31 @@ function djb2Hex(input: string): string {
   );
 }
 
+// No `new URL` here. React Native's `URL` is a regex shim whose
+// `hostname` / `host` only match `https?://` — every other scheme reads
+// back as an empty host, which would collapse all transport-prefixed
+// origin keys (`wc+https://…`, `mwa+unverified://…`, deep-link spec §4.9)
+// into one grant bucket on device while passing under Node. Explicit
+// parsing keeps the same output for http(s) and defined output for the
+// rest (`feedback_rn_url_is_regex_shim`).
+const AUTHORITY_RE =
+  /^([a-z][a-z0-9+.-]*):\/\/(?:[^@/?#]*@)?([^:/?#]+)(?::(\d+))?/i;
+
+/**
+ * Origin keys produced by `services/deeplinks/originKey.ts` carry a
+ * transport prefix and are already canonical; they are returned verbatim
+ * so the pairing topic / package segment is never normalised away.
+ */
+const TRANSPORT_KEY_RE = /^(wc|mwa|ul|sep7)\+[a-z]+:\/\//i;
+
 export function originKey(url: string): string {
-  try {
-    const u = new URL(url);
-    const host = u.hostname.toLowerCase().replace(/\.$/, "");
-    const port = u.port ? `:${u.port}` : "";
-    return `${u.protocol}//${host}${port}`;
-  } catch {
-    return url.toLowerCase();
-  }
+  if (TRANSPORT_KEY_RE.test(url)) return url;
+  const m = AUTHORITY_RE.exec(url);
+  if (!m) return url.toLowerCase();
+  const scheme = m[1].toLowerCase();
+  const host = m[2].toLowerCase().replace(/\.$/, "");
+  const port = m[3] ? `:${m[3]}` : "";
+  return `${scheme}://${host}${port}`;
 }
 
 export function hashOrigin(url: string): string {
@@ -30,11 +46,9 @@ export function hashOrigin(url: string): string {
 }
 
 export function originHost(url: string): string {
-  try {
-    return new URL(url).hostname.toLowerCase().replace(/\.$/, "");
-  } catch {
-    return url.toLowerCase();
-  }
+  const m = AUTHORITY_RE.exec(url);
+  if (!m) return url.toLowerCase();
+  return m[2].toLowerCase().replace(/\.$/, "");
 }
 
 export function caip2(namespace: string, reference: string | number): string {

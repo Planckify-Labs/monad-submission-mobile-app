@@ -59,3 +59,28 @@ describe("caip2 / caip10", () => {
     assert.equal(caip10("eip155", 1, "0xabc"), "eip155:1:0xabc");
   });
 });
+
+describe("originKey — transport-prefixed keys (deep-link spec §4.9)", () => {
+  it("returns WalletConnect / MWA / ul / sep7 keys verbatim", () => {
+    for (const k of [
+      "wc+https://abc123.app.uniswap.org",
+      "wc+unverified://abc123",
+      "mwa+https://dapp.example#com.example.dapp",
+      "mwa+unverified://deadbeef",
+      "ul+unverified://Gspcn…",
+      "sep7+https://shop.example",
+    ]) {
+      assert.equal(originKey(k), k);
+    }
+  });
+  it("never collides a transport key with the page origin it names", () => {
+    assert.notEqual(
+      originKey("wc+https://abc.app.uniswap.org"),
+      originKey("https://app.uniswap.org"),
+    );
+  });
+  it("gives non-http schemes a real host (RN URL shim regression)", () => {
+    assert.equal(originKey("link://solana-pay"), "link://solana-pay");
+    assert.equal(originHost("link://solana-pay"), "solana-pay");
+  });
+});

@@ -70,6 +70,33 @@ import "./node_modules/viem/node_modules/ox/_esm/core/Hex.js";
 import "./node_modules/viem/node_modules/ox/_esm/core/Bytes.js";
 import "./node_modules/viem/node_modules/ox/_esm/core/Base58.js";
 import "./node_modules/viem/node_modules/ox/_esm/core/Base64.js";
+// Third ox copy: `@metamask/smart-accounts-kit` pins 0.8.1 and, since the
+// WalletConnect install (`@walletconnect/utils` pins 0.9.3, which is now
+// the hoisted copy), it lives nested under its own package.
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Hex.js";
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Bytes.js";
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Base58.js";
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Base64.js";
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Hex.js";
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Bytes.js";
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Base58.js";
+import "./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Base64.js";
+// WalletConnect stack (deep-link spec §7.1, gate 00-C). `uint8arrays`
+// exports `toString`, `multiformats` exports `toString` from its bytes
+// helper, and `es-toolkit`'s lodash-compat layer exports `toString`. All
+// three reach the app through `@walletconnect/{core,utils,relay-auth}`.
+// Both builds, by exact path, same rules as ox above.
+import "./node_modules/uint8arrays/cjs/src/to-string.js";
+import "./node_modules/uint8arrays/cjs/src/index.js";
+import "./node_modules/uint8arrays/esm/src/to-string.js";
+import "./node_modules/multiformats/cjs/src/bytes.js";
+import "./node_modules/multiformats/esm/src/bytes.js";
+import "./node_modules/es-toolkit/dist/compat/util/toString.js";
+import "./node_modules/es-toolkit/dist/compat/util/toString.mjs";
+import "./node_modules/es-toolkit/dist/compat/compat.js";
+import "./node_modules/es-toolkit/dist/compat/compat.mjs";
+import "./node_modules/es-toolkit/dist/compat/index.js";
+import "./node_modules/es-toolkit/dist/compat/index.mjs";
 
 // Native-JSI crypto — replaces the pure-JS fallbacks viem / @scure / @noble
 // use (secp256k1, sha256, keccak256, pbkdf2, HMAC, etc.) with C++ via JSI.
@@ -353,6 +380,90 @@ if (__DEV__) {
     [
       "viem>ox/_esm/Base64",
       () => require("./node_modules/viem/node_modules/ox/_esm/core/Base64.js"),
+    ],
+    [
+      "sak/ox/_cjs/Hex",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Hex.js"),
+    ],
+    [
+      "sak/ox/_cjs/Bytes",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Bytes.js"),
+    ],
+    [
+      "sak/ox/_cjs/Base58",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Base58.js"),
+    ],
+    [
+      "sak/ox/_cjs/Base64",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_cjs/core/Base64.js"),
+    ],
+    [
+      "sak/ox/_esm/Hex",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Hex.js"),
+    ],
+    [
+      "sak/ox/_esm/Bytes",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Bytes.js"),
+    ],
+    [
+      "sak/ox/_esm/Base58",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Base58.js"),
+    ],
+    [
+      "sak/ox/_esm/Base64",
+      () =>
+        require("./node_modules/@metamask/smart-accounts-kit/node_modules/ox/_esm/core/Base64.js"),
+    ],
+    [
+      "uint8arrays/cjs/to-string",
+      () => require("./node_modules/uint8arrays/cjs/src/to-string.js"),
+    ],
+    [
+      "uint8arrays/cjs/index",
+      () => require("./node_modules/uint8arrays/cjs/src/index.js"),
+    ],
+    [
+      "uint8arrays/esm/to-string",
+      () => require("./node_modules/uint8arrays/esm/src/to-string.js"),
+    ],
+    [
+      "multiformats/cjs/bytes",
+      () => require("./node_modules/multiformats/cjs/src/bytes.js"),
+    ],
+    [
+      "multiformats/esm/bytes",
+      () => require("./node_modules/multiformats/esm/src/bytes.js"),
+    ],
+    [
+      "es-toolkit/compat/toString.js",
+      () => require("./node_modules/es-toolkit/dist/compat/util/toString.js"),
+    ],
+    [
+      "es-toolkit/compat/toString.mjs",
+      () => require("./node_modules/es-toolkit/dist/compat/util/toString.mjs"),
+    ],
+    [
+      "es-toolkit/compat/compat.js",
+      () => require("./node_modules/es-toolkit/dist/compat/compat.js"),
+    ],
+    [
+      "es-toolkit/compat/compat.mjs",
+      () => require("./node_modules/es-toolkit/dist/compat/compat.mjs"),
+    ],
+    [
+      "es-toolkit/compat/index.js",
+      () => require("./node_modules/es-toolkit/dist/compat/index.js"),
+    ],
+    [
+      "es-toolkit/compat/index.mjs",
+      () => require("./node_modules/es-toolkit/dist/compat/index.mjs"),
     ],
     ["bn.js", () => require("bn.js")],
     ["posthog-react-native", () => require("posthog-react-native")],

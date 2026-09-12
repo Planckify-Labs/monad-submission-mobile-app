@@ -58,6 +58,7 @@ const ANDROID_PAYOUT_CHANNEL_ID = "payouts";
 const ANDROID_POINTS_CHANNEL_ID = "points";
 const ANDROID_STRATEGIES_CHANNEL_ID = "strategies";
 const ANDROID_TRANSFERS_CHANNEL_ID = "transfers";
+const ANDROID_DAPP_REQUESTS_CHANNEL_ID = "dapp-requests";
 
 /**
  * Register the Android notification channel for payout receipts. No-op
@@ -123,6 +124,33 @@ export async function registerAndroidStrategiesChannel(): Promise<void> {
 }
 
 /**
+ * Register the Android notification channel for connected-app requests
+ * that arrive while the app is closed (the WalletConnect push server in
+ * the API sends `channelId: "dapp-requests"`). No-op on iOS.
+ */
+export async function registerAndroidDappRequestsChannel(): Promise<void> {
+  if (Platform.OS !== "android") return;
+  try {
+    await Notifications.setNotificationChannelAsync(
+      ANDROID_DAPP_REQUESTS_CHANNEL_ID,
+      {
+        name: "Connected app requests",
+        importance: Notifications.AndroidImportance.HIGH,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: "#c71c4b",
+        description:
+          "When an app connected through WalletConnect sends a request while TakumiPay is closed.",
+      },
+    );
+  } catch (err) {
+    console.warn(
+      "[push] failed to register Android dapp-requests channel:",
+      err,
+    );
+  }
+}
+
+/**
  * Register the Android notification channel for incoming transfers
  * (`TransactionsService.create` sends `channelId: "transfers"` when a
  * TRANSFER-type transaction names this device's wallet as recipient).
@@ -168,6 +196,7 @@ export async function registerForPushNotifications(
   await registerAndroidPointsChannel();
   await registerAndroidStrategiesChannel();
   await registerAndroidTransfersChannel();
+  await registerAndroidDappRequestsChannel();
 
   if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) {
     console.log("[push] skipping registration in Expo Go");

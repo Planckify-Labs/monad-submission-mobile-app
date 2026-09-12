@@ -7,6 +7,10 @@ import type {
   Namespace,
   Origin,
 } from "@/services/chains/types";
+import type {
+  ExternalApprovalDraft,
+  Provenance,
+} from "@/services/deeplinks/types";
 import { originKey } from "@/services/permissions/caip";
 import {
   namespaceForChainKey,
@@ -35,6 +39,14 @@ interface InFlight {
   namespace: Namespace;
   method: string;
   startedAt: number;
+  /**
+   * `webview` entries are answered by posting into the page (their
+   * `resolve` IS `postResult`); `external` entries (agent, deep link,
+   * WalletConnect, MWA) are answered by settling the caller's promise.
+   * Before this discriminator existed `submitAgentIntent`'s promise never
+   * settled at all — `postResult` only ever posted to the WebView.
+   */
+  channel: "webview" | "external";
 }
 
 export type ContextProvider = () => AdapterContext;
@@ -185,6 +197,7 @@ export class DappBridge {
       namespace,
       method,
       startedAt,
+      channel: "webview",
     });
 
     bridgeEventBus.emit({
@@ -484,39 +497,193 @@ export class DappBridge {
 
   /**
    * Agent entry — lets the agent submit its own intent through the same
-   * pipeline. Returns the terminal decision.
+   * pipeline. Returns the terminal decision. A one-line wrapper over
+   * `submitPreparedIntent` with `via: "agent"`.
    */
   async submitAgentIntent(
     intent: Omit<ApprovalIntent, "annotations"> & {
       annotations?: ApprovalIntent["annotations"];
     },
-  ): Promise<{ result?: unknown; error?: { code: number; message: string } }> {
-    const agentOrigin: Origin = {
-      ...intent.origin,
-      via: "agent",
+  ): Promise<ExternalSubmitResult> {
+    return this.submitPreparedIntent(
+      { ...intent, annotations: intent.annotations ?? [] },
+      "agent",
+    );
+  }
+
+  /**
+   * External-transport entry (deep links, WalletConnect, MWA, encrypted
+   * links) — spec deeplink §4.6. Stamps `id`, `createdAt`, `annotations`
+   * and a `link_provenance` annotation so every sheet renders the
+   * provenance banner through the existing `RiskBanner` path with zero
+   * per-sheet code. Resolves with the terminal value or a JSON-RPC-shaped
+   * error; never throws.
+   *
+   * Invariant S-4: `intent.wallet` is the transport-bound wallet. The
+   * caller binds it (§4.7); this method never reads the home-screen
+   * active wallet.
+   */
+  async submitExternalIntent(
+    draft: ExternalApprovalDraft,
+    via: "deeplink" | "walletconnect" | "mwa",
+    opts?: { id?: string },
+  ): Promise<ExternalSubmitResult> {
+    const id =
+      opts?.id ??
+      `${via}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const { provenance, returnChannel: _rc, ...rest } = draft;
+    const intent: ApprovalIntent = {
+      ...rest,
+      id,
+      createdAt: Date.now(),
+      annotations: [provenanceAnnotation(provenance)],
     };
-    const fullIntent: ApprovalIntent = {
-      ...intent,
-      annotations: intent.annotations ?? [],
-      origin: agentOrigin,
-    };
+    return this.submitPreparedIntent(intent, via);
+  }
+
+  /**
+   * Class-C entry — spec deeplink §4.6. Runs the same gates as the WebView
+   * `dispatch` (hard-reject methods, flagged origins) and then the chain
+   * adapter's `handleRequest`; a `needs-approval` result enqueues exactly
+   * like the WebView path. The WebView-only steps (top-origin pin, session
+   * nonce ring, post-decision injection) are skipped: `getWebView()`
+   * returns `null` at the root and every injection helper is null-safe.
+   *
+   * `ctx.activeWallet` is forced to `null` and the transport-bound wallet
+   * is stamped as the origin's grant instead (§4.6, D-12): an unbound
+   * external request can only ever produce a `connect` sheet.
+   */
+  async dispatchExternal(args: {
+    namespace: Namespace;
+    method: string;
+    params: unknown;
+    origin: Origin;
+    via: "walletconnect" | "mwa" | "deeplink";
+    id?: string;
+    /** CAIP-2 / per-adapter chain selection for this request, if any. */
+    chainOverride?: unknown;
+    provenance?: Provenance;
+  }): Promise<ExternalSubmitResult> {
+    const id =
+      args.id ??
+      `${args.via}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const origin: Origin = { ...args.origin, via: args.via };
+    const adapter = ChainAdapterRegistry.get(args.namespace);
+    if (!adapter) {
+      return {
+        error: {
+          code: 4200,
+          message: `namespace ${args.namespace} not supported`,
+        },
+      };
+    }
+    return new Promise<ExternalSubmitResult>((resolve) => {
+      const startedAt = Date.now();
+      this.inFlight.set(id, {
+        resolve: (value) => resolve({ result: value }),
+        reject: (code, message) => resolve({ error: { code, message } }),
+        origin,
+        namespace: args.namespace,
+        method: args.method,
+        startedAt,
+        channel: "external",
+      });
+      bridgeEventBus.emit({
+        kind: "request",
+        at: startedAt,
+        id,
+        namespace: args.namespace,
+        method: args.method,
+        origin,
+        params: redactParams(args.method, args.params),
+      });
+
+      if (HARD_REJECT_METHODS.has(args.method)) {
+        this.postError(
+          id,
+          4200,
+          `${args.method} is deprecated and unsupported`,
+        );
+        return;
+      }
+      if (
+        SIGNATURE_PRODUCING_METHODS.has(args.method) &&
+        isFlaggedHost(origin.url)
+      ) {
+        this.postError(id, 4001, "Request blocked by wallet policy");
+        return;
+      }
+
+      void (async () => {
+        try {
+          const base = this.opts.getContext();
+          const ctx: AdapterContext = {
+            ...base,
+            // S-4: never the home-screen wallet on an external path.
+            activeWallet: null,
+            chainOverride: args.chainOverride ?? base.chainOverride,
+          };
+          if (__DEV__ && ctx.activeWallet !== null) {
+            throw new Error("[bridge] external ctx.activeWallet must be null");
+          }
+          const req: ChainRequest = {
+            id,
+            namespace: args.namespace,
+            method: args.method,
+            params: args.params,
+            origin,
+          };
+          const result = await adapter.handleRequest(req, ctx);
+          if (result.status === "resolved") {
+            this.postResult(id, result.value);
+            return;
+          }
+          if (result.status === "error") {
+            this.postError(id, result.code, result.message, result.data);
+            return;
+          }
+          const intent: ApprovalIntent = args.provenance
+            ? {
+                ...result.intent,
+                annotations: [
+                  provenanceAnnotation(args.provenance),
+                  ...result.intent.annotations,
+                ],
+              }
+            : result.intent;
+          await this.enqueue(intent);
+        } catch (e) {
+          const { code, message, data } = toRpcErrorPayload(e);
+          this.postError(id, code, message, data);
+        }
+      })();
+    });
+  }
+
+  private submitPreparedIntent(
+    intent: ApprovalIntent,
+    via: NonNullable<Origin["via"]>,
+  ): Promise<ExternalSubmitResult> {
+    const stampedOrigin: Origin = { ...intent.origin, via };
+    const fullIntent: ApprovalIntent = { ...intent, origin: stampedOrigin };
     return new Promise((resolve) => {
       this.inFlight.set(intent.id, {
         resolve: (value) => resolve({ result: value }),
         reject: (code, message) => resolve({ error: { code, message } }),
-        origin: agentOrigin,
+        origin: stampedOrigin,
         namespace: intent.namespace,
-        method: `agent:${intent.kind}`,
+        method: `${via}:${intent.kind}`,
         startedAt: Date.now(),
+        channel: "external",
       });
       bridgeEventBus.emit({
         kind: "request",
         at: Date.now(),
         id: intent.id,
         namespace: intent.namespace,
-        method: `agent:${intent.kind}`,
-        origin: agentOrigin,
-        params: redactParams("agent", intent.payload),
+        method: `${via}:${intent.kind}`,
+        origin: stampedOrigin,
+        params: redactParams(via, intent.payload),
       });
       void this.enqueue(fullIntent);
     });
@@ -716,7 +883,13 @@ export class DappBridge {
       return;
     }
     try {
-      const value = await adapter.executeApproval(intent, decision, ctx);
+      const value = await adapter.executeApproval(
+        intent,
+        decision,
+        // S-4: an external intent executes against its bound wallet only;
+        // the adapter must never see the home-screen active wallet here.
+        isExternalVia(intent.origin.via) ? { ...ctx, activeWallet: null } : ctx,
+      );
       pendingIntentsStore.remove(id);
       this.postResult(id, value);
       // Push post-decision provider state into the WebView. For connect
@@ -726,7 +899,11 @@ export class DappBridge {
       // OLD address and the dApp would never see `accountsChanged`. The
       // fresh-ctx onStateChange path still runs a tick later to cover
       // chain changes that flow through app-level state.
-      this.pushPostDecisionUpdate(intent, value, adapter);
+      // Only a WebView page has an injected provider to update; external
+      // transports answer on their own channel (`inFlight.resolve`).
+      if (!isExternalVia(intent.origin.via)) {
+        this.pushPostDecisionUpdate(intent, value, adapter);
+      }
     } catch (e) {
       pendingIntentsStore.remove(id);
       const { code, message, data } = toRpcErrorPayload(e);
@@ -745,6 +922,11 @@ export class DappBridge {
         ok: true,
         value,
       });
+    }
+    if (inflight?.channel === "external") {
+      // Settle the caller's promise; there is no page to post into.
+      inflight.resolve(value);
+      return;
     }
     this.post({ type: "bridge_response", id, result: value, error: null });
   }
@@ -766,6 +948,10 @@ export class DappBridge {
         error: { code, message },
       });
     }
+    if (inflight?.channel === "external") {
+      inflight.reject(code, message, data);
+      return;
+    }
     this.post({
       type: "bridge_response",
       id,
@@ -786,6 +972,66 @@ export class DappBridge {
       true;
     `);
   }
+}
+
+export type ExternalSubmitResult = {
+  result?: unknown;
+  error?: { code: number; message: string };
+};
+
+function isExternalVia(via: Origin["via"]): boolean {
+  return via === "deeplink" || via === "walletconnect" || via === "mwa";
+}
+
+/**
+ * The `link_provenance` annotation every externally-originated intent
+ * carries (S-3). `RiskBanner` renders it through `ProvenanceBanner`; the
+ * severity drives the banner colour, the `data` drives its content.
+ */
+export function provenanceAnnotation(
+  provenance: Provenance,
+): ApprovalIntent["annotations"][number] {
+  const v = provenance.verification;
+  let severity: "info" | "warn" | "danger" = "info";
+  let title = "Opened from a verified link";
+  if (v.kind === "none") {
+    severity = "warn";
+    title = "Unverified sender";
+  } else if (v.kind === "failed") {
+    severity = "danger";
+    title = "Verification failed";
+  } else if (v.kind === "wc-verify") {
+    if (v.isScam) {
+      severity = "danger";
+      title = "Flagged as malicious";
+    } else if (v.validation === "INVALID") {
+      severity = "danger";
+      title = "App domain does not match";
+    } else if (v.validation === "UNKNOWN") {
+      severity = "warn";
+      title = "Unverified app";
+    } else {
+      title = "Verified app";
+    }
+  } else if (v.kind === "sep7-signature") {
+    title = `Signed by ${v.domain}`;
+  } else if (v.kind === "digital-asset-links") {
+    title = "Verified app";
+  } else if (v.kind === "origin-attestation") {
+    title = "Verified web app";
+  } else if (v.kind === "universal-link") {
+    title = "Opened through the wallet's verified link";
+  }
+  return {
+    code: "link_provenance",
+    severity,
+    title,
+    detail: provenance.firstSeen
+      ? "First time connecting to this sender."
+      : undefined,
+    source: "local",
+    data: provenance,
+  };
 }
 
 function parseMessage(raw: unknown): {

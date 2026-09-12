@@ -121,14 +121,15 @@ wallet vulnerability classes. Scope: `mobile-app`, `agent-api`, `api`.
 
 ### Residual / latent (no live exploit; track)
 
-- **`inspectDeeplink` (the TWV-2026-024 mandatory-preview gate) is not wired
-  in.** It is referenced only by its own test. The production `handleDeepLink`
-  (which would `router.push("/send", { to, amount })`) is itself unwired, and
-  the live listener only opens dApp URLs — so there is no live bypass today.
-  BUT if anyone later wires `handleDeepLink`, its `send` branch would prefill
-  the send form from an untrusted link WITHOUT the gate's preview/warning.
-  Action when that day comes: route `handleDeepLink` through `inspectDeeplink`
-  first. Left as-is now rather than editing dead code blind.
+- ~~**`inspectDeeplink` (the TWV-2026-024 mandatory-preview gate) is not wired
+  in.**~~ **Closed 2026-09-11** by `docs/deeplink-wallet-interactions-spec.md`
+  (Phase 0): `handleDeepLink` and its direct `/send` push are deleted;
+  every native URL now passes through `app/+native-intent.tsx` →
+  `services/deeplinks/intake.ts`, which applies the gate's policies
+  (verified host, seed-material denylist scoped per F4) and routes
+  anything that carries intent to the `/link-inbox` interstitial. The
+  file routes themselves (`/send?recipientAddress=…` included) are no
+  longer reachable by URL at all (invariant S-2, `intake.test.ts`).
 - x402 silent path, 6 s run-down, and truncated-address phishing — unchanged
   from the notes above; all bounded, all product decisions.
 

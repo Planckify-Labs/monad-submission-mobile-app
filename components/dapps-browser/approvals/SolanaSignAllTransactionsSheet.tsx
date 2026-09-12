@@ -109,7 +109,7 @@ export function SolanaSignAllTransactionsSheet({
       onDismiss={() => onDecision({ id: intent.id, outcome: "reject" })}
     >
       <ApprovalShell intent={intent} title={`Sign ${n} transactions`}>
-        <RiskBanner annotations={intent.annotations} />
+        <RiskBanner annotations={intent.annotations} showProvenance={false} />
         <View className="flex-row items-center mb-3">
           <View className="px-2 py-0.5 rounded-full bg-violet-100">
             <Text className="text-xs font-medium text-violet-700">

@@ -2,6 +2,7 @@ import React from "react";
 import { ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import ConnectedSitesList from "@/components/dapps-browser/connections/ConnectedSitesList";
+import { TransportSessionsSection } from "@/components/deeplinks/TransportSessionsSection";
 import { useDappConnections } from "@/hooks/useDappConnections";
 import { useWallet } from "@/hooks/useWallet";
 
@@ -25,15 +26,21 @@ export default function DappPermissions(): React.ReactElement {
           dApp permissions
         </Text>
         <Text className="text-xs text-gray-500 mt-1">
-          Sites you&apos;ve connected your wallet to.
+          Sites and apps you&apos;ve connected your wallet to.
         </Text>
       </View>
       <ScrollView className="flex-1 px-4 py-3">
+        {/* Deep-link spec §7.6: WalletConnect / MWA / app-link sessions. */}
+        <TransportSessionsSection />
         <ConnectedSitesList
           sites={sites}
           pending={EMPTY_PENDING}
-          onDisconnectWallet={(origin, address) =>
-            void disconnectWallet({ origin, address })
+          onDisconnectWallet={(origin, wallet) =>
+            void disconnectWallet({
+              origin,
+              address: wallet.address,
+              via: wallet.via,
+            })
           }
           onDisconnectSite={(origin) => void disconnectSite({ origin })}
           emptyLabel="No connected sites yet."

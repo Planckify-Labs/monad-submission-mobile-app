@@ -102,8 +102,10 @@ export default function ConnectionManagerSheet({
   );
 
   const onDisconnectWallet = useCallback(
-    (origin: string, address: string) =>
-      runDisconnect([address], () => disconnectWallet({ origin, address })),
+    (origin: string, wallet: DappConnectionWallet) =>
+      runDisconnect([wallet.address], () =>
+        disconnectWallet({ origin, address: wallet.address, via: wallet.via }),
+      ),
     [runDisconnect, disconnectWallet],
   );
 
@@ -365,7 +367,7 @@ function DappWalletsBody({
   connectedWallets: DappConnectionWallet[];
   otherWallets: DappConnectionWallet[];
   pending: Set<string>;
-  onDisconnectWallet: (origin: string, address: string) => void;
+  onDisconnectWallet: (origin: string, wallet: DappConnectionWallet) => void;
   onDisconnectSite: (origin: string, addresses: string[]) => void;
   accountGroups: WalletAccountGroup[];
   isExpanded: (accountId: string) => boolean;
@@ -403,12 +405,12 @@ function DappWalletsBody({
           <View className="bg-light rounded-2xl px-4">
             {connectedWallets.map((w, i) => (
               <ConnectedWalletRow
-                key={w.address}
+                key={`${w.via?.sessionId ?? "webview"}-${w.address}`}
                 wallet={w}
                 divider={i > 0}
                 action={{
                   type: "disconnect",
-                  onPress: () => onDisconnectWallet(origin, w.address),
+                  onPress: () => onDisconnectWallet(origin, w),
                   pending: pending.has(w.address.toLowerCase()),
                 }}
               />
@@ -519,7 +521,7 @@ function SitesBody({
 }: {
   sites: ReturnType<typeof useDappConnections>["sites"];
   pending: Set<string>;
-  onDisconnectWallet: (origin: string, address: string) => void;
+  onDisconnectWallet: (origin: string, wallet: DappConnectionWallet) => void;
   onDisconnectSite: (origin: string, addresses: string[]) => void;
   onVisitSite?: (origin: string) => void;
 }) {

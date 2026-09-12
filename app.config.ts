@@ -56,7 +56,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   orientation: "portrait",
   icon: "./assets/images/takumipay-logo.png",
-  scheme: getScheme(),
+  // Deep-link wallet interactions (docs/deeplink-wallet-interactions-spec.md
+  // §12). Our own scheme plus the chain-native and WalletConnect schemes
+  // every ecosystem emits. Custom schemes are contended on both OSes and
+  // are accepted as *input* only: every link goes through
+  // `app/+native-intent.tsx` → the intake pipeline → the interstitial,
+  // never straight to a screen. `solana-wallet` (MWA) is Android-only and
+  // owned by `./plugins/withSolanaMobileWalletAdapter` (dedicated
+  // activity), not listed here.
+  scheme: [getScheme(), "ethereum", "solana", "sui", "web+stellar", "wc"],
   userInterfaceStyle: "automatic",
   jsEngine: "hermes",
   newArchEnabled: true,
@@ -75,6 +83,12 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // `https://takumipay.xyz/.well-known/apple-app-site-association`
     // verifies this app as the sole opener for `https://takumipay.xyz/*`.
     associatedDomains: ["applinks:takumipay.xyz"],
+    infoPlist: {
+      // Only schemes we *query* with `canOpenURL` (none today); dApp
+      // return links are opened with `openURL` inside try/catch, so this
+      // stays empty on purpose (50-entry cap, unbounded dApp schemes).
+      LSApplicationQueriesSchemes: [],
+    },
   },
   android: {
     adaptiveIcon: {
@@ -117,15 +131,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         category: ["BROWSABLE", "DEFAULT"],
       },
       // Generic, non-verified catch-all — no `host`, no `autoVerify`.
-      // This is what actually puts TakumiPay in Android's "Open with"
-      // chooser alongside MetaMask/Bitget Wallet for ANY http(s) link,
-      // not just our own domain (MetaMask/Trust Wallet/Bitget all
-      // register the same broad, hostless filter for this reason).
-      // Because it isn't `autoVerify`'d, Android can never silently
-      // auto-open TakumiPay for a link the user didn't ask it to — the
-      // disambiguation dialog always appears; the user picks. Handled
-      // by `useExternalDappLinking()` in `app/_layout.tsx`, which routes
-      // whatever the user picked us for into the sandboxed dApp browser.
+      // Android ≤ 11 only (deep-link spec F1): on Android 12+ a generic
+      // web intent resolves to an app only for domains it is verified
+      // for, so this filter is dead there and nothing may depend on it.
+      // On older devices it puts TakumiPay in the "Open with" chooser
+      // for third-party http(s) links; whatever the user picks us for
+      // is routed by `app/+native-intent.tsx` into the sandboxed dApp
+      // browser (`open-dapp`), never treated as a transport.
       {
         action: "VIEW",
         data: [{ scheme: "https" }, { scheme: "http" }],
@@ -141,6 +153,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   plugins: [
     "./plugins/withAndroidBackupRules",
     "./plugins/withRemoveAndroidMediaPermissions",
+    // Android-only: MWA host activity + `solana-wallet` filters + the
+    // `/mobilewalletadapter` autoVerify filter (deep-link spec §8.1).
+    "./plugins/withSolanaMobileWalletAdapter",
     "expo-router",
     [
       "expo-camera",

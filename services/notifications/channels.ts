@@ -11,7 +11,8 @@ export type NotificationChannel =
   | "token-received"
   | "nft-received"
   | "security-alert"
-  | "price-alert";
+  | "price-alert"
+  | "dapp-request";
 
 export interface ChannelConfig {
   id: NotificationChannel;
@@ -51,6 +52,15 @@ export const CHANNELS: ChannelConfig[] = [
     id: "security-alert",
     label: "Security Alert",
     description: "Critical security notifications",
+    category: "security",
+    defaultEnabled: true,
+    alwaysOn: true,
+  },
+  {
+    id: "dapp-request",
+    label: "Connected App Requests",
+    description:
+      "When a connected app sends a request while TakumiPay is in the background",
     category: "security",
     defaultEnabled: true,
     alwaysOn: true,

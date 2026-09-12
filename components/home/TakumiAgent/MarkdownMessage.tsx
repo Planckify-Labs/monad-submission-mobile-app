@@ -11,7 +11,7 @@ interface MarkdownMessageProps {
 
 /**
  * Every link the agent renders opens in TakumiPay's own dApp browser, not
- * the system browser. Mirrors `useExternalDappLinking` / `handleDeepLink`:
+ * the system browser. Mirrors the deep-link kernel's `open-dapp` rule:
  * a bare http(s) link to a third-party host routes to `/dapps-browser`;
  * our own verified host and non-web schemes (`mailto:`, `tel:`, …) fall
  * through to the default handler so expo-router's universal linking still

@@ -1,5 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useSyncExternalStore } from "react";
 import { Modal, Text, TouchableOpacity, View } from "react-native";
+import {
+  isAppLocked,
+  subscribeAppLocked,
+} from "@/services/security/appLockState";
 import type { ApprovalIntent } from "./approval";
 import { getDappBridge } from "./DappBridge";
 import { pendingIntentsStore } from "./pendingIntents";
@@ -95,6 +99,12 @@ class ApprovalSheetBoundary extends React.Component<
 
 export function ApprovalHost(): React.ReactElement | null {
   const [intents, setIntents] = useState<ApprovalIntent[]>([]);
+  // Deep-link spec §4.8 / S-9: nothing presents above the lock screen.
+  // The host is root-mounted (F3), so a cold-start link or a relay
+  // message arriving behind the PIN screen would otherwise paint a
+  // signing sheet on top of it. The store is paused in step (see
+  // `bootBridge`), so the queue is frozen, not just hidden.
+  const locked = useSyncExternalStore(subscribeAppLocked, isAppLocked);
 
   useEffect(() => {
     const unsub = pendingIntentsStore.subscribe(setIntents);
@@ -102,6 +112,7 @@ export function ApprovalHost(): React.ReactElement | null {
     return unsub;
   }, []);
 
+  if (locked) return null;
   if (intents.length === 0) return null;
   // Oldest first, one active sheet.
   const intent = intents[0];

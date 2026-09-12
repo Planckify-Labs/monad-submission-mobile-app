@@ -51,7 +51,7 @@ export function SolanaSignInSheet({
       onDismiss={() => onDecision({ id: intent.id, outcome: "reject" })}
     >
       <ApprovalShell intent={intent} title="Sign in with Solana">
-        <RiskBanner annotations={intent.annotations} />
+        <RiskBanner annotations={intent.annotations} showProvenance={false} />
         <ScrollView
           className="flex-1"
           contentContainerClassName="pb-4"

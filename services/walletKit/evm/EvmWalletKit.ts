@@ -100,6 +100,10 @@ import {
 } from "./relayer.ts";
 import { sendUserOpWithUsdcPaymaster as sendUserOpWithUsdcPaymasterPure } from "./sendUserOpWithUsdcPaymaster.ts";
 import { signTransferWithAuthorization as signTransferWithAuthorizationPure } from "./signTransferWithAuthorization.ts";
+import {
+  evmWalletConnectCodec,
+  evmWalletConnectNamespace,
+} from "./walletConnect";
 import { settleX402PaymentEvm } from "./x402Settle.ts";
 
 const EVM_NAMESPACE = "eip155" as const;
@@ -156,6 +160,10 @@ export function createEvmWalletKit(): WalletKitAdapter {
     // exact same tap on a Solana or Sui dApp prompted for biometric/PIN.
     requireBiometricForConnect: true,
     preferredPaymentRail: "evm",
+    // Deep-link spec §4.5 — WalletConnect `eip155` namespace / codec.
+    // No `buildPaymentRequest`: ERC-681 payments route to the send screen.
+    walletConnectNamespace: evmWalletConnectNamespace,
+    walletConnectCodec: evmWalletConnectCodec,
     getChainId(chain) {
       return chain.namespace === EVM_NAMESPACE ? chain.chain.id : null;
     },

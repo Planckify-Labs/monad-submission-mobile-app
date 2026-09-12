@@ -10,7 +10,6 @@ import {
   Loader,
   Send,
 } from "lucide-react-native";
-
 import React, {
   useCallback,
   useEffect,
@@ -37,6 +36,7 @@ import ChainSelector from "@/components/common/ChainSelector";
 import LoadinngSpinnerPopup from "@/components/common/LoadinngSpinnerPopup";
 import OptimizedImage from "@/components/common/OptimizedImage";
 import PinConfirmationModal from "@/components/common/PinConfirmationModal";
+import { ProvenanceBanner } from "@/components/deeplinks/ProvenanceBanner";
 import RecipientPickerModal from "@/components/send/RecipientPickerModal";
 import TokenSelectorModal from "@/components/wallet/TokenSelectorModal";
 import WalletSelectorModal from "@/components/wallet/WalletSelectorModal";
@@ -50,6 +50,7 @@ import { useWallet } from "@/hooks/useWallet";
 import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
 import { toChainTag } from "@/services/analytics/chainTag";
 import { track } from "@/services/analytics/posthog";
+import type { Provenance } from "@/services/deeplinks/types";
 import { pollRelayerTaskHash } from "@/services/gasAbstraction/pollTaskStatus";
 import { resolveGasPayment } from "@/services/gasAbstraction/resolveGasPayment";
 import { classifySuiRecipient } from "@/utils/walletUtils";
@@ -248,12 +249,35 @@ export default function SendScreen() {
 
   const { contacts: addressBookContacts } = useAddressBook();
 
-  const { recipientAddress, namespace: scannedNamespaceParam } =
-    useLocalSearchParams();
+  const {
+    recipientAddress,
+    namespace: scannedNamespaceParam,
+    source: sourceParam,
+    linkVerification: linkVerificationParam,
+    linkOrigin: linkOriginParam,
+  } = useLocalSearchParams();
   const scannedNamespace =
     typeof scannedNamespaceParam === "string"
       ? scannedNamespaceParam
       : undefined;
+  // Deep-link spec §6.1 / S-3: a Class-A payment that arrived by link
+  // renders its provenance above the form. The interstitial already
+  // showed it once; the banner here is what the user sees while typing
+  // the amount, which is where a prefill-phishing link does its work.
+  const linkProvenance: Provenance | null =
+    sourceParam === "deeplink"
+      ? {
+          verification:
+            linkVerificationParam === "universal-link"
+              ? { kind: "universal-link" }
+              : { kind: "none" },
+          firstSeen: false,
+          transport: "os-link",
+          source: "cold",
+          claimedOrigin:
+            typeof linkOriginParam === "string" ? linkOriginParam : undefined,
+        }
+      : null;
 
   // Align the active chain with the scanned target's namespace. The
   // wallet itself is left alone — `changeActiveChainToConfig` runs
@@ -860,6 +884,9 @@ export default function SendScreen() {
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false}>
+            {linkProvenance ? (
+              <ProvenanceBanner provenance={linkProvenance} />
+            ) : null}
             <View className="bg-light rounded-xl p-5 mb-6 shadow-sm">
               <View className="mb-6">
                 <Text className="text-light-matte-black/70 mb-2">From</Text>

@@ -10,6 +10,9 @@ web-build/
 expo-env.d.ts
 android/
 ios/
+# Local Expo modules keep their native sources (`android/` and `ios/` above are the CNG output dirs).
+!modules/*/android/
+!modules/*/ios/
 
 # Native
 .kotlin/

@@ -75,6 +75,11 @@ import {
   makeSuiRpcCall,
   resolveSuiClearSigningDescriptor,
 } from "./clearSigning.ts";
+import { buildSuiPaymentRequest } from "./paymentRequest.ts";
+import {
+  suiWalletConnectCodec,
+  suiWalletConnectNamespace,
+} from "./walletConnect.ts";
 
 /**
  * Gas-budget safety reserve subtracted in `estimateMaxTransferable`.
@@ -122,6 +127,11 @@ export function createSuiWalletKit(): WalletKitAdapter {
     // No `brandColor` — ConnectSheet falls back to DEFAULT_BRAND_COLOR
     // per spec §11 resolved decision 4.
     requireBiometricForConnect: true,
+    // Deep-link spec §4.5 — `sui:pay` PTB builder + WalletConnect `sui`
+    // namespace / codec.
+    buildPaymentRequest: buildSuiPaymentRequest,
+    walletConnectNamespace: suiWalletConnectNamespace,
+    walletConnectCodec: suiWalletConnectCodec,
 
     formatConnectChipLabel(payload: unknown): string {
       const network =

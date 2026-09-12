@@ -5,9 +5,11 @@ import type {
   TUseBlockchainsWithStorageOptions,
 } from "@/api/types/blockchain";
 import { storage } from "@/lib/storage/mmkv";
+import {
+  BLOCKCHAIN_STORAGE_KEY,
+  BLOCKCHAIN_TIMESTAMP_KEY,
+} from "@/services/blockchains/cache";
 
-const BLOCKCHAIN_STORAGE_KEY = "cached_blockchains";
-const BLOCKCHAIN_TIMESTAMP_KEY = "cached_blockchains_timestamp";
 const OFFLINE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h — offline fallback only
 const STALE_TIME = 5 * 60 * 1000; // 5 min — React Query freshness window
 

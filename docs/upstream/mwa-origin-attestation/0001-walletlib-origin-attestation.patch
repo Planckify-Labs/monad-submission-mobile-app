@@ -1,0 +1,447 @@
+diff --git a/android/common/src/main/java/com/solana/mobilewalletadapter/common/crypto/HKDF.java b/android/common/src/main/java/com/solana/mobilewalletadapter/common/crypto/HKDF.java
+--- a/android/common/src/main/java/com/solana/mobilewalletadapter/common/crypto/HKDF.java
++++ b/android/common/src/main/java/com/solana/mobilewalletadapter/common/crypto/HKDF.java
+@@ -31,5 +31,42 @@
+         }
+     }
+ 
++    /**
++     * TakumiPay fork: general HKDF-SHA256 (RFC 5869) with an {@code info}
++     * string and {@code L <= 255 * 32} output bytes. Used to derive the
++     * origin-attestation binding secret alongside the AES session key.
++     */
++    @NonNull
++    public static byte[] hkdfSHA256(@NonNull byte[] ikm,
++                                    @NonNull byte[] salt,
++                                    @NonNull byte[] info,
++                                    int length) {
++        if (length <= 0 || length > 255 * 32) {
++            throw new IllegalArgumentException("Invalid HKDF output length");
++        }
++        try {
++            final Mac hmacSHA256 = Mac.getInstance("HmacSHA256");
++            hmacSHA256.init(new SecretKeySpec(salt, "HmacSHA256"));
++            final byte[] prk = hmacSHA256.doFinal(ikm);
++
++            hmacSHA256.init(new SecretKeySpec(prk, "HmacSHA256"));
++            final byte[] okm = new byte[length];
++            byte[] t = new byte[0];
++            int offset = 0;
++            for (int i = 1; offset < length; i++) {
++                hmacSHA256.update(t);
++                hmacSHA256.update(info);
++                hmacSHA256.update((byte) i);
++                t = hmacSHA256.doFinal();
++                final int n = Math.min(t.length, length - offset);
++                System.arraycopy(t, 0, okm, offset, n);
++                offset += n;
++            }
++            return okm;
++        } catch (NoSuchAlgorithmException | InvalidKeyException e) {
++            throw new UnsupportedOperationException("Error deriving key material", e);
++        }
++    }
++
+     private HKDF() {}
+ }
+diff --git a/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/MobileWalletAdapterSessionCommon.java b/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/MobileWalletAdapterSessionCommon.java
+--- a/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/MobileWalletAdapterSessionCommon.java
++++ b/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/MobileWalletAdapterSessionCommon.java
+@@ -37,7 +37,7 @@
+ import javax.crypto.spec.GCMParameterSpec;
+ import javax.crypto.spec.SecretKeySpec;
+ 
+-public abstract class MobileWalletAdapterSessionCommon implements MessageReceiver, MessageSender {
++public abstract class MobileWalletAdapterSessionCommon implements MessageReceiver, MessageSender, SessionSecretProvider {
+     private static final String TAG = MobileWalletAdapterSessionCommon.class.getSimpleName();
+ 
+     private static final int SEQ_NUM_LENGTH_BYTES = 4;
+@@ -53,6 +53,8 @@
+     private State mState = State.WAITING_FOR_CONNECTION;
+     private KeyPair mECDHKeypair;
+     private SecretKey mCachedEncryptionKey;
++    // TakumiPay fork: origin-attestation binding secret (see getSessionSecret)
++    private byte[] mCachedAttestBindingSecret;
+     private int mSeqNumberTx;
+     private int mSeqNumberRx;
+ 
+@@ -112,6 +114,7 @@
+         mMessageSender = null;
+         mECDHKeypair = null;
+         mCachedEncryptionKey = null;
++        mCachedAttestBindingSecret = null;
+         mDecryptedPayloadReceiver.receiverDisconnected();
+     }
+ 
+@@ -237,6 +240,26 @@
+         return new SecretKeySpec(aes128KeyMaterial, "AES");
+     }
+ 
++    /**
++     * TakumiPay fork: the origin-attestation {@code session_secret}. The MWA
++     * spec leaves it undefined; we derive a dedicated 32-byte secret from
++     * the same ECDH shared secret and salt as the AES session key, with
++     * {@code info = "mwa-attest-origin"}, so the AES key itself never has
++     * to be exported on either side (the web client keeps its AES-GCM
++     * {@code CryptoKey} non-extractable and derives this with
++     * {@code deriveBits}).
++     */
++    @NonNull
++    private static byte[] createAttestBindingSecret(@NonNull byte[] ecdhSecret,
++                                                    @NonNull ECPublicKey associationPublicKey) {
++        final byte[] salt = ECDSAKeys.encodeP256PublicKey(associationPublicKey);
++        return HKDF.hkdfSHA256(ecdhSecret, salt, ATTEST_BINDING_INFO, 32);
++    }
++
++    // TakumiPay fork: HKDF info label for createAttestBindingSecret (ASCII)
++    private static final byte[] ATTEST_BINDING_INFO =
++            "mwa-attest-origin".getBytes(java.nio.charset.StandardCharsets.US_ASCII);
++
+     @NonNull
+     protected static KeyPair generateECP256KeyPair() {
+         try {
+@@ -278,6 +301,7 @@
+             keyAgreement.doPhase(otherPublicKey, true);
+             final byte[] ecdhSecret = keyAgreement.generateSecret();
+             mCachedEncryptionKey = createEncryptionKey(ecdhSecret, getAssociationPublicKey());
++            mCachedAttestBindingSecret = createAttestBindingSecret(ecdhSecret, getAssociationPublicKey());
+         } catch (NoSuchAlgorithmException | InvalidKeyException e) {
+             throw new UnsupportedOperationException("Failed generating an ECDH secret", e);
+         }
+@@ -292,6 +316,18 @@
+         mDecryptedPayloadReceiver.receiverConnected(this);
+     }
+ 
++    /**
++     * TakumiPay fork: the session secret used to bind origin-attestation
++     * challenges (see {@link SessionSecretProvider} and
++     * {@link #createAttestBindingSecret}).
++     */
++    @Nullable
++    @Override
++    public synchronized byte[] getSessionSecret() {
++        final byte[] secret = mCachedAttestBindingSecret;
++        return secret != null ? secret.clone() : null;
++    }
++
+     protected void doSessionEstablished() {
+         if (mStateCallbacks != null) {
+             mStateCallbacks.onSessionEstablished();
+diff --git a/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/SessionSecretProvider.java b/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/SessionSecretProvider.java
+--- a/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/SessionSecretProvider.java
++++ b/android/common/src/main/java/com/solana/mobilewalletadapter/common/protocol/SessionSecretProvider.java
+@@ -0,0 +1,23 @@
++/*
++ * TakumiPay fork of the Mobile Wallet Adapter walletlib (v2.0.2) — origin attestation.
++ */
++
++package com.solana.mobilewalletadapter.common.protocol;
++
++import androidx.annotation.Nullable;
++
++/**
++ * Exposes the per-session secret both endpoints hold once the encrypted session
++ * is established. The MWA spec binds origin-attestation challenges to the session
++ * with {@code SHA256("attest-origin" || challenge || session_secret)} but does not
++ * define {@code session_secret}; this fork defines it as
++ * {@code HKDF-SHA256(ikm = ECDH shared secret, salt = X9.62 association public key,
++ * info = "mwa-attest-origin", L = 32)}: derived next to the AES session key from
++ * the same inputs, so both endpoints hold it after HELLO_REQ / HELLO_RSP and
++ * neither has to export the AES key.
++ */
++public interface SessionSecretProvider {
++    /** {@code null} until the encrypted session is established, or after it ends. */
++    @Nullable
++    byte[] getSessionSecret();
++}
+diff --git a/android/common/src/main/java/com/solana/mobilewalletadapter/common/ProtocolContract.java b/android/common/src/main/java/com/solana/mobilewalletadapter/common/ProtocolContract.java
+--- a/android/common/src/main/java/com/solana/mobilewalletadapter/common/ProtocolContract.java
++++ b/android/common/src/main/java/com/solana/mobilewalletadapter/common/ProtocolContract.java
+@@ -107,6 +107,21 @@
+     public static final int ERROR_CLUSTER_NOT_SUPPORTED = -7;
+     public static final int ERROR_ATTEST_ORIGIN_ANDROID = -100;
+ 
++    // Origin attestation (spec "Identity verification" > Android). TakumiPay
++    // fork: the upstream library defines the error code but never emits it.
++    public static final String PARAMETER_ATTEST_ORIGIN = "attest_origin"; // type: String (attestation token)
++    public static final String DATA_ATTEST_ORIGIN_CONTEXT = "context"; // type: String
++    public static final String DATA_ATTEST_ORIGIN_CHALLENGE = "challenge"; // type: String (base64 nonce)
++    public static final String DATA_ATTEST_ORIGIN_URI = "attest_origin_uri"; // type: String (absolute https URI)
++    /** Prefix of the challenge binding: SHA256("attest-origin" || challenge || session_secret). */
++    public static final String ATTEST_ORIGIN_BINDING_PREFIX = "attest-origin";
++    /**
++     * Optional feature a dapp endpoint requests in `authorize.features` to opt into
++     * origin attestation. Wallets that require attestation only for dapps that
++     * advertise it stay compatible with clients that do not implement the retry.
++     */
++    public static final String FEATURE_ID_ATTEST_ORIGIN = "solana:attestOrigin";
++
+     public static final String DATA_INVALID_PAYLOADS_VALID = "valid"; // Type: JSON array of Boolean
+ 
+     public static final String DATA_NOT_SUBMITTED_SIGNATURES = RESULT_SIGNATURES; // type: same as RESULT_SIGNATURES
+diff --git a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/JsonRpc20Server.java b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/JsonRpc20Server.java
+--- a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/JsonRpc20Server.java
++++ b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/JsonRpc20Server.java
+@@ -34,6 +34,12 @@
+ 
+     private MessageSender mSender;
+ 
++    /** TakumiPay fork: the connected sender (the session), or {@code null}. */
++    @Nullable
++    protected synchronized MessageSender getSender() {
++        return mSender;
++    }
++
+     @Override
+     public void receiverConnected(@NonNull MessageSender messageSender) {
+         Log.v(TAG, "JSON-RPC 2.0 server connected");
+@@ -147,6 +153,23 @@
+             throws IOException {
+         if (id == null) {
+             Log.w(TAG, "Discarding error '" + message + "' for notification");
++            return;
++        }
++        Log.d(TAG, "Responding with error for id=" + id + " (code=" + code + ", message=" + message + ")");
++        respondWithError(code, message, data, id);
++    }
++
++    /**
++     * TakumiPay fork: error response whose {@code data} member is a JSON object
++     * (the spec's {@code ERROR_ATTEST_ORIGIN_ANDROID} carries structured data).
++     */
++    protected void handleRpcErrorWithData(@Nullable Object id,
++                                          int code,
++                                          @NonNull String message,
++                                          @NonNull JSONObject data)
++            throws IOException {
++        if (id == null) {
++            Log.w(TAG, "Discarding error '" + message + "' for notification");
+             return;
+         }
+         Log.d(TAG, "Responding with error for id=" + id + " (code=" + code + ", message=" + message + ")");
+diff --git a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/MobileWalletAdapterServer.java b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/MobileWalletAdapterServer.java
+--- a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/MobileWalletAdapterServer.java
++++ b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/protocol/MobileWalletAdapterServer.java
+@@ -16,6 +16,8 @@
+ import androidx.annotation.Size;
+ 
+ import com.solana.mobilewalletadapter.common.ProtocolContract;
++import com.solana.mobilewalletadapter.common.protocol.MessageSender;
++import com.solana.mobilewalletadapter.common.protocol.SessionSecretProvider;
+ import com.solana.mobilewalletadapter.common.signin.SignInWithSolana;
+ import com.solana.mobilewalletadapter.common.util.Identifier;
+ import com.solana.mobilewalletadapter.common.util.JsonPack;
+@@ -29,6 +31,9 @@
+ import org.json.JSONObject;
+ 
+ import java.io.IOException;
++import java.nio.charset.StandardCharsets;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
+ import java.util.Arrays;
+ import java.util.concurrent.CancellationException;
+ import java.util.concurrent.ExecutionException;
+@@ -201,8 +206,25 @@
+             return;
+         }
+ 
++        // TakumiPay fork: origin attestation (spec "Identity verification" > Android).
++        final String attestOrigin;
++        if (o.has(ProtocolContract.PARAMETER_ATTEST_ORIGIN)) {
++            final Object ao = o.opt(ProtocolContract.PARAMETER_ATTEST_ORIGIN);
++            if (!(ao instanceof String) || ((String) ao).isEmpty()) {
++                handleRpcError(id, ERROR_INVALID_PARAMS, "When specified, attest_origin must be a non-empty string", null);
++                return;
++            }
++            attestOrigin = (String) ao;
++        } else {
++            attestOrigin = null;
++        }
++        final MessageSender sender = getSender();
++        final byte[] sessionSecret = (sender instanceof SessionSecretProvider)
++                ? ((SessionSecretProvider) sender).getSessionSecret() : null;
++
+         final AuthorizeRequest request =
+-                new AuthorizeRequest(id, identityUri, iconUri, identityName, chain, features, addresses, authToken, signInPayload);
++                new AuthorizeRequest(id, identityUri, iconUri, identityName, chain, features, addresses, authToken, signInPayload,
++                        attestOrigin, sessionSecret);
+         request.notifyOnComplete((f) -> mHandler.post(() -> onAuthorizationComplete(f)));
+         mMethodHandlers.authorize(request);
+     }
+@@ -218,6 +240,20 @@
+                 final Throwable cause = e.getCause();
+                 if (cause instanceof AuthorizationNotValidException || cause instanceof RequestDeclinedException) {
+                     handleRpcError(request.id, ProtocolContract.ERROR_AUTHORIZATION_FAILED, "authorization request failed", null);
++                } else if (cause instanceof AttestOriginRequiredException) {
++                    // TakumiPay fork: ask the dapp endpoint to attest its origin and retry.
++                    final AttestOriginRequiredException aor = (AttestOriginRequiredException) cause;
++                    final JSONObject data = new JSONObject();
++                    try {
++                        data.put(ProtocolContract.DATA_ATTEST_ORIGIN_CONTEXT, aor.context);
++                        data.put(ProtocolContract.DATA_ATTEST_ORIGIN_CHALLENGE,
++                                Base64.encodeToString(aor.challenge, Base64.NO_WRAP));
++                        data.put(ProtocolContract.DATA_ATTEST_ORIGIN_URI, aor.attestOriginUri.toString());
++                    } catch (JSONException je) {
++                        throw new RuntimeException("Failed preparing attest_origin error data", je);
++                    }
++                    handleRpcErrorWithData(request.id, ProtocolContract.ERROR_ATTEST_ORIGIN_ANDROID,
++                            "origin attestation required", data);
+                 } else if (cause instanceof ClusterNotSupportedException) {
+                     handleRpcError(request.id, ProtocolContract.ERROR_CLUSTER_NOT_SUPPORTED, "invalid or unsupported cluster for authorization request", null);
+                 } else {
+@@ -294,6 +330,12 @@
+         public final String[] addresses;
+         @Nullable
+         public final SignInWithSolana.Payload signInPayload;
++        /** TakumiPay fork: the {@code attest_origin} token, when the dapp endpoint retried with one. */
++        @Nullable
++        public final String attestOrigin;
++        /** TakumiPay fork: session secret captured when the request arrived; {@code null} outside an encrypted session. */
++        @Nullable
++        private final byte[] sessionSecret;
+ 
+         private AuthorizeRequest(@Nullable Object id,
+                                  @Nullable Uri identityUri,
+@@ -303,7 +345,9 @@
+                                  @Nullable String[] features,
+                                  @Nullable String[] addresses,
+                                  @Nullable String authToken,
+-                                 @Nullable SignInWithSolana.Payload signInPayload) {
++                                 @Nullable SignInWithSolana.Payload signInPayload,
++                                 @Nullable String attestOrigin,
++                                 @Nullable byte[] sessionSecret) {
+             super(id);
+             this.identityUri = identityUri;
+             this.iconUri = iconUri;
+@@ -313,6 +357,30 @@
+             this.features = features;
+             this.addresses = addresses;
+             this.signInPayload = signInPayload;
++            this.attestOrigin = attestOrigin;
++            this.sessionSecret = sessionSecret;
++        }
++
++        /**
++         * TakumiPay fork: the value the dapp endpoint must put in the attestation
++         * message's {@code h} for {@code challenge}:
++         * {@code base64(SHA256("attest-origin" || challenge || session_secret))}.
++         * {@code null} when no encrypted session secret is available.
++         */
++        @Nullable
++        public String computeAttestOriginBinding(@NonNull byte[] challenge) {
++            if (sessionSecret == null) {
++                return null;
++            }
++            try {
++                final MessageDigest digest = MessageDigest.getInstance("SHA-256");
++                digest.update(ProtocolContract.ATTEST_ORIGIN_BINDING_PREFIX.getBytes(StandardCharsets.UTF_8));
++                digest.update(challenge);
++                digest.update(sessionSecret);
++                return Base64.encodeToString(digest.digest(), Base64.NO_WRAP);
++            } catch (NoSuchAlgorithmException e) {
++                throw new UnsupportedOperationException("SHA-256 not available", e);
++            }
+         }
+ 
+         @Override
+@@ -1078,4 +1146,27 @@
+     public static class ClusterNotSupportedException extends MobileWalletAdapterServerException {
+         public ClusterNotSupportedException(@NonNull String m) { super(m); }
+     }
++
++    /**
++     * TakumiPay fork: completes an {@code authorize} with
++     * {@code ERROR_ATTEST_ORIGIN_ANDROID} so the dapp endpoint attests its origin
++     * (spec "Identity verification" > Android) and retries with {@code attest_origin}.
++     */
++    public static class AttestOriginRequiredException extends MobileWalletAdapterServerException {
++        @NonNull
++        public final String context;
++        @NonNull
++        public final byte[] challenge;
++        @NonNull
++        public final Uri attestOriginUri;
++
++        public AttestOriginRequiredException(@NonNull String context,
++                                             @NonNull byte[] challenge,
++                                             @NonNull Uri attestOriginUri) {
++            super("origin attestation required");
++            this.context = context;
++            this.challenge = challenge;
++            this.attestOriginUri = attestOriginUri;
++        }
++    }
+ }
+diff --git a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/AuthorizeRequest.java b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/AuthorizeRequest.java
+--- a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/AuthorizeRequest.java
++++ b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/AuthorizeRequest.java
+@@ -41,7 +41,12 @@
+     @Nullable
+     protected final SignInWithSolana.Payload mSignInPayload;
+ 
++    /** TakumiPay fork: the server request, for origin attestation (token + challenge binding). */
++    @NonNull
++    protected final MobileWalletAdapterServer.AuthorizeRequest mServerRequest;
++
+     /*package*/ AuthorizeRequest(@NonNull NotifyingCompletableFuture<Result> request,
++                                 @NonNull MobileWalletAdapterServer.AuthorizeRequest serverRequest,
+                                  @Nullable String identityName,
+                                  @Nullable Uri identityUri,
+                                  @Nullable Uri iconUri,
+@@ -50,6 +55,7 @@
+                                  @Nullable String[] addresses,
+                                  @Nullable SignInWithSolana.Payload signInPayload) {
+         super(request);
++        mServerRequest = serverRequest;
+         mIdentityName = identityName;
+         mIdentityUri = identityUri;
+         mIconUri = iconUri;
+@@ -128,6 +134,36 @@
+         mRequest.complete(null);
+     }
+ 
++    // ── TakumiPay fork: origin attestation ──────────────────────────────
++
++    /** The {@code attest_origin} token the dapp endpoint retried with, or {@code null}. */
++    @Nullable
++    public String getAttestOrigin() {
++        return mServerRequest.attestOrigin;
++    }
++
++    /**
++     * The expected {@code h} for {@code challenge}
++     * ({@code base64(SHA256("attest-origin" || challenge || session_secret))}),
++     * or {@code null} when no encrypted session secret is available.
++     */
++    @Nullable
++    public String computeAttestOriginBinding(@NonNull byte[] challenge) {
++        return mServerRequest.computeAttestOriginBinding(challenge);
++    }
++
++    /**
++     * Answer with {@code ERROR_ATTEST_ORIGIN_ANDROID}: the dapp endpoint must load
++     * {@code attestOriginUri}, obtain an attestation for {@code challenge} under
++     * {@code context}, and retry {@code authorize} with {@code attest_origin}.
++     */
++    public void completeWithAttestOriginRequired(@NonNull String context,
++                                                 @NonNull byte[] challenge,
++                                                 @NonNull Uri attestOriginUri) {
++        mRequest.completeExceptionally(new MobileWalletAdapterServer.AttestOriginRequiredException(
++                context, challenge, attestOriginUri));
++    }
++
+     public void completeWithClusterNotSupported() {
+         mRequest.completeExceptionally(new MobileWalletAdapterServer.ClusterNotSupportedException(
+                 "Unsupported or invalid cluster specified"));
+diff --git a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/LocalScenario.java b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/LocalScenario.java
+--- a/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/LocalScenario.java
++++ b/android/walletlib/src/main/java/com/solana/mobilewalletadapter/walletlib/scenario/LocalScenario.java
+@@ -249,7 +249,7 @@
+             }));
+ 
+             mIoHandler.post(() -> mCallbacks.onAuthorizeRequest(new AuthorizeRequest(
+-                    future, request.identityName, request.identityUri, request.iconUri, chain,
++                    future, request, request.identityName, request.identityUri, request.iconUri, chain,
+                     request.features, request.addresses, request.signInPayload)));
+         }
+ 

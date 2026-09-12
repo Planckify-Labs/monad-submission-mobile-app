@@ -19,11 +19,11 @@ import {
 import { LogBox } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ChainSwitchingOverlay } from "@/components/common/ChainSwitchingOverlay";
+import { DeepLinkNoticeHost } from "@/components/deeplinks/DeepLinkNoticeHost";
 import { PerformanceProvider } from "@/components/providers/PerformanceProvider";
 import LockScreen from "@/components/security/LockScreen";
 import QKEY_Wallets from "@/constants/queryKeys/walletQueryKeys";
 import { useAppSessionTracking } from "@/hooks/useAppSessionTracking";
-import { useExternalDappLinking } from "@/hooks/useExternalDappLinking";
 // Ordering (spec §6.2): polyfill import → bootWalletKits() → any screen/provider.
 import { useWallet } from "@/hooks/useWallet";
 import {
@@ -36,7 +36,15 @@ import {
 } from "@/services/analytics/identity";
 import { posthog } from "@/services/analytics/posthog";
 import { resolveScreenName } from "@/services/analytics/screenNames";
+import { ApprovalHost } from "@/services/bridge/ApprovalHost";
+import {
+  bootBridgeAtRoot,
+  setRootBridgeWallets,
+} from "@/services/bridge/rootBoot";
 import { bootstrapBridgeAdapters } from "@/services/bridgeRoutes/bootstrap";
+import "@/services/deeplinks/boot";
+import { linkInbox } from "@/services/deeplinks/inbox";
+import { INBOX_ROUTE } from "@/services/deeplinks/intake";
 import { bootDefi } from "@/services/defi/bootstrap";
 import { bootGasAbstraction } from "@/services/gasAbstraction/boot";
 import { initNotificationHandlers } from "@/services/notifications/handlers";
@@ -47,6 +55,9 @@ import {
   usePushRegistrationRetry,
 } from "@/services/push";
 import { installQRMatrixCache } from "@/services/qrMatrixCache";
+import { setAppLocked } from "@/services/security/appLockState";
+import { hydrateSigningMode } from "@/services/security/signingMode";
+import { bootTransports } from "@/services/transports/boot";
 import { bootWalletKits } from "@/services/walletKit/boot";
 import { hasStoredWallets } from "@/services/walletService";
 import { refreshSettlementRailConfig } from "@/services/x402/refreshSettlementRailConfig";
@@ -54,6 +65,20 @@ import "../global.css";
 
 // Register WalletKit adapters before any screen/provider reads the registry.
 bootWalletKits();
+// Deep-link spec F3: the approval spine boots at the root so a request
+// arriving on any screen (WalletConnect relay, SEP-0007 `tx`, MWA) has a
+// host to render in. Needs the kits above; the browser screen's own
+// `bootBridge()` becomes a rebind.
+bootBridgeAtRoot();
+// Seed the lock mirror before the first render so the root approval host
+// never paints during the one frame before `AppShell`'s effect runs.
+setAppLocked(hasStoredWallets());
+// Session transports (WalletConnect today). Eager only when there are
+// active sessions or the launch link is a pairing; lazy otherwise.
+void bootTransports();
+// Signing mode (TWV-2026-035) gates deep links at intake (S-13); hydrate
+// the synchronous cache before the first link can arrive.
+void hydrateSigningMode();
 // Register gas-abstraction providers (resolve the EVM kit, so AFTER walletKits).
 bootGasAbstraction();
 // Register DeFi adapters
@@ -163,7 +188,15 @@ function AppShell() {
   usePushNotificationHandler();
   usePushRegistrationRetry();
   useAppSessionTracking(locked);
-  useExternalDappLinking();
+
+  // Keep the non-React mirrors of app state current. The root bridge
+  // context reads the wallet list from a holder (never the active
+  // wallet), and `ApprovalHost` / `pendingIntentsStore` freeze while the
+  // lock screen is up (deep-link spec S-9).
+  setRootBridgeWallets(wallets);
+  useEffect(() => {
+    setAppLocked(locked);
+  }, [locked]);
 
   useEffect(() => {
     void identifyDevice();
@@ -222,7 +255,14 @@ function AppShell() {
     // any heavy work.
     await new Promise((r) => setTimeout(r, 100));
     setLocked(false);
-  }, []);
+    // Deep-link spec §4.8: drain the link inbox only after unlock. A
+    // link that arrived behind the lock screen already pointed the
+    // router at the interstitial; this covers the case where something
+    // else navigated away in between.
+    if (linkInbox.peek() && pathname !== INBOX_ROUTE) {
+      router.push(INBOX_ROUTE as never);
+    }
+  }, [pathname]);
 
   return (
     <AppLockedContext.Provider value={locked}>
@@ -240,6 +280,10 @@ function AppShell() {
       />
       {locked ? <LockScreen onUnlocked={handleUnlocked} /> : null}
       <ChainSwitchingOverlay />
+      {/* Deep-link spec F3 / S-9: root-mounted approval host. Renders
+          `null` while locked (it subscribes to the lock mirror itself). */}
+      <ApprovalHost />
+      <DeepLinkNoticeHost />
     </AppLockedContext.Provider>
   );
 }
