@@ -2,11 +2,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
 import {
   ChevronRight,
-  Fuel,
-  History,
   Plus,
-  Shield,
-  Sparkles,
+  Settings,
   Wallet as WalletIcon,
 } from "lucide-react-native";
 import React, { useCallback, useMemo, useRef, useState } from "react";
@@ -35,7 +32,6 @@ import WalletCompactCard from "@/components/wallet/WalletCompactCard";
 import WalletDetails from "@/components/wallet/WalletDetails";
 import WalletSwitcherModal from "@/components/wallet/WalletSwitcherModal";
 import { TWallet } from "@/constants/types/walletTypes";
-import { useStrategiesPrefetch } from "@/hooks/strategies/useStrategiesPrefetch";
 import { usePinnedWallets } from "@/hooks/usePinnedWallets";
 import { useWallet, warmWalletSigner } from "@/hooks/useWallet";
 import { chainCacheKey } from "@/hooks/useWallet.helpers";
@@ -47,6 +43,14 @@ import {
 import { revealWalletSecret } from "@/services/walletService";
 
 const CARD_WIDTH = 160;
+
+const HEADER_BUTTON_SHADOW = {
+  shadowColor: "#000",
+  shadowOffset: { width: 0, height: 1 },
+  shadowOpacity: 0.05,
+  shadowRadius: 2,
+  elevation: 1,
+} as const;
 
 export default function Wallet() {
   const { width } = useWindowDimensions();
@@ -73,11 +77,6 @@ export default function Wallet() {
     renameAccount,
     getActiveWalletKit,
   } = useWallet();
-
-  // Warm the strategies screen's queries while the user is here, so the
-  // first tap on the "DeFi Strategies" row below renders with cached
-  // data instead of a cold spinner.
-  useStrategiesPrefetch();
 
   const linkedGoogleAccount = useMemo(
     () =>
@@ -397,20 +396,33 @@ export default function Wallet() {
               >
                 Wallets
               </Text>
-              <TouchableOpacity
-                activeOpacity={0.7}
-                className="bg-light w-10 h-10 rounded-full items-center justify-center shadow-sm"
-                onPress={() => router.push("/login")}
-                style={{
-                  shadowColor: "#000",
-                  shadowOffset: { width: 0, height: 1 },
-                  shadowOpacity: 0.05,
-                  shadowRadius: 2,
-                  elevation: 1,
-                }}
-              >
-                <Plus size={20} color="#c71c4b" />
-              </TouchableOpacity>
+              <View className="flex-row items-center gap-2">
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="Settings"
+                  accessibilityHint="Open gas, agent permission, and privacy settings"
+                  className="bg-light w-10 h-10 rounded-full items-center justify-center shadow-sm"
+                  // Cast: expo-router generates the typed routes file
+                  // lazily via the dev server. `/settings` is a new file
+                  // route that won't appear in the generated union until
+                  // the dev server runs.
+                  onPress={() => router.push("/settings" as never)}
+                  style={HEADER_BUTTON_SHADOW}
+                >
+                  <Settings size={20} color="#c71c4b" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add wallet"
+                  className="bg-light w-10 h-10 rounded-full items-center justify-center shadow-sm"
+                  onPress={() => router.push("/login")}
+                  style={HEADER_BUTTON_SHADOW}
+                >
+                  <Plus size={20} color="#c71c4b" />
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
 
@@ -449,6 +461,7 @@ export default function Wallet() {
       >
         <ScrollView
           className="flex-1"
+          contentContainerStyle={{ paddingBottom: 24 }}
           showsVerticalScrollIndicator={false}
           refreshControl={
             <RefreshControl
@@ -465,20 +478,33 @@ export default function Wallet() {
               >
                 Wallets
               </Text>
-              <TouchableOpacity
-                activeOpacity={0.7}
-                className="bg-light w-10 h-10 rounded-full items-center justify-center shadow-sm"
-                onPress={() => router.push("/login")}
-                style={{
-                  shadowColor: "#000",
-                  shadowOffset: { width: 0, height: 1 },
-                  shadowOpacity: 0.05,
-                  shadowRadius: 2,
-                  elevation: 1,
-                }}
-              >
-                <Plus size={20} color="#c71c4b" />
-              </TouchableOpacity>
+              <View className="flex-row items-center gap-2">
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="Settings"
+                  accessibilityHint="Open gas, agent permission, and privacy settings"
+                  className="bg-light w-10 h-10 rounded-full items-center justify-center shadow-sm"
+                  // Cast: expo-router generates the typed routes file
+                  // lazily via the dev server. `/settings` is a new file
+                  // route that won't appear in the generated union until
+                  // the dev server runs.
+                  onPress={() => router.push("/settings" as never)}
+                  style={HEADER_BUTTON_SHADOW}
+                >
+                  <Settings size={20} color="#c71c4b" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  accessibilityRole="button"
+                  accessibilityLabel="Add wallet"
+                  className="bg-light w-10 h-10 rounded-full items-center justify-center shadow-sm"
+                  onPress={() => router.push("/login")}
+                  style={HEADER_BUTTON_SHADOW}
+                >
+                  <Plus size={20} color="#c71c4b" />
+                </TouchableOpacity>
+              </View>
             </View>
             <Text className="text-light-matte-black/50 text-sm">
               You have {wallets.length}{" "}
@@ -555,157 +581,6 @@ export default function Wallet() {
             onBackup={handleBackupPress}
             backupLabel={backupLabel}
           />
-
-          <TouchableOpacity
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="DeFi Strategies"
-            accessibilityHint="Open your DeFi strategy positions, opportunities, and settings"
-            className="bg-light rounded-2xl p-4 mt-4 flex-row items-center justify-between mx-4"
-            onPress={() => router.push("/strategies")}
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.04,
-              shadowRadius: 8,
-              elevation: 2,
-            }}
-          >
-            <View className="flex-row items-center flex-1">
-              <View className="w-10 h-10 rounded-full bg-light-primary-red/10 items-center justify-center mr-3">
-                <Sparkles size={20} color="#c71c4b" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-light-matte-black/50 text-xs mb-0.5">
-                  Earn
-                </Text>
-                <Text
-                  className="text-light-matte-black font-semibold text-base"
-                  numberOfLines={1}
-                >
-                  DeFi Strategies
-                </Text>
-              </View>
-            </View>
-            <ChevronRight size={18} color="#c71c4b" />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="Agent Permissions"
-            accessibilityHint="View and revoke permissions granted to the AI agent"
-            className="bg-light rounded-2xl p-4 mt-4 mb-4 flex-row items-center justify-between mx-4"
-            onPress={() =>
-              // Cast: expo-router generates the typed routes file lazily
-              // via the dev server. `/agent-permissions` is a new file
-              // route that won't appear in the generated union until the
-              // dev server runs.
-              router.push("/agent-permissions" as never)
-            }
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.04,
-              shadowRadius: 8,
-              elevation: 2,
-            }}
-          >
-            <View className="flex-row items-center flex-1">
-              <View className="w-10 h-10 rounded-full bg-light-primary-red/10 items-center justify-center mr-3">
-                <Shield size={20} color="#c71c4b" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-light-matte-black/50 text-xs mb-0.5">
-                  Settings
-                </Text>
-                <Text
-                  className="text-light-matte-black font-semibold text-base"
-                  numberOfLines={1}
-                >
-                  Agent Permissions
-                </Text>
-              </View>
-            </View>
-            <ChevronRight size={18} color="#c71c4b" />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="Gas Settings"
-            accessibilityHint="Choose whether transaction gas is paid in USDC or the native token"
-            className="bg-light rounded-2xl p-4 mb-4 flex-row items-center justify-between mx-4"
-            onPress={() =>
-              // Cast rationale: same as the Agent Permissions row — new
-              // route, typed-routes union refreshes only once the dev
-              // server runs.
-              router.push("/gas-settings" as never)
-            }
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.04,
-              shadowRadius: 8,
-              elevation: 2,
-            }}
-          >
-            <View className="flex-row items-center flex-1">
-              <View className="w-10 h-10 rounded-full bg-light-primary-red/10 items-center justify-center mr-3">
-                <Fuel size={20} color="#c71c4b" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-light-matte-black/50 text-xs mb-0.5">
-                  Settings
-                </Text>
-                <Text
-                  className="text-light-matte-black font-semibold text-base"
-                  numberOfLines={1}
-                >
-                  Gas Settings
-                </Text>
-              </View>
-            </View>
-            <ChevronRight size={18} color="#c71c4b" />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            activeOpacity={0.7}
-            accessibilityRole="button"
-            accessibilityLabel="Browser Privacy"
-            accessibilityHint="Review and clear the sites the dApp browser suggests"
-            className="bg-light rounded-2xl p-4 mb-4 flex-row items-center justify-between mx-4"
-            onPress={() =>
-              // Cast rationale: same as the Gas Settings row — new route,
-              // typed-routes union refreshes only once the dev server runs.
-              router.push("/browser-privacy" as never)
-            }
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 2 },
-              shadowOpacity: 0.04,
-              shadowRadius: 8,
-              elevation: 2,
-            }}
-          >
-            <View className="flex-row items-center flex-1">
-              <View className="w-10 h-10 rounded-full bg-light-primary-red/10 items-center justify-center mr-3">
-                <History size={20} color="#c71c4b" />
-              </View>
-              <View className="flex-1">
-                <Text className="text-light-matte-black/50 text-xs mb-0.5">
-                  Settings
-                </Text>
-                <Text
-                  className="text-light-matte-black font-semibold text-base"
-                  numberOfLines={1}
-                >
-                  Browser Privacy
-                </Text>
-              </View>
-            </View>
-            <ChevronRight size={18} color="#c71c4b" />
-          </TouchableOpacity>
         </ScrollView>
 
         <BackupPassphraseSheet
