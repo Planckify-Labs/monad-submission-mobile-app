@@ -136,6 +136,10 @@ class WalletConnectTransport implements TransportAdapter {
   private wakeTopics = new Map<string, number>();
   private appStateSub: { remove: () => void } | null = null;
   private pendingTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  /** Session topic of each request awaiting a decision (for notification taps). */
+  private pendingTopics = new Map<number, string>();
+  /** Notification taps waiting for a request on a topic to arrive. */
+  private requestWaiters = new Set<(topic: string) => void>();
   private walletsSource: WalletConnectWalletsSource = { getWallets: () => [] };
 
   bindWallets(source: WalletConnectWalletsSource): void {
@@ -248,6 +252,42 @@ class WalletConnectTransport implements TransportAdapter {
     this.wakeTopics.set(w.topic, Date.now());
     await this.start();
     this.reconnectRelay();
+  }
+
+  /**
+   * The user tapped a "waiting for you" notification. The request may be
+   * queued already (app was in the background), still on the relay (the
+   * push server woke a killed app; the relay redelivers on reconnect), or
+   * gone (expired after `WC_REQUEST_TIMEOUT_MS`, or decided). Returns
+   * `"pending"` when the approval host has something to show and `"none"`
+   * after `graceMs` without a request on that topic.
+   */
+  async resumeFromNotification(
+    topic: string | null,
+    graceMs = 8000,
+  ): Promise<"pending" | "none"> {
+    await this.start();
+    this.reconnectRelay();
+    if (this.hasPendingRequest(topic)) return "pending";
+    return new Promise((resolve) => {
+      const waiter = (arrived: string) => {
+        if (topic && arrived !== topic) return;
+        clearTimeout(timer);
+        this.requestWaiters.delete(waiter);
+        resolve("pending");
+      };
+      const timer = setTimeout(() => {
+        this.requestWaiters.delete(waiter);
+        resolve(this.hasPendingRequest(topic) ? "pending" : "none");
+      }, graceMs);
+      this.requestWaiters.add(waiter);
+    });
+  }
+
+  private hasPendingRequest(topic: string | null): boolean {
+    if (!topic) return this.pendingTopics.size > 0;
+    for (const t of this.pendingTopics.values()) if (t === topic) return true;
+    return false;
   }
 
   /** `true` once per wake: the user came from the dApp for this topic. */
@@ -701,6 +741,7 @@ class WalletConnectTransport implements TransportAdapter {
     const t = this.pendingTimers.get(id);
     if (t) clearTimeout(t);
     this.pendingTimers.delete(id);
+    this.pendingTopics.delete(id);
     getDappBridge()?.resolve(`wc-${id}`, { id: `wc-${id}`, outcome: "reject" });
   }
 
@@ -847,6 +888,8 @@ class WalletConnectTransport implements TransportAdapter {
       WC_REQUEST_TIMEOUT_MS,
     );
     this.pendingTimers.set(id, timer);
+    this.pendingTopics.set(id, topic);
+    for (const w of [...this.requestWaiters]) w(topic);
     // A dApp that has no deep link for us (not listed in WalletGuide, or
     // paired through the generic `wc:` chooser) cannot bring us to the
     // front. The request still lands here over the relay; tell the user.
@@ -854,7 +897,7 @@ class WalletConnectTransport implements TransportAdapter {
       void fireNotification("dapp-request", {
         title: `${meta.name} is waiting for you`,
         body: "Open TakumiPay to review and approve the request.",
-        data: { type: "wc-request", topic },
+        data: { type: "wc-request", topic, app: meta.name },
       });
     }
     const res = await bridge.dispatchExternal({
@@ -868,6 +911,7 @@ class WalletConnectTransport implements TransportAdapter {
     });
     clearTimeout(timer);
     this.pendingTimers.delete(id);
+    this.pendingTopics.delete(id);
     if (res.error) {
       this.respond(topic, id, {
         error: { code: res.error.code, message: res.error.message },

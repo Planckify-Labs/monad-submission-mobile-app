@@ -47,6 +47,8 @@ import {
   setAgentPrefillDirect,
 } from "@/hooks/useAgentPrefill";
 import { usePaymentIntentInvalidator } from "@/hooks/usePaymentIntentInvalidator";
+import { deepLinkNotices } from "@/services/deeplinks/notices";
+import { walletConnectTransport } from "@/services/transports/walletconnect";
 
 /**
  * Android 8+ requires every notification to belong to a channel — the
@@ -400,6 +402,49 @@ function readRecurringInvestPushData(
   };
 }
 
+/**
+ * Shape of the `data` payload for connected-app request notifications:
+ * `wc-request` is the wallet's own local notification (request queued
+ * while backgrounded), `wc-push` comes from the API's WalletConnect push
+ * server (app was closed; the relay redelivers on reconnect).
+ */
+interface DappRequestPushData {
+  topic: string | null;
+  /** dApp name when known (local notifications only). */
+  app: string | null;
+}
+
+function readDappRequestPushData(
+  notification: Notifications.Notification,
+): DappRequestPushData | null {
+  const raw = notification.request.content.data;
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  if (data.type !== "wc-request" && data.type !== "wc-push") return null;
+  return {
+    topic: typeof data.topic === "string" ? data.topic : null,
+    app: typeof data.app === "string" && data.app.length > 0 ? data.app : null,
+  };
+}
+
+/**
+ * Tap on a connected-app request notification. There is no screen to
+ * open: the root `ApprovalHost` shows the request itself once it is in
+ * the bridge queue. What can go wrong is that there is nothing to show
+ * (expired after 5 minutes, decided already, or lost with a killed
+ * process), so wait briefly for the relay and then say so instead of
+ * opening the app to silence.
+ */
+async function resumeDappRequest(data: DappRequestPushData): Promise<void> {
+  const state = await walletConnectTransport.resumeFromNotification(data.topic);
+  if (state === "pending") return;
+  const app = data.app ?? "the app";
+  deepLinkNotices.push({
+    title: "Nothing to review",
+    body: `The request from ${app} has expired or was already handled. Go back to ${app} and try again.`,
+  });
+}
+
 /** Shape of the `data` payload for incoming-transfer pushes. */
 interface TransferPushData {
   transactionId?: string;
@@ -527,6 +572,12 @@ export function usePushNotificationHandler(): void {
             } catch (err) {
               console.warn("[push] activity-detail route not available:", err);
             }
+            return;
+          }
+
+          const dappRequest = readDappRequestPushData(response.notification);
+          if (dappRequest) {
+            void resumeDappRequest(dappRequest);
           }
           return;
         }
