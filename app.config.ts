@@ -171,6 +171,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       {
         microphonePermission:
           "TakumiPay uses the microphone to transcribe your voice into chat messages.",
+        // We only record (voice-to-text transcription in TakumiAgent), never
+        // play audio in the background. expo-audio defaults
+        // enableBackgroundPlayback to true, which pulls in
+        // FOREGROUND_SERVICE_MEDIA_PLAYBACK + a foreground media session
+        // service we never use and Play Console then requires a policy
+        // declaration for. Disabling it removes that permission/service
+        // entirely instead of declaring an unused capability.
+        enableBackgroundPlayback: false,
       },
     ],
     [
