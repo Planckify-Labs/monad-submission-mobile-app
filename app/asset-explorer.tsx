@@ -5,10 +5,10 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
-  StatusBar,
   TextInput,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import AddTokenForm from "@/components/asset-explorer/AddTokenForm";
 import AssetExplorerHeader from "@/components/asset-explorer/AssetExplorerHeader";
@@ -327,7 +327,7 @@ export default function AssetExplorer() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView className="flex-1 bg-light-main-container" edges={["top"]}>
         <ScrollView
           className="flex-1"

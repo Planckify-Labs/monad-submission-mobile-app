@@ -23,12 +23,12 @@ import {
   Animated,
   Easing,
   ScrollView,
-  StatusBar,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { parseUnits } from "viem";
 import type { TToken } from "@/api/types/token";
@@ -851,7 +851,7 @@ export default function SendScreen() {
   if (!kitMatchesChain) {
     return (
       <>
-        <StatusBar barStyle="dark-content" />
+        <SystemBars style="dark" />
         <SafeAreaView
           className="flex-1 bg-light-main-container items-center justify-center"
           edges={["top"]}
@@ -867,7 +867,7 @@ export default function SendScreen() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView className="flex-1 bg-light-main-container" edges={["top"]}>
         <View className="flex-1 p-6">
           <View className="flex-row items-center mb-6">

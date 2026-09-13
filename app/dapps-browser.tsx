@@ -6,7 +6,8 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Alert, Keyboard, StatusBar, View } from "react-native";
+import { Alert, Keyboard, View } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView, WebViewMessageEvent } from "react-native-webview";
 import BrowserBlockedSite from "@/components/dapps-browser/BrowserBlockedSite";
@@ -650,7 +651,7 @@ export default function DappsBrowser() {
 
   return (
     <SafeAreaView className="flex-1 bg-white" edges={[]}>
-      <StatusBar barStyle="dark-content" backgroundColor="#f5f6f9" />
+      <SystemBars style="dark" />
       <View className="flex-1 bg-light-main-container">
         <BrowserAddressBar
           // While an interstitial is up the WebView is parked on

@@ -1,7 +1,17 @@
+allowBuilds:
+  bigint-buffer: true
+  bufferutil: true
+  unrs-resolver: true
+  utf-8-validate: true
+
 nodeLinker: hoisted
 
 onlyBuiltDependencies:
   - '@biomejs/biome'
+  - bigint-buffer
+  - bufferutil
+  - unrs-resolver
+  - utf-8-validate
 
 patchedDependencies:
   '@solana-mobile/mobile-wallet-adapter-walletlib@1.4.5': patches/@solana-mobile__mobile-wallet-adapter-walletlib@1.4.5.patch

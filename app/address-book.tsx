@@ -17,13 +17,13 @@ import {
   Platform,
   Pressable,
   RefreshControl,
-  StatusBar,
   Text,
   TextInput,
   ToastAndroid,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import {
   SafeAreaView,
@@ -167,7 +167,7 @@ export default function AddressBook() {
   if (isAuthenticated !== true && !hadPreviousSession) {
     return (
       <GestureHandlerRootView className="flex-1">
-        <StatusBar barStyle="dark-content" />
+        <SystemBars style="dark" />
         <SafeAreaView
           edges={["top"]}
           className="flex-1 bg-light-main-container"
@@ -277,7 +277,7 @@ export default function AddressBook() {
 
   return (
     <GestureHandlerRootView className="flex-1">
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView
         edges={["top"]}
         className="flex-1 bg-light-main-container"

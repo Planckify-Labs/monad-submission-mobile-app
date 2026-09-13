@@ -1,6 +1,7 @@
 import { useLocalSearchParams } from "expo-router";
 import React, { useEffect, useState } from "react";
-import { Platform, StatusBar, Text, View } from "react-native";
+import { Platform, Text, View } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -40,7 +41,7 @@ export default function PurchaseItemScreen() {
   if (isLoading) {
     return (
       <SafeAreaView className="flex-1 bg-light-main-container" edges={["top"]}>
-        <StatusBar barStyle="dark-content" />
+        <SystemBars style="dark" />
         {hasInput === null ? (
           <ItemVariantWithoutInputSkeleton />
         ) : hasInput ? (
@@ -70,7 +71,7 @@ export default function PurchaseItemScreen() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView
         className="flex-1 bg-light-main-container"
         edges={["top"]}

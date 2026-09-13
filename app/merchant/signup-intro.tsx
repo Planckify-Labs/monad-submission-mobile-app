@@ -36,13 +36,13 @@ import {
 import React, { useCallback, useState } from "react";
 import {
   Pressable,
-  StatusBar,
   StyleSheet,
   Text,
   ToastAndroid,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   NoQrInImageError,
@@ -169,11 +169,7 @@ export default function MerchantSignupIntro() {
 
     return (
       <>
-        <StatusBar
-          barStyle="light-content"
-          translucent
-          backgroundColor="transparent"
-        />
+        <SystemBars style="light" />
         <SafeAreaView className="flex-1 bg-black" edges={[]}>
           <View className="flex-1 overflow-hidden relative">
             <CameraView
@@ -222,11 +218,7 @@ export default function MerchantSignupIntro() {
 
   return (
     <>
-      <StatusBar
-        translucent
-        backgroundColor="transparent"
-        barStyle="dark-content"
-      />
+      <SystemBars style="dark" />
       <SafeAreaView className="flex-1 bg-light-main-container">
         <View className="flex-row items-center px-4 pt-2">
           <Pressable onPress={() => router.back()} className="p-2 -ml-2">

@@ -64,12 +64,12 @@ import {
   ActivityIndicator,
   Pressable,
   ScrollView,
-  StatusBar,
   Text,
   ToastAndroid,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { formatUnits } from "viem";
 import type { TBlockchain } from "@/api/types/blockchain";
@@ -264,11 +264,7 @@ export default function PayMerchantReceipt() {
 
   return (
     <>
-      <StatusBar
-        translucent
-        backgroundColor="transparent"
-        barStyle="dark-content"
-      />
+      <SystemBars style="dark" />
       <SafeAreaView className="flex-1 bg-light-main-container">
         <View className="flex-row items-center px-4 py-3">
           <Pressable

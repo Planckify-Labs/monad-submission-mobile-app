@@ -12,11 +12,11 @@ import React, { useMemo } from "react";
 import {
   Pressable,
   ScrollView,
-  StatusBar,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -122,7 +122,7 @@ export default function OpportunityDetail() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView
         className="flex-1 bg-light-main-container"
         edges={["top"]}

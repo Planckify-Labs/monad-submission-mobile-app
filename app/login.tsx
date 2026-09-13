@@ -6,13 +6,13 @@ import {
   Alert,
   Image,
   ScrollView,
-  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   useWindowDimensions,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import LoadinngSpinnerPopup from "@/components/common/LoadinngSpinnerPopup";
 import ImportPrivateKeySheet from "@/components/wallet/create/ImportPrivateKeySheet";
@@ -143,11 +143,7 @@ export default function Login() {
 
   return (
     <>
-      <StatusBar
-        translucent
-        backgroundColor="transparent"
-        barStyle="dark-content"
-      />
+      <SystemBars style="dark" />
       <SafeAreaView
         className="flex-1 bg-light-main-container"
         style={{ paddingTop: 0 }}

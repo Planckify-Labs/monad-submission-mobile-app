@@ -5,10 +5,10 @@ import {
   Dimensions,
   Platform,
   ScrollView,
-  StatusBar,
   StyleSheet,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -99,7 +99,7 @@ export default function Home() {
   const bottomOffset = Platform.OS === "ios" ? 0 : bottom > 0 ? bottom : 0;
   return (
     <>
-      <StatusBar barStyle="dark-content" backgroundColor="#f5f6f9" />
+      <SystemBars style="dark" />
       <SafeAreaView style={[styles.container]} edges={["top"]}>
         <ScrollView
           ref={scrollViewRef}

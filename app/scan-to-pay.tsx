@@ -13,12 +13,12 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   Image,
   Pressable,
-  StatusBar,
   StyleSheet,
   Text,
   ToastAndroid,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { rejectCopy } from "@/services/deeplinks/copy";
 import {
@@ -162,11 +162,7 @@ export default function ScanToPay() {
 
   return (
     <>
-      <StatusBar
-        barStyle="light-content"
-        translucent
-        backgroundColor="transparent"
-      />
+      <SystemBars style="light" />
       <SafeAreaView className="flex-1 bg-black" edges={[]}>
         <View className="flex-1 overflow-hidden relative">
           <CameraView

@@ -42,7 +42,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: getAppName(),
   slug: "takumiwallet",
-  version: "5.22.0",
+  version: "5.23.0",
   runtimeVersion: { policy: "fingerprint" },
   updates: {
     fallbackToCacheTimeout: 0,
@@ -151,6 +151,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     favicon: "./assets/images/takumipay-no-bg.png",
   },
   plugins: [
+    "react-native-edge-to-edge",
     "./plugins/withAndroidBackupRules",
     "./plugins/withRemoveAndroidMediaPermissions",
     // Android-only: MWA host activity + `solana-wallet` filters + the

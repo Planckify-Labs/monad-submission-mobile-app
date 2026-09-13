@@ -1,11 +1,6 @@
 import React, { useRef, useState } from "react";
-import {
-  Animated,
-  FlatList,
-  ListRenderItemInfo,
-  StatusBar,
-  Text,
-} from "react-native";
+import { Animated, FlatList, ListRenderItemInfo, Text } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -170,7 +165,7 @@ export default function ServiceScreen() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView className="flex-1 bg-light-main-container" edges={["top"]}>
         <FlatList
           data={serviceList}

@@ -35,12 +35,12 @@ import React, { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
-  StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { queryClient } from "@/app/_layout";
 import QKEY_Wallets from "@/constants/queryKeys/walletQueryKeys";
@@ -289,7 +289,7 @@ export default function LockScreen({ onUnlocked }: Props) {
       // the user silently backing out to an interactable home screen.
       onRequestClose={() => {}}
     >
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <BlurView
         intensity={18}
         tint="light"

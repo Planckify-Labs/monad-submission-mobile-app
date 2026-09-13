@@ -4,12 +4,12 @@ import React, { useCallback, useEffect, useState } from "react";
 import {
   Platform,
   ScrollView,
-  StatusBar,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -200,7 +200,7 @@ export default function Withdraw() {
   const bottomOffset = Platform.OS === "ios" ? 0 : bottom > 0 ? bottom : 0;
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView
         className="flex-1 bg-light-main-container"
         edges={["top"]}

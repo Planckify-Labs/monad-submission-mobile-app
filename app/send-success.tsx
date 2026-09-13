@@ -14,11 +14,11 @@ import {
   Animated,
   Linking,
   ScrollView,
-  StatusBar,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { TCreateAddressBookDto } from "@/api/types/addressBook";
 import AddContactModal from "@/components/address-book/AddContactModal";
@@ -161,7 +161,7 @@ export default function SendSuccessScreen() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView
         className="flex-1 bg-light-main-container"
         edges={["top", "bottom"]}

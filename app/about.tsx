@@ -19,14 +19,8 @@ import * as Linking from "expo-linking";
 import { router } from "expo-router";
 import { AlertTriangle, ArrowLeft, ExternalLink } from "lucide-react-native";
 import React, { useMemo } from "react";
-import {
-  Platform,
-  Pressable,
-  ScrollView,
-  StatusBar,
-  Text,
-  View,
-} from "react-native";
+import { Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   BUILD_META,
@@ -113,7 +107,7 @@ export default function AboutScreen() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView className="flex-1 bg-light-main-container" edges={["top"]}>
         <ScrollView
           className="flex-1 px-6"

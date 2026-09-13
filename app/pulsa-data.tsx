@@ -1,6 +1,7 @@
 import { router, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect } from "react";
-import { StatusBar, View } from "react-native";
+import { View } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
   PackageVariantList,
@@ -29,7 +30,7 @@ export default function PulsaDataScreen() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView className="flex-1 bg-light-main-container" edges={["top"]}>
         <View className="flex-1 px-6">
           <ScreenHeader

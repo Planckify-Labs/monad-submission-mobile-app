@@ -12,11 +12,11 @@ import {
   Pressable,
   RefreshControl,
   ScrollView,
-  StatusBar,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -576,7 +576,7 @@ export default function ActivitiesScreen() {
   //   3. Authenticated -> real activity tabs.
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       {isAuthLoading || isAuthenticated === null ? (
         <LoadinngSpinnerPopup
           visible={true}

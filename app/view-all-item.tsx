@@ -2,14 +2,8 @@ import { FlashList } from "@shopify/flash-list";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { ArrowLeft } from "lucide-react-native";
 import React, { useRef, useState } from "react";
-import {
-  Animated,
-  Platform,
-  StatusBar,
-  Text,
-  TouchableOpacity,
-  View,
-} from "react-native";
+import { Animated, Platform, Text, TouchableOpacity, View } from "react-native";
+import { SystemBars } from "react-native-edge-to-edge";
 import {
   SafeAreaView,
   useSafeAreaInsets,
@@ -138,7 +132,7 @@ export default function ViewAllItemScreen() {
   if (isLoading) {
     return (
       <>
-        <StatusBar barStyle="dark-content" />
+        <SystemBars style="dark" />
         <SafeAreaView
           className="flex-1 bg-light-main-container"
           edges={["top"]}
@@ -191,7 +185,7 @@ export default function ViewAllItemScreen() {
 
   return (
     <>
-      <StatusBar barStyle="dark-content" />
+      <SystemBars style="dark" />
       <SafeAreaView
         className="flex-1 bg-light-main-container"
         edges={["top"]}
