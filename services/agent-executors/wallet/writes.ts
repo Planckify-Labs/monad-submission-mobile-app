@@ -21,6 +21,7 @@ import { tokenApi } from "@/api/endpoints/tokens";
 import { transactionApi } from "@/api/endpoints/transactions";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { getPreferredGasToken } from "@/hooks/usePreferredGasToken";
+import { fixedErc20TransferGasLimit } from "@/services/chains/evm/monad";
 import { pollRelayerTaskHash } from "@/services/gasAbstraction/pollTaskStatus";
 import { resolveGasPayment } from "@/services/gasAbstraction/resolveGasPayment";
 import {
@@ -198,6 +199,12 @@ export const transferErc20: MobileToolExecutor = (input, context) =>
           "wallet client has no account",
         );
       }
+      // Monad bills on gas_limit, not gas_used — same pinned limit as
+      // `EvmWalletKit.sendTokenTransfer` for the AUSD call shape.
+      const gas = fixedErc20TransferGasLimit({
+        chainId,
+        contractAddress: tokenAddress,
+      });
       hash = await walletClient.writeContract({
         account,
         chain: walletClient.chain,
@@ -205,6 +212,7 @@ export const transferErc20: MobileToolExecutor = (input, context) =>
         abi: erc20Abi,
         functionName: "transfer",
         args: [to, amount],
+        ...(gas !== undefined ? { gas } : {}),
       });
     }
 

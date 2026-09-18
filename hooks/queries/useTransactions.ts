@@ -59,6 +59,11 @@ export const usePaymentDetail = (id: string | undefined) => {
       if (!id) return {} as TPaymentTransactionDetail;
       return transactionApi.getPaymentDetail(id);
     },
+    // Live while the server is still verifying the payment against the
+    // chain, so the detail flips to Paid on its own; a push also
+    // invalidates this key, the poll is the fallback.
+    refetchInterval: (query) =>
+      query.state.data?.status === "PENDING" ? 3_000 : false,
     staleTime: 5 * 60 * 1000,
     gcTime: 24 * 60 * 60 * 1000,
     enabled: !!id && isAuthenticated === true && isLoading === false,

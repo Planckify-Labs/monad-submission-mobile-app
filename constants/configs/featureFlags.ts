@@ -135,3 +135,30 @@ export const FEATURE_EVM_ONCHAIN_SETTLEMENT_MAINNET = flag(
   "EXPO_PUBLIC_FF_EVM_ONCHAIN_SETTLEMENT_MAINNET",
   false,
 );
+
+/**
+ * Mera passkey onboarding (docs/monad-metropolis-2026-spec.md §3.5).
+ *
+ * Two levels:
+ *   - `FEATURE_PASSKEY_ONBOARDING` shows "Continue with passkey" on the
+ *     login screen next to the existing options.
+ *   - `FEATURE_PASSKEY_ONLY_ONBOARDING` additionally HIDES the
+ *     Google / seed-phrase / private-key paths so the passkey is the
+ *     entire account layer for the judged build (Mera bounty framing,
+ *     strategy doc "What NOT to do"). Implies the first flag.
+ *
+ * On the `monad-hackathon` branch passkey-only is the DEFAULT, so a plain
+ * `pnpm start` dev bundle shows the same login as the judged `.preview`
+ * build without any `.env` setup. Set
+ * `EXPO_PUBLIC_FF_PASSKEY_ONLY_ONBOARDING=false` to get the full login
+ * back. Before merging to `main` flip this default back to `false`: the
+ * Play Store production build must stay untouched (Mera is pre-1.0 and
+ * Android PRF coverage is unverified).
+ */
+export const FEATURE_PASSKEY_ONLY_ONBOARDING = flag(
+  "EXPO_PUBLIC_FF_PASSKEY_ONLY_ONBOARDING",
+  true,
+);
+export const FEATURE_PASSKEY_ONBOARDING =
+  FEATURE_PASSKEY_ONLY_ONBOARDING ||
+  flag("EXPO_PUBLIC_FF_PASSKEY_ONBOARDING", false);

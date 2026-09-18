@@ -20,6 +20,9 @@ importers:
       '@ai-sdk/react':
         specifier: ^3.0.41
         version: 3.0.41(react@19.1.0)(zod@4.1.12)
+      '@category-labs/mera':
+        specifier: 0.2.0
+        version: 0.2.0(react-native-passkey@3.6.1(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0))(viem@2.37.9(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@4.1.12))
       '@cetusprotocol/aggregator-sdk':
         specifier: ^1.6.0
         version: 1.6.0(axios@1.18.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1))(typescript@5.9.3)
@@ -293,6 +296,9 @@ importers:
       react-native-mmkv:
         specifier: ^4.3.0
         version: 4.3.0(react-native-nitro-modules@0.35.2(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0))(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0)
+      react-native-passkey:
+        specifier: 3.6.1
+        version: 3.6.1(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0)
       react-native-qrcode-styled:
         specifier: ^0.4.0
         version: 0.4.0(react-native-svg@15.12.1(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0))(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0)
@@ -1007,6 +1013,18 @@ packages:
     engines: {node: '>=14.21.3'}
     cpu: [x64]
     os: [win32]
+
+  '@category-labs/mera@0.2.0':
+    resolution: {integrity: sha512-cdBTSy1NvHJn+GqbAnSREeAx2QD+OuQM+vU2O/HDB+8Ya9/+lyVGklJzvSw6NJxzxoee9lpEcPS7/AvbAD4xsA==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      react-native-passkey: 3.6.1
+      viem: ^2.28.0
+    peerDependenciesMeta:
+      react-native-passkey:
+        optional: true
+      viem:
+        optional: true
 
   '@cetusprotocol/aggregator-sdk@1.6.0':
     resolution: {integrity: sha512-+Nfo6XF9xbtTcRh7ywlueaF7h3kFYaO+ENf7DtEXpWTGf1lEdNsPwyURm+ZJILHhzWS87rU5gVKVHTi63iS8gw==}
@@ -6068,6 +6086,12 @@ packages:
       react: '*'
       react-native: '*'
 
+  react-native-passkey@3.6.1:
+    resolution: {integrity: sha512-m3lN9IQvR3rhatmKfviYg7l91Or5QgykIoD5dsDJUvRo4C2Lnm82NbwM9nJ7oXSO3WY1DQig5t/fk9QLx0PYIg==}
+    peerDependencies:
+      react: '*'
+      react-native: '*'
+
   react-native-qrcode-styled@0.4.0:
     resolution: {integrity: sha512-j5C5LFOr9KdAqm1snQX8UQH9RFRSH4FY1/7Ts/UvtR/5A9rmb61ZzIIW5d0RteY1D+DWVfnXDMhLmTJXXRgKpg==}
     engines: {node: '>= 16.0.0'}
@@ -8024,6 +8048,15 @@ snapshots:
   '@biomejs/cli-win32-x64@2.2.4':
     optional: true
 
+  '@category-labs/mera@0.2.0(react-native-passkey@3.6.1(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0))(viem@2.37.9(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@4.1.12))':
+    dependencies:
+      '@noble/curves': 2.2.0
+      '@noble/hashes': 2.2.0
+      '@scure/base': 2.2.0
+    optionalDependencies:
+      react-native-passkey: 3.6.1(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0)
+      viem: 2.37.9(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@6.0.6)(zod@4.1.12)
+
   '@cetusprotocol/aggregator-sdk@1.6.0(axios@1.18.0(debug@4.4.3(supports-color@8.1.1))(supports-color@8.1.1))(typescript@5.9.3)':
     dependencies:
       '@mysten/sui': 2.18.0(typescript@5.9.3)
@@ -9417,7 +9450,7 @@ snapshots:
 
   '@scure/bip32@1.7.0':
     dependencies:
-      '@noble/curves': 1.9.7
+      '@noble/curves': 1.9.1
       '@noble/hashes': 1.8.0
       '@scure/base': 1.2.6
 
@@ -13955,7 +13988,7 @@ snapshots:
     dependencies:
       '@adraffy/ens-normalize': 1.11.1
       '@noble/ciphers': 1.3.0
-      '@noble/curves': 1.9.7
+      '@noble/curves': 1.9.1
       '@noble/hashes': 1.8.0
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
@@ -14353,6 +14386,11 @@ snapshots:
       react-native-nitro-modules: 0.35.2(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0)
 
   react-native-nitro-modules@0.35.2(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0):
+    dependencies:
+      react: 19.1.0
+      react-native: 0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6)
+
+  react-native-passkey@3.6.1(react-native@0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6))(react@19.1.0):
     dependencies:
       react: 19.1.0
       react-native: 0.81.5(@babel/core@7.28.4(supports-color@8.1.1))(@types/react@19.1.16)(bufferutil@4.1.0)(react@19.1.0)(supports-color@8.1.1)(utf-8-validate@6.0.6)

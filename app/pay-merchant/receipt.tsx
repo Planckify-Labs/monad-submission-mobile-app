@@ -71,17 +71,15 @@ import {
 } from "react-native";
 import { SystemBars } from "react-native-edge-to-edge";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { formatUnits } from "viem";
 import type { TBlockchain } from "@/api/types/blockchain";
 import { transactionsQueryKeys } from "@/constants/queryKeys/transactionsQueryKeys";
 import { useBlockchains } from "@/hooks/queries/useBlockchains";
+import { usePaymentTokens } from "@/hooks/queries/usePaymentTokens";
 import { useWallet } from "@/hooks/useWallet";
 import type { PaymentIntentResponse } from "@/services/nanopay";
 import { useIntentStatus } from "@/services/nanopay";
+import { settlementAmountLabel } from "@/services/nanopay/settlementAmount";
 import { copyToClipboard } from "@/utils/helperUtils";
-
-/** USDC is a 6-decimal ERC-20 (spec §6.2 — `nanopayUsdcAmountMicros` is micros). */
-const USDC_DECIMALS = 6;
 
 /** ── helpers ────────────────────────────────────────────────────────── */
 
@@ -92,17 +90,6 @@ const formatIdrMinor = (minor: number): string => {
     groups.unshift(s.slice(Math.max(0, i - 3), i));
   }
   return `Rp ${groups.join(".")}`;
-};
-
-const formatUsdcMicros = (micros: string): string => {
-  try {
-    const whole = formatUnits(BigInt(micros), USDC_DECIMALS);
-    const n = Number.parseFloat(whole);
-    if (!Number.isFinite(n)) return `${whole} USDC`;
-    return `${n.toFixed(n < 1 ? 4 : 2)} USDC`;
-  } catch {
-    return `${micros} µUSDC`;
-  }
 };
 
 /**
@@ -337,7 +324,19 @@ function StatusStrip({ intent }: { intent: PaymentIntentResponse }) {
         <View className="flex-row items-start bg-red-50 rounded-xl px-4 py-3 mb-4">
           <AlertCircle color="#dc2626" size={20} />
           <Text className="text-red-800 text-sm ml-3 flex-1">
-            Payout failed. Funds held — ops will re-attempt. Ref: {intent.id}
+            This payment didn't go through, so you weren't charged. Ref:{" "}
+            {intent.id}
+          </Text>
+        </View>
+      );
+    case "settling":
+      // Reached from the "Payment sent" push or from Activity while the
+      // settlement worker is still verifying against the chain.
+      return (
+        <View className="flex-row items-center bg-light-main-container rounded-xl px-4 py-3 mb-4">
+          <ActivityIndicator size="small" color="#c71c4b" />
+          <Text className="text-light-matte-black/70 text-sm ml-3 flex-1">
+            Confirming your payment. You can leave, we'll let you know.
           </Text>
         </View>
       );
@@ -367,7 +366,13 @@ function ReceiptBody({
   merchantName?: string;
 }) {
   const fiatLabel = formatIdrMinor(extractFiatMinor(intent));
-  const usdcLabel = formatUsdcMicros(intent.nanopayUsdcAmountMicros);
+  const paymentTokens = usePaymentTokens({ blockchainId: intent.blockchainId });
+  const paymentToken = useMemo(() => {
+    const wanted = intent.sourceTokenId ?? intent.sourceToken?.id;
+    if (!wanted || !paymentTokens.data?.length) return null;
+    return paymentTokens.data.find((t) => t.id === wanted) ?? null;
+  }, [paymentTokens.data, intent.sourceTokenId, intent.sourceToken?.id]);
+  const usdcLabel = settlementAmountLabel(intent, paymentToken);
   const merchantName = extractMerchantName(intent, merchantNameParam);
   const timestamp = useMemo(() => formatReceiptTimestamp(intent), [intent]);
 
@@ -489,7 +494,7 @@ function DetailsSection({ intent }: { intent: PaymentIntentResponse }) {
           ) : null}
           <ReceiptRow
             label="Token amount"
-            value={formatUsdcMicros(intent.nanopayUsdcAmountMicros)}
+            value={settlementAmountLabel(intent)}
           />
         </View>
       ) : null}

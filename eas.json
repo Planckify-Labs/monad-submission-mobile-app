@@ -5,25 +5,32 @@
   },
   "build": {
     "development": {
+      "node": "22.13.0",
       "developmentClient": true,
       "distribution": "internal",
       "environment": "development",
       "env": {
-        "APP_VARIANT": "development"
+        "APP_VARIANT": "development",
+        "EXPO_PUBLIC_FF_PASSKEY_ONLY_ONBOARDING": "true"
       }
     },
     "preview": {
+      "node": "22.13.0",
       "distribution": "internal",
       "environment": "preview",
       "env": {
-        "APP_VARIANT": "preview"
+        "APP_VARIANT": "preview",
+        "EXPO_PUBLIC_FF_PASSKEY_ONLY_ONBOARDING": "true"
       }
     },
     "production": {
+      "node": "22.13.0",
       "autoIncrement": true,
       "environment": "production",
       "env": {
-        "APP_VARIANT": "production"
+        "APP_VARIANT": "production",
+        "EXPO_PUBLIC_FF_PASSKEY_ONLY_ONBOARDING": "false",
+        "EXPO_PUBLIC_FF_PASSKEY_ONBOARDING": "false"
       }
     }
   },

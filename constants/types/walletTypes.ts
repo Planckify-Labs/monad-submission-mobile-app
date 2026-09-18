@@ -6,7 +6,24 @@ export type WalletType =
   | "SeedPhrase"
   | "Social"
   | "Smart4337"
-  | "Smart7702";
+  | "Smart7702"
+  /**
+   * Mera passkey wallet (docs/monad-metropolis-2026-spec.md §3). An
+   * EVM-only EOA whose key is a deterministic function of a platform
+   * passkey's WebAuthn PRF output. The user never sees a seed phrase;
+   * the passkey itself is the recovery mechanism (same passkey on a new
+   * device reproduces the same key). Signs exactly like `PrivateKey`.
+   */
+  | "Passkey";
+
+export interface TPasskeyFields {
+  /** WebAuthn credential id, canonical unpadded base64url. */
+  credentialId: string;
+  /** Relying-party id the passkey is scoped to (`takumipay.xyz`). */
+  rpId: string;
+  /** Authenticator transports reported at creation, when available. */
+  transports?: string[];
+}
 
 export interface TSmart4337Fields {
   signerWalletId: string;
@@ -96,6 +113,8 @@ export interface TWallet {
   };
   smart4337?: TSmart4337Fields;
   smart7702?: TSmart7702Fields;
+  /** Present iff `type === "Passkey"`. Non-secret credential metadata. */
+  passkey?: TPasskeyFields;
   solana?: TSolanaFields;
   sui?: TSuiFields;
   stellar?: TStellarFields;

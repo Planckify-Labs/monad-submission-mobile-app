@@ -51,6 +51,7 @@ import { buildChainConfigFromBlockchain } from "@/hooks/useWallet.helpers";
 import { toChainTag } from "@/services/analytics/chainTag";
 import { track } from "@/services/analytics/posthog";
 import type { Provenance } from "@/services/deeplinks/types";
+import { classifySendError, sendErrorCopy } from "@/services/errors/sendErrors";
 import { pollRelayerTaskHash } from "@/services/gasAbstraction/pollTaskStatus";
 import { resolveGasPayment } from "@/services/gasAbstraction/resolveGasPayment";
 import { classifySuiRecipient } from "@/utils/walletUtils";
@@ -587,7 +588,7 @@ export default function SendScreen() {
 
   const validateInputs = useCallback(() => {
     if (!recipient) {
-      console.error("Error: Please enter a recipient address");
+      Alert.alert("Who are you sending to?", "Pick a recipient first.");
       return false;
     }
 
@@ -601,27 +602,38 @@ export default function SendScreen() {
         const verdict = classifySuiRecipient(recipient);
         if (!verdict.ok && verdict.kind === "legacy20") {
           if (__DEV__) console.error(`Error: ${verdict.message}`);
+          Alert.alert(
+            "Check the recipient",
+            "This looks like an older address format that can't receive here. Ask the recipient for their current address.",
+          );
           return false;
         }
       }
-      console.error("Error: Invalid recipient address for the active chain");
+      Alert.alert(
+        "Check the recipient",
+        "That doesn't look like a valid recipient. Pick one from your contacts or paste it again.",
+      );
       return false;
     }
 
     if (!amount || parseFloat(amount) <= 0) {
-      console.error("Error: Please enter a valid amount");
+      Alert.alert("Enter an amount", "Enter how much you'd like to send.");
       return false;
     }
 
+    // Pre-flight balance checks, worded for someone who has never heard
+    // of gas: the copy in `sendErrorCopy` is the single source for this.
     if (selectedToken?.isNativeCurrency !== false) {
       const raw = kit.parseNativeAmount(amount, activeChain);
       if (raw <= 0n || raw > balance) {
-        console.error(
-          "Insufficient Balance:",
-          `You don't have enough ${nativeSymbol || "funds"} to complete this transaction.`,
-        );
+        const copy = sendErrorCopy("insufficient_balance", nativeSymbol);
+        Alert.alert(copy.title, copy.message);
         return false;
       }
+    } else if (parseFloat(amount) > parseFloat(tokenBalance || "0")) {
+      const copy = sendErrorCopy("insufficient_balance", selectedToken.symbol);
+      Alert.alert(copy.title, copy.message);
+      return false;
     }
 
     if (assetReceivableWarning) {
@@ -637,6 +649,8 @@ export default function SendScreen() {
     recipient,
     activeChain,
     selectedToken?.isNativeCurrency,
+    selectedToken?.symbol,
+    tokenBalance,
     nativeSymbol,
     assetReceivableWarning,
   ]);
@@ -693,14 +707,14 @@ export default function SendScreen() {
           setIsLoading(false);
           Alert.alert(
             "Not enough USDC",
-            "You don't have enough USDC to cover this transfer plus the network fee. Add USDC, or switch your gas token to native in Gas Settings.",
+            "You don't have enough USDC to cover this transfer plus the network fee. Add USDC, or switch the fee currency back to native in Gas Settings.",
           );
           return;
         }
 
         if (plan.mode === "abstracted") {
           try {
-            setTransactionStatus("Paying gas in USDC…");
+            setTransactionStatus("Paying the network fee in USDC…");
             const execResult = await plan.provider.execute({
               wallet: activeWallet,
               chain: activeChain,
@@ -722,7 +736,7 @@ export default function SendScreen() {
             setIsLoading(false);
             Alert.alert(
               "Transfer failed",
-              "We couldn't complete your gasless transfer. Please try again.",
+              "We couldn't send this transfer with the fee paid in USDC. Please try again, or switch the fee currency back to native in Gas Settings.",
             );
             return;
           }
@@ -832,8 +846,20 @@ export default function SendScreen() {
           gasFeeAmount,
         },
       });
-    } catch (error: any) {
-      console.error("Send transaction error:", error);
+    } catch (error: unknown) {
+      // Raw detail stays in dev logs; the user gets fixed copy that never
+      // mentions gas / tokens / chains (services/errors/sendErrors.ts).
+      if (__DEV__) console.error("Send transaction error:", error);
+      const code = classifySendError(error);
+      if (code !== "user_cancelled") {
+        const copy = sendErrorCopy(
+          code,
+          selectedToken && selectedToken.isNativeCurrency === false
+            ? selectedToken.symbol
+            : nativeSymbol,
+        );
+        Alert.alert(copy.title, copy.message);
+      }
     } finally {
       setIsLoading(false);
     }

@@ -3,36 +3,11 @@ import { Store } from "lucide-react-native";
 import React, { useCallback } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import { formatUnits } from "viem/utils";
-import type { TTransaction, TTransactionStatus } from "@/api/types/transaction";
+import type { TTransaction } from "@/api/types/transaction";
 import { formatDate } from "@/utils/dateUtils";
 import { formatTokenAmount } from "@/utils/helperUtils";
 import Chip from "../common/Chip";
-
-const STATUS_CHIP: Record<
-  TTransactionStatus,
-  { label: string; color: string; bg: string }
-> = {
-  PENDING: {
-    label: "Pending",
-    color: "#b45309",
-    bg: "rgba(245, 158, 11, 0.1)",
-  },
-  PROCESSING: {
-    label: "Processing",
-    color: "#1d4ed8",
-    bg: "rgba(59, 130, 246, 0.1)",
-  },
-  COMPLETED: {
-    label: "Completed",
-    color: "#047857",
-    bg: "rgba(16, 185, 129, 0.1)",
-  },
-  FAILED: {
-    label: "Failed",
-    color: "#dc2626",
-    bg: "rgba(239, 68, 68, 0.1)",
-  },
-};
+import { PAYMENT_STATUS_CHIP } from "./paymentStatusChip";
 
 const PaymentCard = React.memo(
   ({ transaction }: { transaction: TTransaction }) => {
@@ -46,7 +21,7 @@ const PaymentCard = React.memo(
     }, [router, transaction.id]);
 
     const merchantName = transaction.merchantName ?? "Merchant";
-    const chip = STATUS_CHIP[transaction.status];
+    const chip = PAYMENT_STATUS_CHIP[transaction.status];
 
     const tokenAmount = (() => {
       if (!transaction.amount) return "0";

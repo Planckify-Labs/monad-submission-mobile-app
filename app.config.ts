@@ -82,7 +82,16 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // pairing URIs. AASA hosted at
     // `https://takumipay.xyz/.well-known/apple-app-site-association`
     // verifies this app as the sole opener for `https://takumipay.xyz/*`.
-    associatedDomains: ["applinks:takumipay.xyz"],
+    //
+    // `webcredentials:` — Mera passkeys (docs/monad-metropolis-2026-spec.md
+    // §3.3). The passkey relying party is `takumipay.xyz`; iOS only lets an
+    // app create/assert passkeys for a domain whose AASA `webcredentials`
+    // block lists this app id, for EVERY bundle variant that ships the
+    // flow (`.preview` is the judged build).
+    associatedDomains: [
+      "applinks:takumipay.xyz",
+      "webcredentials:takumipay.xyz",
+    ],
     infoPlist: {
       // Only schemes we *query* with `canOpenURL` (none today); dApp
       // return links are opened with `openURL` inside try/catch, so this

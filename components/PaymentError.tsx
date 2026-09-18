@@ -27,8 +27,9 @@ import { useEffect } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import {
   type PaymentErrorCode,
+  type PaymentErrorContext,
   type PaymentErrorCtaAction,
-  paymentErrorCopy,
+  resolvePaymentErrorCopy,
 } from "@/services/errors/paymentErrors";
 import { logPaymentError } from "@/services/errors/telemetry";
 
@@ -40,6 +41,11 @@ export interface PaymentErrorProps {
   intentId?: string;
   /** Opaque server merchant id, forwarded to telemetry. */
   merchantId?: string;
+  /**
+   * What this payment was in (token, fee coin, network) so the balance
+   * codes can name it instead of assuming a currency.
+   */
+  context?: PaymentErrorContext;
   onRetry?: () => void;
   onBack?: () => void;
   onRescan?: () => void;
@@ -57,6 +63,7 @@ export function PaymentError({
   devMessage,
   intentId,
   merchantId,
+  context,
   onRetry,
   onBack,
   onRescan,
@@ -66,7 +73,7 @@ export function PaymentError({
     logPaymentError({ code, intentId, merchantId });
   }, [code, intentId, merchantId]);
 
-  const copy = paymentErrorCopy[code];
+  const copy = resolvePaymentErrorCopy(code, context);
   const Icon = CTA_ICONS[code] ?? XCircle;
 
   const handler = resolveHandler(copy.cta?.action, {

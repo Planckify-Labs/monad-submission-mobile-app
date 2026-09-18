@@ -32,7 +32,7 @@
  * Exhaustive set of payer-facing error codes across M1→M6.
  *
  * M2 happy-path codes (landed with task 18):
- *   - `insufficient_usdc`, `user_cancelled`, `network`,
+ *   - `insufficient_funds`, `insufficient_fee`, `user_cancelled`, `network`,
  *     `quote_expired`, `backend_not_ready`, `chain_mismatch`,
  *     `wallet_unsupported`, `unknown`.
  *
@@ -51,7 +51,8 @@
  *   - `server_error` — catch-all for 5xx that isn't `backend_not_ready`.
  */
 export type PaymentErrorCode =
-  | "insufficient_usdc"
+  | "insufficient_funds"
+  | "insufficient_fee"
   | "user_cancelled"
   | "network"
   | "quote_expired"
@@ -67,6 +68,8 @@ export type PaymentErrorCode =
   | "unauthorized"
   | "merchant_deactivated"
   | "server_error"
+  | "settlement_unconfirmed"
+  | "payment_not_completed"
   | "unknown";
 
 /** Primary CTA semantic action — the component maps this to a handler prop. */
@@ -81,6 +84,74 @@ export interface PaymentErrorCopy {
   title: string;
   body: string;
   cta?: { label: string; action: PaymentErrorCtaAction };
+}
+
+/**
+ * What the payer was actually paying with, for the codes whose copy has
+ * to name it. Nothing here is ever assumed: a Monad AUSD payment says
+ * "AUSD" and "MON", a nanopay one says "USDC", and when a caller cannot
+ * say (token list still loading) the copy falls back to "your balance"
+ * rather than guessing a currency.
+ */
+export interface PaymentErrorContext {
+  /** Symbol of the token the payment settles in, e.g. "AUSD", "USDC". */
+  tokenSymbol?: string;
+  /** Symbol of the network's own coin that pays the fee, e.g. "MON". */
+  feeSymbol?: string;
+  /** Network display name, e.g. "Monad Testnet". */
+  networkName?: string;
+  /** Formatted fee the call needs, e.g. "0.044", when known. */
+  feeNeeded?: string;
+  /** Formatted native balance the wallet has, e.g. "0.023", when known. */
+  feeHave?: string;
+}
+
+/**
+ * Copy for `code`, with the two balance codes phrased for the actual
+ * payment. Everything else is the static table.
+ */
+export function resolvePaymentErrorCopy(
+  code: PaymentErrorCode,
+  ctx: PaymentErrorContext = {},
+): PaymentErrorCopy {
+  // Neither balance code offers a top-up: there is no in-app way to buy
+  // AUSD/MON here, so a "Top up" button would be a promise nothing keeps.
+  // The way out is the one the pay screen actually has — another wallet
+  // (Pay from) or another token (Pay with) — which is one step back.
+  if (code === "insufficient_funds") {
+    const t = ctx.tokenSymbol;
+    return {
+      title: t ? `Not enough ${t}` : "Not enough balance",
+      body: t
+        ? `This wallet doesn't have enough ${t} for this payment. Choose another wallet, or pay with a different token.`
+        : "This wallet doesn't have enough for this payment. Choose another wallet, or pay with a different token.",
+      cta: { label: "Change wallet or token", action: "back" },
+    };
+  }
+  if (code === "insufficient_fee") {
+    const f = ctx.feeSymbol;
+    const n = ctx.networkName ?? "this network";
+    const hasNone = ctx.feeHave === undefined || Number(ctx.feeHave) === 0;
+    const title = f
+      ? hasNone
+        ? `This wallet has no ${f}`
+        : `Not enough ${f} for the fee`
+      : "This wallet can't cover the fee";
+    let body: string;
+    if (f && ctx.feeNeeded && ctx.feeHave && !hasNone) {
+      body = `Paying on ${n} costs about ${ctx.feeNeeded} ${f} in fees, and this wallet has ${ctx.feeHave} ${f}. Add a little ${f}, or choose a wallet that has some.`;
+    } else if (f) {
+      body = `Paying on ${n} costs a small fee in ${f}, and this wallet has none. Choose a wallet that has some ${f}, or pay on a different network.`;
+    } else {
+      body = `Paying on ${n} costs a small fee that this wallet can't cover. Choose another wallet, or pay on a different network.`;
+    }
+    return {
+      title,
+      body,
+      cta: { label: "Change wallet or network", action: "back" },
+    };
+  }
+  return paymentErrorCopy[code];
 }
 
 /**
@@ -201,8 +272,27 @@ export function classifyPaymentError(err: unknown): PaymentErrorCode {
   ) {
     return "user_cancelled";
   }
+  // Thrown by the settlement path before signing, with real numbers.
+  if (e.name === "InsufficientFeeError") {
+    return "insufficient_fee";
+  }
+
+  // The network's own coin ran out (viem: "The total cost (gas * gas fee +
+  // value) of executing this transaction exceeds the balance of the
+  // account", "insufficient funds for gas * price + value"). Check this
+  // before the generic balance match — the ERC-20 balance may ALSO be
+  // zero, but this is what actually stopped the transaction, and the
+  // remedy (get some MON) is different from topping up the token.
+  if (
+    e.name === "InsufficientFundsError" ||
+    /exceeds the balance of the account|insufficient funds for gas|gas \* (gas fee|price)/i.test(
+      message,
+    )
+  ) {
+    return "insufficient_fee";
+  }
   if (/insufficient|balance/i.test(message)) {
-    return "insufficient_usdc";
+    return "insufficient_funds";
   }
   if (/network|fetch|timeout|offline/i.test(message)) {
     return "network";
@@ -216,15 +306,22 @@ export function classifyPaymentError(err: unknown): PaymentErrorCode {
  * payer; `cta.action` is a semantic verb the component resolves to one
  * of the `onRetry` / `onBack` / `onRescan` / `onTopUp` props.
  *
- * Copy-audience rule enforced: no USDC / chain / gas / signature in the
- * `title`; the `body` may reference "USDC wallet" where it's genuinely
- * useful context (e.g. `insufficient_usdc` top-up prompt).
+ * Copy-audience rule enforced: no chain / gas / signature jargon in the
+ * `title`; the `body` may name the actual token or fee coin where it's
+ * genuinely useful context (the balance codes, via `resolvePaymentErrorCopy`).
  */
 export const paymentErrorCopy: Record<PaymentErrorCode, PaymentErrorCopy> = {
-  insufficient_usdc: {
-    title: "Not enough USDC",
-    body: "Top up your USDC wallet to pay this merchant.",
-    cta: { label: "Top up USDC", action: "topup" },
+  // The two balance codes are phrased per payment by
+  // `resolvePaymentErrorCopy`; these entries are the no-context fallback.
+  insufficient_funds: {
+    title: "Not enough balance",
+    body: "This wallet doesn't have enough for this payment. Choose another wallet, or pay with a different token.",
+    cta: { label: "Change wallet or token", action: "back" },
+  },
+  insufficient_fee: {
+    title: "This wallet can't cover the fee",
+    body: "Paying on this network costs a small fee that this wallet can't cover. Choose another wallet, or pay on a different network.",
+    cta: { label: "Change wallet or network", action: "back" },
   },
   user_cancelled: {
     title: "Payment cancelled",
@@ -301,6 +398,21 @@ export const paymentErrorCopy: Record<PaymentErrorCode, PaymentErrorCopy> = {
     title: "Something went wrong on our end",
     body: "We're looking into it. Please try again in a moment.",
     cta: { label: "Retry", action: "retry" },
+  },
+  // The on-chain payment is already out (mined or at least broadcast) but
+  // the server hasn't confirmed it yet. Retry re-checks with the same
+  // transaction; it never signs a second payment.
+  settlement_unconfirmed: {
+    title: "Payment sent, still confirming",
+    body: "Your payment went through on the network but we couldn't confirm it yet. Tap Check again. You won't be charged twice.",
+    cta: { label: "Check again", action: "retry" },
+  },
+  // The chain itself rejected the payment transaction (reverted), so no
+  // money moved. The quote is spent; a fresh scan is the way back in.
+  payment_not_completed: {
+    title: "Payment didn't go through",
+    body: "The network didn't accept this payment, so you weren't charged. Scan the code again to retry.",
+    cta: { label: "Scan again", action: "rescan" },
   },
   unknown: {
     title: "Something went wrong",

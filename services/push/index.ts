@@ -317,6 +317,13 @@ async function postPushToken(
 /** Shape of the `data` payload we expect from server-sent PAID_OUT pushes. */
 interface PayoutPushData {
   intentId?: string;
+  /**
+   * The payer's Activity row for this payment. When present, a tap lands
+   * there — a tapped push is a look-up, not the end of a pay flow, so the
+   * durable record with back → Activity is the right destination. Older
+   * api responses omit it and fall back to the receipt.
+   */
+  transactionId?: string;
   // Display fields (safe to show in banner / log); the server never
   // includes signature / nonce / Circle internals per §6.3.
   merchantDisplayName?: string;
@@ -335,6 +342,8 @@ function readPayoutData(
   }
   return {
     intentId: data.intentId,
+    transactionId:
+      typeof data.transactionId === "string" ? data.transactionId : undefined,
     merchantDisplayName:
       typeof data.merchantDisplayName === "string"
         ? data.merchantDisplayName
@@ -450,6 +459,31 @@ interface TransferPushData {
   transactionId?: string;
 }
 
+/**
+ * A merchant-payment outcome that is NOT a successful settlement
+ * ("we're checking" / "didn't go through"). The api deliberately omits
+ * `intentId` on these — the receipt screen is for paid intents — and
+ * points at the Activity row instead.
+ */
+interface MerchantPaymentPushData {
+  status?: string;
+  transactionId?: string;
+}
+
+function readMerchantPaymentPushData(
+  notification: Notifications.Notification,
+): MerchantPaymentPushData | null {
+  const raw = notification.request.content.data;
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  if (data.type !== "merchant_payment") return null;
+  return {
+    status: typeof data.status === "string" ? data.status : undefined,
+    transactionId:
+      typeof data.transactionId === "string" ? data.transactionId : undefined,
+  };
+}
+
 function readTransferPushData(
   notification: Notifications.Notification,
 ): TransferPushData | null {
@@ -483,6 +517,18 @@ export function usePushNotificationHandler(): void {
         const payoutData = readPayoutData(notification);
         if (payoutData?.intentId) {
           invalidateIntent(payoutData.intentId);
+          // The Activity row for this payment just changed status
+          // (Confirming → Paid); refresh the list and any open detail.
+          queryClient.invalidateQueries({
+            queryKey: transactionsQueryKeys.all,
+          });
+          return;
+        }
+
+        if (readMerchantPaymentPushData(notification)) {
+          queryClient.invalidateQueries({
+            queryKey: transactionsQueryKeys.all,
+          });
           return;
         }
 
@@ -562,6 +608,25 @@ export function usePushNotificationHandler(): void {
             return;
           }
 
+          const merchantPayment = readMerchantPaymentPushData(
+            response.notification,
+          );
+          if (merchantPayment) {
+            try {
+              router.push(
+                merchantPayment.transactionId
+                  ? {
+                      pathname: "/activity-detail" as never,
+                      params: { paymentId: merchantPayment.transactionId },
+                    }
+                  : ("/activities" as never),
+              );
+            } catch (err) {
+              console.warn("[push] activity route not available:", err);
+            }
+            return;
+          }
+
           const transferData = readTransferPushData(response.notification);
           if (transferData?.transactionId) {
             try {
@@ -580,6 +645,20 @@ export function usePushNotificationHandler(): void {
             void resumeDappRequest(dappRequest);
           }
           return;
+        }
+        if (data.transactionId) {
+          try {
+            router.push({
+              pathname: "/activity-detail" as never,
+              params: { paymentId: data.transactionId },
+            });
+            return;
+          } catch (err) {
+            console.warn(
+              "[push] activity-detail route not available, falling back to receipt:",
+              err,
+            );
+          }
         }
         try {
           router.push({

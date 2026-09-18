@@ -43,8 +43,11 @@
  *     `components/PaymentError.tsx`. No inline error strings remain.
  */
 
+import { useQueryClient } from "@tanstack/react-query";
 import { router, useLocalSearchParams } from "expo-router";
+import { HTTPError } from "ky";
 import {
+  AlertCircle,
   ArrowLeft,
   Check,
   CheckCircle2,
@@ -58,7 +61,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
-  Image,
   Pressable,
   ScrollView,
   Text,
@@ -71,8 +73,13 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { formatUnits } from "viem";
 import type { TBlockchain } from "@/api/types/blockchain";
 import { BaseModal, ModalHeader } from "@/components/common/BaseModal";
+import OptimizedImage from "@/components/common/OptimizedImage";
 import PinConfirmationModal from "@/components/common/PinConfirmationModal";
 import { PaymentError } from "@/components/PaymentError";
+import {
+  PaymentProgressHero,
+  type PayStep,
+} from "@/components/pay-merchant/PaymentProgressHero";
 import WalletSelectorModal from "@/components/wallet/WalletSelectorModal";
 import {
   type ChainConfig,
@@ -99,6 +106,8 @@ import { track } from "@/services/analytics/posthog";
 import {
   classifyPaymentError,
   type PaymentErrorCode,
+  type PaymentErrorContext,
+  resolvePaymentErrorCopy,
 } from "@/services/errors/paymentErrors";
 import {
   buildAuthorizationFromIntent,
@@ -117,14 +126,19 @@ import {
   watchArcPayoutEvent,
 } from "@/services/nanopay/pathADirectArc";
 import {
+  buildMerchantPaymentCall,
   executeOnchainSettlement,
+  MERCHANT_PAYMENT_GAS_FALLBACK,
   type OnchainSubmitRequest,
   type OnchainSubmitResponse,
   onchainSubmitEndpoint,
   postOnchainSubmit,
+  submitOnchainWithRetry,
 } from "@/services/nanopay/pathOnchainSettlement";
 import { executeOnchainSettlementStellar } from "@/services/nanopay/pathOnchainSettlementStellar";
 import { executeOnchainSettlementSvm } from "@/services/nanopay/pathOnchainSettlementSvm";
+import { preflightShortfall } from "@/services/nanopay/preflight";
+import { settlementAmountLabel } from "@/services/nanopay/settlementAmount";
 import {
   chainBadgeLabel,
   formatChainLabel,
@@ -155,6 +169,13 @@ type MerchantKind = "qris" | "takumipay";
  * the UI, but signing and the submit handshake happen client-side before
  * the server even knows — hence the extra local phases.
  */
+/**
+ * How long the paid state stays on screen before the receipt replaces it.
+ * Long enough to register the check and "Paid to {merchant}", short enough
+ * not to feel like waiting.
+ */
+const RECEIPT_HANDOFF_DELAY_MS = 700;
+
 type LocalPhase =
   | "idle" // quote visible, waiting on user tap
   | "signing" // wallet is producing the EIP-712 signature
@@ -399,8 +420,12 @@ function IntentFlow({
       return;
     }
     if (intent.status === "failed") {
+      // On the on-chain rail this is a chain verdict (the tx reverted,
+      // nothing moved); the settlement worker already pushed the same
+      // message. Nanopay failures land here too and the copy still holds:
+      // nothing was taken.
       setPhase("error");
-      setError(makeLocalError("unknown", "intent.status=failed"));
+      setError(makeLocalError("payment_not_completed", "intent.status=failed"));
       return;
     }
     if (intent.status === "expired") {
@@ -412,25 +437,34 @@ function IntentFlow({
   // On the first `paid` transition, hand off to the dedicated receipt
   // screen (task 31). `router.replace` keeps the back stack clean: the
   // user's back button from the receipt returns to home/scanner, not
-  // to this mid-flow screen. The `PaidCard` remains as a transient
-  // loader covering the single render frame before navigation commits.
+  // to this mid-flow screen.
+  //
+  // The hand-off waits `RECEIPT_HANDOFF_DELAY_MS` so the on-chain card's
+  // final state — the green check and "Paid to {merchant}" — is actually
+  // seen before the receipt takes over, instead of flashing for a frame.
+  // The timer is cleared on cleanup, so leaving the screen first (the
+  // "Done" button, back) or a status change never fires a stale
+  // navigation, and nothing lingers after the hand-off.
   useEffect(() => {
     if (!intent) return;
     if (intent.status !== "paid" && intent.status !== "paid_out") return;
-    router.replace({
-      // `/pay-merchant/receipt` isn't in the generated typed-routes
-      // union yet — cast narrowly per the same pattern used for
-      // `/pay-merchant` above.
-      pathname: "/pay-merchant/receipt" as "/send",
-      // Forward the wallet that *created* the intent so the receipt
-      // query locks to that wallet's JWT via `createApiForWallet`.
-      // Without this the receipt fell back to the global `api`
-      // instance, whose JWT tracks `active_wallet_index` at request
-      // time — switching wallets (or having a stale token on the
-      // active wallet) would hang the poll on "Fetching payment".
-      params: { intentId, merchantName: merchantNameParam, walletAddress },
-    });
-  }, [intent, intentId]);
+    const timer = setTimeout(() => {
+      router.replace({
+        // `/pay-merchant/receipt` isn't in the generated typed-routes
+        // union yet — cast narrowly per the same pattern used for
+        // `/pay-merchant` above.
+        pathname: "/pay-merchant/receipt" as "/send",
+        // Forward the wallet that *created* the intent so the receipt
+        // query locks to that wallet's JWT via `createApiForWallet`.
+        // Without this the receipt fell back to the global `api`
+        // instance, whose JWT tracks `active_wallet_index` at request
+        // time — switching wallets (or having a stale token on the
+        // active wallet) would hang the poll on "Fetching payment".
+        params: { intentId, merchantName: merchantNameParam, walletAddress },
+      });
+    }, RECEIPT_HANDOFF_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [intent?.status, intentId, merchantNameParam, walletAddress]);
 
   // Quote-expiry guard from client clock — the backend enforces the real
   // cut-off, but this catches the "user left the app open for 2 mins"
@@ -518,14 +552,11 @@ function IntentFlow({
   }
 
   // Terminal success — `useEffect` above navigates to `/pay-merchant/
-  // receipt`. This render only shows for the single frame between
-  // status flip and the navigation commit, so we keep it as a minimal
-  // loader rather than a full receipt.
-  if (
-    phase === "settled" ||
-    intent.status === "paid" ||
-    intent.status === "paid_out"
-  ) {
+  // receipt` after a short beat. The on-chain rail renders its own
+  // "Paid to {merchant}" state for that beat (the progress hero's last
+  // row and green check); the other rails show the minimal PaidCard.
+  const isPaid = intent.status === "paid" || intent.status === "paid_out";
+  if ((phase === "settled" || isPaid) && intent.path !== "takumipay") {
     return <PaidCard />;
   }
 
@@ -558,6 +589,7 @@ function IntentFlow({
             : error.devMessage
         }
         intentId={intentId}
+        context={{ tokenSymbol: "USDC" }}
         onRetry={resetToIdle}
         onBack={rescan}
         onRescan={rescan}
@@ -755,6 +787,7 @@ function PathACard({
         code={error.code}
         devMessage={error.devMessage}
         intentId={intentId}
+        context={{ tokenSymbol: "USDC" }}
         onRetry={resetToIdle}
         onBack={onBack}
         onRescan={onBack}
@@ -854,6 +887,21 @@ function OnchainCard({
   const [phase, setPhase] = useState<LocalPhase>("idle");
   const [error, setError] = useState<LocalError | null>(null);
   const [isPinVisible, setIsPinVisible] = useState(false);
+  // Once the EVM payment tx is broadcast it must never be signed again for
+  // this intent: the contract rejects a second `processMerchantPayment`
+  // for the same refId, and the user would otherwise see "something went
+  // wrong" after paying twice-in-spirit. A retry re-runs only the
+  // confirm-and-submit half against this hash.
+  const broadcastTxHashRef = useRef<`0x${string}` | null>(null);
+  // Which real stage the payment is in, for the progress card. Advanced
+  // only when the stage actually completes (broadcast, receipt, server
+  // verdict), never on a timer — so a tick is a promise kept, not an
+  // animation. `startedAt` drives the "taking longer than usual" line.
+  const [payStep, setPayStep] = useState<{
+    step: PayStep;
+    startedAt: number;
+  } | null>(null);
+  const queryClient = useQueryClient();
 
   const sourceChainId = intent.nanopayUsdcSourceChainId;
   const { data: paymentContract, isLoading: isLoadingContract } =
@@ -913,6 +961,11 @@ function OnchainCard({
   const [isLoadingBalance, setIsLoadingBalance] = useState(true);
   const [tokenBalance, setTokenBalance] = useState<string>("0");
   const [isLoadingTokenBalance, setIsLoadingTokenBalance] = useState(false);
+  // Live fee for THIS payment (gas for the exact calldata × current fee
+  // cap), priced by the effect further down; null while unknown.
+  const [feeEstimate, setFeeEstimate] = useState<{ feeWei: bigint } | null>(
+    null,
+  );
 
   const selectedKit = useMemo(
     () => (selectedWallet ? getKitForWallet(selectedWallet) : null),
@@ -961,13 +1014,12 @@ function OnchainCard({
   });
   const paymentToken = useMemo(() => {
     if (!paymentTokens.data?.length) return null;
-    if (intent.sourceTokenId) {
-      return (
-        paymentTokens.data.find((t) => t.id === intent.sourceTokenId) ?? null
-      );
+    const wanted = intent.sourceTokenId ?? intent.sourceToken?.id;
+    if (wanted) {
+      return paymentTokens.data.find((t) => t.id === wanted) ?? null;
     }
     return paymentTokens.data[0] ?? null;
-  }, [paymentTokens.data, intent.sourceTokenId]);
+  }, [paymentTokens.data, intent.sourceTokenId, intent.sourceToken?.id]);
 
   useEffect(() => {
     if (
@@ -1054,10 +1106,36 @@ function OnchainCard({
     }
 
     const kit = getKitForWallet(selectedWallet);
+    const advance = (step: PayStep) =>
+      setPayStep({ step, startedAt: Date.now() });
+
+    // Pre-flight on balances we already display. A wallet with nothing in
+    // it should hear so here, in plain words, not after a PIN prompt and a
+    // failed broadcast whose error we then have to translate. Only runs
+    // when the balances have actually loaded, and never once a tx is out
+    // (a retry re-submits the hash, it doesn't pay again).
+    if (!broadcastTxHashRef.current) {
+      const shortfall = preflightShortfall({
+        paymentToken,
+        tokenBalance,
+        isLoadingTokenBalance,
+        nativeBalance,
+        isLoadingBalance,
+        feePaidInNative: typeof kit.sendContractTransaction === "function",
+        feeNeededWei: feeEstimate?.feeWei ?? null,
+        intent,
+      });
+      if (shortfall) {
+        setError(makeLocalError(shortfall, "pre-flight balance check"));
+        setPhase("error");
+        return;
+      }
+    }
 
     try {
       setPhase("signing");
       setError(null);
+      advance(broadcastTxHashRef.current ? "send" : "prepare");
 
       // Dispatch on the kit's settlement capability, not the chain
       // namespace: Solana settles via an Anchor instruction, EVM via a
@@ -1105,21 +1183,59 @@ function OnchainCard({
           return;
         }
 
-        const result = await executeOnchainSettlement({
-          intent,
-          wallet: selectedWallet,
-          walletKit: kit,
-          chain: intentChainConfig,
-          contractAddress,
-        });
+        let txHash = broadcastTxHashRef.current;
+        if (!txHash) {
+          const result = await executeOnchainSettlement({
+            intent,
+            wallet: selectedWallet,
+            walletKit: kit,
+            chain: intentChainConfig,
+            contractAddress,
+          });
+          txHash = result.txHash;
+          broadcastTxHashRef.current = txHash;
+        }
 
         setPhase("submitting");
-        await postOnchainSubmit({
-          intentId,
-          txHash: result.txHash,
-          blockchainId: intent.blockchainId!,
-          poster: defaultOnchainSubmitPoster,
-        }).catch(() => null);
+        advance("send");
+        // Hand the hash over right away; the backend records it and
+        // verifies against the chain on its own queue (receipt at the
+        // chain's confirmation depth, then the contract record). From
+        // here the user may leave: the status poll / push carries the
+        // result. The tx is already out, so a failed submit is retried
+        // with the same hash and is never a reason to sign again.
+        try {
+          await submitOnchainWithRetry({
+            intentId,
+            txHash,
+            blockchainId: intent.blockchainId!,
+            poster: defaultOnchainSubmitPoster,
+          });
+          advance("verify");
+          // Poll immediately (and, while `settling`, every second — see
+          // useIntentStatus) so a fast chain opens the receipt in ~1-2s.
+          queryClient.invalidateQueries({
+            queryKey: ["pay-intent", intentId],
+          });
+          // Stay in "submitting": the progress card owns the screen until
+          // the poll reports `paid` (receipt) or `failed`.
+          return;
+        } catch (err) {
+          if (__DEV__) {
+            console.warn(
+              `[pay-merchant] onchain submit failed intent=${intentId} txHash=${txHash}`,
+              err,
+            );
+          }
+          // Whatever kept the hash from reaching the server (network,
+          // 5xx, or a 400 for a chain we've misconfigured), the payment
+          // tx is already out. Keep the hash so "Check again" re-submits
+          // it; never fall back to signing again.
+          setError(makeLocalError("settlement_unconfirmed"));
+          setPayStep(null);
+          setPhase("error");
+          return;
+        }
       } else if (typeof kit.sendSorobanTransaction === "function") {
         // Prefer the intent's `takumiPayContractId` — the contract id the
         // backend signature is bound to — so the wallet submits to exactly the
@@ -1164,8 +1280,10 @@ function OnchainCard({
         return;
       }
 
+      setPayStep(null);
       setPhase("settled");
     } catch (err) {
+      setPayStep(null);
       setError(classifyError(err));
       setPhase("error");
     }
@@ -1176,7 +1294,107 @@ function OnchainCard({
     intentChainConfig,
     intentId,
     paymentContract,
+    queryClient,
+    paymentToken,
+    tokenBalance,
+    isLoadingTokenBalance,
+    nativeBalance,
+    isLoadingBalance,
+    feeEstimate,
   ]);
+
+  // Price the fee for this exact call. Re-priced when the wallet or quote
+  // changes; while unknown the pre-flight only rules out an empty wallet.
+  useEffect(() => {
+    const kit = selectedKit;
+    const contract = (intent.contractAddress ?? paymentContract?.address) as
+      | `0x${string}`
+      | undefined;
+    if (
+      !kit?.estimateContractCallFee ||
+      !selectedWallet ||
+      !intentChainConfig ||
+      !contract ||
+      !intent.quoteCommitment ||
+      !intent.quoteSignature
+    ) {
+      setFeeEstimate(null);
+      return;
+    }
+    let cancelled = false;
+    try {
+      const call = buildMerchantPaymentCall(intent, contract);
+      kit
+        .estimateContractCallFee({
+          from: selectedWallet.address,
+          chain: intentChainConfig,
+          to: call.to,
+          data: call.data,
+          value: call.value,
+          fallbackGas: MERCHANT_PAYMENT_GAS_FALLBACK,
+        })
+        .then((fee) => {
+          if (!cancelled) setFeeEstimate({ feeWei: fee.feeWei });
+        })
+        .catch(() => {
+          if (!cancelled) setFeeEstimate(null);
+        });
+    } catch {
+      setFeeEstimate(null);
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedKit, selectedWallet, intentChainConfig, intent, paymentContract]);
+
+  // Known before anyone taps anything: the balances on this card already
+  // say whether it can pay. Drives the inline notice and disables Pay so
+  // the PIN never opens for a payment we know will not go through.
+  const shortfall = useMemo(
+    () =>
+      broadcastTxHashRef.current
+        ? null
+        : preflightShortfall({
+            paymentToken,
+            tokenBalance,
+            isLoadingTokenBalance,
+            nativeBalance,
+            isLoadingBalance,
+            feePaidInNative:
+              typeof selectedKit?.sendContractTransaction === "function",
+            feeNeededWei: feeEstimate?.feeWei ?? null,
+            intent,
+          }),
+    [
+      paymentToken,
+      tokenBalance,
+      isLoadingTokenBalance,
+      nativeBalance,
+      isLoadingBalance,
+      selectedKit,
+      feeEstimate,
+      intent,
+    ],
+  );
+
+  // What this payment is in, for error copy that has to name it: the
+  // settlement token from the intent (or the resolved payment token), the
+  // fee coin from the kit, the network from the row. Never assumed.
+  const nativeAmount = (wei: bigint) =>
+    selectedKit && intentChainConfig
+      ? selectedKit.formatNativeAmount(wei, intentChainConfig).split(" ")[0]
+      : undefined;
+  const errorContext: PaymentErrorContext = {
+    tokenSymbol: intent.sourceToken?.symbol ?? paymentToken?.symbol,
+    feeSymbol:
+      (intentChainConfig && selectedKit?.nativeSymbol?.(intentChainConfig)) ||
+      undefined,
+    networkName:
+      intentBlockchainRow?.name ??
+      (intentChainConfig ? formatChainLabel(intentChainConfig) : undefined),
+    feeNeeded: feeEstimate ? nativeAmount(feeEstimate.feeWei) : undefined,
+    feeHave: isLoadingBalance ? undefined : nativeAmount(nativeBalance),
+  };
 
   // ── Error state ───────────────────────────────────────────────────
   if (phase === "error" && error) {
@@ -1184,12 +1402,24 @@ function OnchainCard({
       setError(null);
       setPhase("idle");
     };
+    // "Check again" after an unconfirmed submit re-runs only the
+    // confirm-and-submit half against the hash already out; nothing is
+    // signed, so there is nothing for a PIN to authorise.
+    const retry = () => {
+      if (broadcastTxHashRef.current) {
+        setError(null);
+        void onPay();
+        return;
+      }
+      resetToIdle();
+    };
     return (
       <PaymentError
         code={error.code}
         devMessage={error.devMessage}
         intentId={intentId}
-        onRetry={resetToIdle}
+        context={errorContext}
+        onRetry={retry}
         onBack={onBack}
         onRescan={onBack}
         onTopUp={resetToIdle}
@@ -1199,6 +1429,12 @@ function OnchainCard({
 
   const isBusy =
     phase === "signing" || phase === "submitting" || isLoadingContract;
+  const isPaid = intent.status === "paid" || intent.status === "paid_out";
+  const inProgress =
+    phase === "signing" ||
+    phase === "submitting" ||
+    phase === "settled" ||
+    isPaid;
   const ctaLabel = isLoadingContract
     ? "Loading…"
     : phase === "signing"
@@ -1211,150 +1447,185 @@ function OnchainCard({
             ? "No wallet available"
             : "Pay";
 
-  const tokenDisplay = intent.tokenAmountMinor
-    ? formatUsdcMicros(intent.tokenAmountMinor)
-    : formatUsdcMicros(intent.nanopayUsdcAmountMicros);
+  const tokenDisplay = settlementAmountLabel(intent, paymentToken);
 
   const networkLabel =
     intentBlockchainRow?.name ??
     (intentChainConfig ? formatChainLabel(intentChainConfig) : "Unknown");
 
+  const merchantLabel = extractMerchantName(intent, merchantNameParam);
+
   return (
-    <View className="bg-light rounded-3xl p-6 shadow-md-">
-      <View className="flex-row items-center mb-5">
-        <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
-          <Store color="#c71c4b" size={20} />
-        </View>
-        <View className="flex-1">
-          <Text className="text-light-matte-black font-semibold text-base">
-            {extractMerchantName(intent, merchantNameParam)}
-          </Text>
-          <Text className="text-light-matte-black/50 text-xs">
-            Pay via onchain settlement
-          </Text>
-        </View>
-      </View>
-
-      <View className="bg-light-main-container rounded-xl p-4 mb-4">
-        <Text className="text-light-matte-black/50 text-xs mb-1">Amount</Text>
-        <Text className="text-light-matte-black text-3xl font-bold">
-          {formatIdrMinor(extractFiatMinor(intent))}
-        </Text>
-        <Text className="text-light-matte-black/60 text-sm mt-2">
-          ~{tokenDisplay} from your balance
-        </Text>
-      </View>
-
-      {/* Network badge — driven by the intent's blockchainId */}
-      <View className="bg-light-main-container rounded-xl px-4 py-3 mb-4">
-        <Text className="text-light-matte-black/50 text-xs mb-1">Network</Text>
-        <Text className="text-light-matte-black font-medium text-sm">
-          {networkLabel}
-        </Text>
-      </View>
-
-      {/* Wallet display — locked to the wallet that created the intent */}
-      <View className="bg-light-main-container rounded-xl px-4 py-3 mb-4 flex-row items-center justify-between">
-        <View className="flex-1">
-          <Text className="text-light-matte-black/50 text-xs mb-1">
-            Pay from
-          </Text>
-          {selectedWallet ? (
-            <>
-              <Text
-                className="text-light-matte-black font-medium text-sm"
-                numberOfLines={1}
-              >
-                {selectedWallet.name || "Wallet"}
-              </Text>
-              <Text
-                className="text-light-matte-black/50 text-xs"
-                numberOfLines={1}
-                ellipsizeMode="middle"
-              >
-                {selectedWallet.address}
-              </Text>
-            </>
-          ) : (
-            <Text className="text-light-matte-black/50 text-sm">
-              {eligibleWallets.length === 0
-                ? "No wallet for this network"
-                : "Select wallet"}
+    <>
+      <View className="bg-light rounded-3xl p-6 shadow-md-">
+        <View className="flex-row items-center mb-5">
+          <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
+            <Store color="#c71c4b" size={20} />
+          </View>
+          <View className="flex-1">
+            <Text className="text-light-matte-black font-semibold text-base">
+              {merchantLabel}
             </Text>
-          )}
+            <Text className="text-light-matte-black/50 text-xs">
+              Pay via onchain settlement
+            </Text>
+          </View>
         </View>
-        <View className="items-end ml-3">
-          {selectedWallet ? (
-            isLoadingBalance ? (
-              <ActivityIndicator size="small" color="#c71c4b" />
-            ) : (
-              <>
-                <Text className="text-light-matte-black text-xs font-medium">
-                  {nativeBalanceDisplay}
+
+        {/* While paying, the card is just the summary; the status hero
+            below it is what the user watches. */}
+        <View
+          className={`bg-light-main-container rounded-xl p-4 ${inProgress ? "" : "mb-4"}`}
+        >
+          <Text className="text-light-matte-black/50 text-xs mb-1">Amount</Text>
+          <Text className="text-light-matte-black text-3xl font-bold">
+            {formatIdrMinor(extractFiatMinor(intent))}
+          </Text>
+          <Text className="text-light-matte-black/60 text-sm mt-2">
+            ~{tokenDisplay} from your balance
+          </Text>
+        </View>
+
+        {inProgress ? null : (
+          <>
+            {/* Network badge — driven by the intent's blockchainId */}
+            <View className="bg-light-main-container rounded-xl px-4 py-3 mb-4">
+              <Text className="text-light-matte-black/50 text-xs mb-1">
+                Network
+              </Text>
+              <Text className="text-light-matte-black font-medium text-sm">
+                {networkLabel}
+              </Text>
+            </View>
+
+            {/* Wallet display — locked to the wallet that created the intent */}
+            <View className="bg-light-main-container rounded-xl px-4 py-3 mb-4 flex-row items-center justify-between">
+              <View className="flex-1">
+                <Text className="text-light-matte-black/50 text-xs mb-1">
+                  Pay from
                 </Text>
-                {paymentToken && (
-                  <Text className="text-light-matte-black/60 text-[11px]">
-                    {isLoadingTokenBalance
-                      ? "Loading…"
-                      : `${parseFloat(tokenBalance).toFixed(4)} ${paymentToken.symbol}`}
+                {selectedWallet ? (
+                  <>
+                    <Text
+                      className="text-light-matte-black font-medium text-sm"
+                      numberOfLines={1}
+                    >
+                      {selectedWallet.name || "Wallet"}
+                    </Text>
+                    <Text
+                      className="text-light-matte-black/50 text-xs"
+                      numberOfLines={1}
+                      ellipsizeMode="middle"
+                    >
+                      {selectedWallet.address}
+                    </Text>
+                  </>
+                ) : (
+                  <Text className="text-light-matte-black/50 text-sm">
+                    {eligibleWallets.length === 0
+                      ? "No wallet for this network"
+                      : "Select wallet"}
                   </Text>
                 )}
-              </>
-            )
-          ) : null}
-        </View>
-      </View>
+              </View>
+              <View className="items-end ml-3">
+                {selectedWallet ? (
+                  isLoadingBalance ? (
+                    <ActivityIndicator size="small" color="#c71c4b" />
+                  ) : (
+                    <>
+                      <Text className="text-light-matte-black text-xs font-medium">
+                        {nativeBalanceDisplay}
+                      </Text>
+                      {paymentToken && (
+                        <Text className="text-light-matte-black/60 text-[11px]">
+                          {isLoadingTokenBalance
+                            ? "Loading…"
+                            : `${parseFloat(tokenBalance).toFixed(4)} ${paymentToken.symbol}`}
+                        </Text>
+                      )}
+                    </>
+                  )
+                ) : null}
+              </View>
+            </View>
 
-      <View className="flex-row items-center justify-center mb-4">
-        <Text
-          className={`text-sm font-medium ${
-            isExpired
-              ? "text-red-500"
-              : remainingMs < 60_000
-                ? "text-orange-500"
-                : "text-light-matte-black/60"
-          }`}
-        >
-          {isExpired ? "Quote expired" : `Expires in ${countdownLabel}`}
-        </Text>
-      </View>
+            {/* Network fee — the live estimate that also gates Pay. Only on
+              rails that pay it from the wallet's own coin. */}
+            {typeof selectedKit?.sendContractTransaction === "function" ? (
+              <View className="bg-light-main-container rounded-xl px-4 py-3 mb-4 flex-row items-center justify-between">
+                <Text className="text-light-matte-black/50 text-xs">
+                  Network fee
+                </Text>
+                <Text className="text-light-matte-black text-xs font-medium">
+                  {feeEstimate && intentChainConfig
+                    ? `≈ ${selectedKit.formatNativeAmount(feeEstimate.feeWei, intentChainConfig)}`
+                    : "Estimating…"}
+                </Text>
+              </View>
+            ) : null}
 
-      {phase === "submitting" ? (
-        <View className="flex-row items-center justify-center mb-4">
-          <ActivityIndicator size="small" color="#c71c4b" />
-          <Text className="text-light-matte-black/60 text-sm ml-2">
-            Waiting for confirmation…
-          </Text>
-        </View>
-      ) : null}
+            {shortfall ? (
+              <BalanceShortfallNotice code={shortfall} context={errorContext} />
+            ) : null}
 
-      <TouchableOpacity
-        activeOpacity={0.7}
-        className={`py-4 px-5 rounded-xl items-center ${
-          isBusy || isExpired || !selectedWallet
-            ? "bg-light-matte-black/20"
-            : "bg-light-primary-red"
-        }`}
-        disabled={isBusy || isExpired || !selectedWallet}
-        onPress={() => setIsPinVisible(true)}
-      >
-        {isBusy ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text className="text-light font-semibold">{ctaLabel}</Text>
+            <View className="flex-row items-center justify-center mb-4">
+              <Text
+                className={`text-sm font-medium ${
+                  isExpired
+                    ? "text-red-500"
+                    : remainingMs < 60_000
+                      ? "text-orange-500"
+                      : "text-light-matte-black/60"
+                }`}
+              >
+                {isExpired ? "Quote expired" : `Expires in ${countdownLabel}`}
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              activeOpacity={0.7}
+              className={`py-4 px-5 rounded-xl items-center ${
+                isBusy || isExpired || !selectedWallet || shortfall
+                  ? "bg-light-matte-black/20"
+                  : "bg-light-primary-red"
+              }`}
+              disabled={isBusy || isExpired || !selectedWallet || !!shortfall}
+              onPress={() => setIsPinVisible(true)}
+            >
+              {isBusy ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text className="text-light font-semibold">{ctaLabel}</Text>
+              )}
+            </TouchableOpacity>
+          </>
         )}
-      </TouchableOpacity>
 
-      <PinConfirmationModal
-        visible={isPinVisible}
-        onClose={() => setIsPinVisible(false)}
-        onConfirm={() => {
-          setIsPinVisible(false);
-          onPay();
-        }}
-        title="Confirm Payment"
-      />
-    </View>
+        <PinConfirmationModal
+          visible={isPinVisible}
+          onClose={() => setIsPinVisible(false)}
+          onConfirm={() => {
+            setIsPinVisible(false);
+            onPay();
+          }}
+          title="Confirm Payment"
+        />
+      </View>
+
+      {inProgress ? (
+        <PaymentProgressHero
+          step={
+            isPaid || phase === "settled"
+              ? "done"
+              : (payStep?.step ?? "prepare")
+          }
+          startedAt={payStep?.startedAt ?? Date.now()}
+          merchantName={merchantLabel}
+          onLeave={onBack}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -1617,6 +1888,33 @@ function MintFallback({
   const [tokenBalance, setTokenBalance] = useState<string>("0");
   const [isLoadingTokenBalance, setIsLoadingTokenBalance] = useState(false);
 
+  // The token amount isn't known until the quote comes back, so this step
+  // only catches what needs no quote: a wallet with none of the token, or
+  // none of the network's coin for the fee. Exact amount-vs-balance is the
+  // confirm card's job.
+  const quoteShortfall = useMemo(
+    () =>
+      preflightShortfall({
+        paymentToken: selectedToken,
+        tokenBalance,
+        isLoadingTokenBalance,
+        nativeBalance,
+        isLoadingBalance,
+        feePaidInNative:
+          typeof selectedKit?.sendContractTransaction === "function",
+        // Any positive token balance passes here; the quote decides the rest.
+        intent: { nanopayUsdcAmountMicros: "1" },
+      }),
+    [
+      selectedToken,
+      tokenBalance,
+      isLoadingTokenBalance,
+      nativeBalance,
+      isLoadingBalance,
+      selectedKit,
+    ],
+  );
+
   useEffect(() => {
     if (
       !selectedWallet ||
@@ -1861,9 +2159,10 @@ function MintFallback({
               return (
                 <View className="flex-row items-center flex-1">
                   {nativeToken?.logoUrl ? (
-                    <Image
+                    <OptimizedImage
                       source={{ uri: nativeToken.logoUrl }}
                       style={{ width: 28, height: 28, borderRadius: 14 }}
+                      contentFit="contain"
                     />
                   ) : (
                     <View className="w-7 h-7 bg-light-primary-red/10 rounded-full" />
@@ -1893,9 +2192,10 @@ function MintFallback({
           {selectedToken ? (
             <View className="flex-row items-center flex-1">
               {selectedToken.logoUrl ? (
-                <Image
+                <OptimizedImage
                   source={{ uri: selectedToken.logoUrl }}
                   style={{ width: 28, height: 28, borderRadius: 14 }}
+                  contentFit="contain"
                 />
               ) : (
                 <View className="w-7 h-7 bg-light-primary-red/10 rounded-full" />
@@ -1970,6 +2270,22 @@ function MintFallback({
           </View>
         </Pressable>
       </View>
+
+      {quoteShortfall ? (
+        <BalanceShortfallNotice
+          code={quoteShortfall}
+          context={{
+            tokenSymbol: selectedToken?.symbol,
+            feeSymbol:
+              (selectedChainConfig &&
+                selectedKit?.nativeSymbol?.(selectedChainConfig)) ||
+              undefined,
+            networkName: selectedChainConfig
+              ? formatChainLabel(selectedChainConfig)
+              : undefined,
+          }}
+        />
+      ) : null}
 
       {/* ── Inline sign-in when wallet is not authenticated ─────── */}
       {selectedWallet && isWalletAuthed === false && !isCheckingAuth && (
@@ -2082,7 +2398,8 @@ function MintFallback({
           !selectedWallet ||
           !isWalletAuthed ||
           isAmountEmpty ||
-          isAmountInvalid
+          isAmountInvalid ||
+          quoteShortfall
             ? "bg-light-matte-black/20"
             : "bg-light-primary-red"
         }`}
@@ -2092,7 +2409,8 @@ function MintFallback({
           !selectedWallet ||
           !isWalletAuthed ||
           isAmountEmpty ||
-          isAmountInvalid
+          isAmountInvalid ||
+          !!quoteShortfall
         }
         onPress={onMint}
       >
@@ -2165,10 +2483,11 @@ function MintFallback({
                 }`}
               >
                 {t.logoUrl ? (
-                  <Image
+                  <OptimizedImage
                     source={{ uri: t.logoUrl }}
                     style={{ width: 36, height: 36, borderRadius: 18 }}
-                    className="mr-3"
+                    containerStyle={{ marginRight: 12 }}
+                    contentFit="contain"
                   />
                 ) : (
                   <View className="w-9 h-9 bg-light-primary-red/10 rounded-full mr-3" />
@@ -2237,10 +2556,11 @@ function MintFallback({
                 }`}
               >
                 {nativeToken?.logoUrl ? (
-                  <Image
+                  <OptimizedImage
                     source={{ uri: nativeToken.logoUrl }}
                     style={{ width: 36, height: 36, borderRadius: 18 }}
-                    className="mr-3"
+                    containerStyle={{ marginRight: 12 }}
+                    contentFit="contain"
                   />
                 ) : (
                   <View className="w-9 h-9 bg-light-primary-red/10 rounded-full mr-3" />
@@ -2447,6 +2767,37 @@ function QuoteCard({
  * screen. All the actual receipt rendering lives in
  * `app/pay-merchant/receipt.tsx`.
  */
+/**
+ * Inline "this wallet can't pay this" strip for the quote and confirm
+ * cards. Shown INSTEAD of letting the button open the PIN: when the
+ * balances on screen already answer the question, asking the user to
+ * confirm and then failing is the worst version of "no". Same copy as
+ * the full-screen error, minus the button — the fix (another wallet or
+ * token) is on this very screen.
+ */
+function BalanceShortfallNotice({
+  code,
+  context,
+}: {
+  code: "insufficient_funds" | "insufficient_fee";
+  context: PaymentErrorContext;
+}) {
+  const copy = resolvePaymentErrorCopy(code, context);
+  return (
+    <View className="flex-row items-start bg-amber-50 rounded-xl px-4 py-3 mb-4">
+      <AlertCircle color="#d97706" size={20} />
+      <View className="flex-1 ml-3">
+        <Text className="text-amber-900 font-semibold text-sm">
+          {copy.title}
+        </Text>
+        <Text className="text-amber-800 text-xs leading-5 mt-0.5">
+          {copy.body}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
 function PaidCard() {
   return (
     <View className="bg-light rounded-3xl p-6 shadow-md-">

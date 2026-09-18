@@ -44,11 +44,11 @@ export default function UpgradeConfirmationSheet({
           </View>
           <View className="flex-1">
             <Text className="text-light-matte-black font-semibold text-sm">
-              Gas Abstraction & Sponsorship
+              Pay fees in USDC
             </Text>
             <Text className="text-light-matte-black/50 text-xs mt-1 leading-4">
-              Pay network fees directly in USDC or enjoy sponsored, gas-free
-              transactions.
+              Pay network fees in USDC, so you can send without keeping a
+              separate balance for fees.
             </Text>
           </View>
         </View>

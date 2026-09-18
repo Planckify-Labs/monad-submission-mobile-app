@@ -336,6 +336,10 @@ export default function WalletDetails({
           </TouchableOpacity>
         ) : null}
 
+        {/* A passkey wallet has no seed phrase to put in Drive, by design:
+            the passkey itself is what the OS syncs, and the Passkey block
+            above already says so (Recovery row). Nothing extra here. */}
+
         {upgradeError ? (
           <View className="bg-light-primary-red/10 p-3 rounded-2xl mb-4">
             <Text className="text-light-primary-red text-xs font-semibold">
@@ -371,8 +375,8 @@ export default function WalletDetails({
                   </Text>
                 </View>
                 <Text className="text-light-matte-black/50 text-xs leading-4">
-                  Unlock gasless payments, atomic batching, and secure AI agent
-                  micropayments.
+                  Pay fees in USDC, batch actions atomically, and enable secure
+                  AI agent micropayments.
                 </Text>
               </View>
               <TouchableOpacity

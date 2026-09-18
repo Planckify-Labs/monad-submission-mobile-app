@@ -3,6 +3,8 @@ import { Clock, Copy, ExternalLink, Store } from "lucide-react-native";
 import React, { useCallback } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 import type { TPaymentTransactionDetail } from "@/api/types/transaction";
+import { PAYMENT_STATUS_CHIP } from "@/components/activities/paymentStatusChip";
+import Chip from "@/components/common/Chip";
 import { formatDate } from "@/utils/dateUtils";
 import { copyToClipboard } from "@/utils/helperUtils";
 import { formatExactTokenAmount } from "@/utils/tokenAmount";
@@ -139,11 +141,12 @@ const MerchantPaymentDetailCard = React.memo(
                 <Text className="text-light-matte-black font-medium text-sm">
                   Status
                 </Text>
-                <View className="bg-green-100 px-3 py-1 rounded-full">
-                  <Text className="text-green-700 text-xs font-semibold">
-                    {payment.status}
-                  </Text>
-                </View>
+                <Chip
+                  label={PAYMENT_STATUS_CHIP[payment.status].label}
+                  color={PAYMENT_STATUS_CHIP[payment.status].color}
+                  backgroundColor={PAYMENT_STATUS_CHIP[payment.status].bg}
+                  size="small"
+                />
               </View>
             </View>
 

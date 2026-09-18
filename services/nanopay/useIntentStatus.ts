@@ -93,6 +93,10 @@ export function useIntentStatus(
     refetchInterval: (query) => {
       const data = query.state.data as PaymentIntentResponse | undefined;
       if (isTerminalIntentStatus(data?.status)) return false;
+      // `settling` = the hash is with the server and its verifier is on
+      // it; on a fast chain that's a 1-2 s window, so poll tightly and
+      // open the receipt the moment it flips instead of up to 3 s later.
+      if (data?.status === "settling") return 1_000;
       return 3_000;
     },
     // Keep polling paused when the screen backgrounds; iOS suspends the

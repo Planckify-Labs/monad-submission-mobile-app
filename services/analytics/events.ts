@@ -113,6 +113,14 @@ export type AnalyticsEventProps = {
   // finish. `stage` is where it broke: post_otp | drive_restore |
   // account_found_new_wallet.
   google_signin_setup_failed: { stage: string; reason?: string };
+  // Mera passkey onboarding (docs/monad-metropolis-2026-spec.md §3).
+  // `path`: create (new passkey) | sign_in (existing passkey reproduced
+  // the key). `existing` is true when the derived address was already on
+  // the device and was just re-selected.
+  passkey_onboarding_completed: { path: string; existing: boolean };
+  // `reason` is the curated PasskeyErrorKind from
+  // services/walletKit/evm/mera/errors.ts, never raw error text.
+  passkey_onboarding_failed: { path: string; reason: string };
   // Google Drive seed-backup management from the wallet screen (distinct from
   // `google_signin_completed`'s drive_restore path, which is the login-time
   // *restore*). `is_update` is true when this replaced an existing backup

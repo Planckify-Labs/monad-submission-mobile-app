@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo } from "react";
+import { Alert } from "react-native";
 import { erc20Abi, formatUnits, maxUint256, parseUnits } from "viem";
 import { authApi } from "@/api/endpoints/auth";
 import type { TToken } from "@/api/types/token";
@@ -25,6 +26,20 @@ import {
   supportsPointDeposit,
 } from "@/services/walletKit/chainInfo";
 import { type DepositSupport, resolveDepositSupport } from "./depositSupport";
+
+/**
+ * The deposit is sent; confirmation happens on the server and arrives as
+ * a push. Say that plainly and let the user go, instead of the old "Points
+ * are being credited..." spinner that implied they had to wait here.
+ */
+function announceDepositSent(): void {
+  Alert.alert(
+    "Deposit sent",
+    "We're confirming it now. You can keep using the app, we'll let you know as soon as your points arrive.",
+    [{ text: "OK", onPress: () => router.back() }],
+    { cancelable: false },
+  );
+}
 
 const DEPOSIT_STATE_KEY = ["deposit", "state"] as const;
 const DEFAULT_CURRENCY = "IDR";
@@ -220,7 +235,7 @@ export function useDepositState() {
   // "dismissed" state per chain instead of globally.
   const chainKey = getChainKey(rawActiveChain);
 
-  const { depositPoints, waitForTransaction } = useTakumiWalletContract({
+  const { depositPoints } = useTakumiWalletContract({
     contractAddress: contractAddress ?? "0x0",
   });
 
@@ -541,12 +556,8 @@ export function useDepositState() {
             amount: Number(amount),
           });
 
-          updateState({
-            isLoading: true,
-            transactionStatus: "Points are being credited...",
-          });
-          await new Promise((resolve) => setTimeout(resolve, 1000));
-          router.back();
+          updateState({ isLoading: false, transactionStatus: "" });
+          announceDepositSent();
         } catch (error: any) {
           console.error("Stellar deposit error:", error);
           let errorMessage = "Deposit failed. Please try again.";
@@ -670,17 +681,13 @@ export function useDepositState() {
           tokenDecimals: selectedToken.decimals,
         });
 
-        // Step 4: Wait for transaction receipt
+        // Step 4: Hand the hash to the API. Its deposit worker waits for
+        // the receipt at the chain's own confirmation depth, verifies the
+        // contract record, credits the points and pushes the result — so
+        // the user isn't held here for the chain, and can leave.
         updateState({
           isLoading: true,
-          transactionStatus: "Waiting for confirmation...",
-        });
-        await waitForTransaction(txHash);
-
-        // Step 5: Submit to API for verification
-        updateState({
-          isLoading: true,
-          transactionStatus: "Submitting for verification...",
+          transactionStatus: "Sending your deposit...",
         });
 
         await submitDeposit.mutateAsync({
@@ -700,14 +707,10 @@ export function useDepositState() {
           amount: Number(amount),
         });
 
-        // Step 6: Done -- navigate back
-        updateState({
-          isLoading: true,
-          transactionStatus: "Points are being credited...",
-        });
-
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-        router.back();
+        // Step 5: Done. The deposit is out of the user's hands now; the
+        // worker's push says when the points land.
+        updateState({ isLoading: false, transactionStatus: "" });
+        announceDepositSent();
       } catch (error: any) {
         console.error("Deposit error:", error);
 
@@ -748,7 +751,6 @@ export function useDepositState() {
       activeChainId,
       depositPoints,
       submitDeposit,
-      waitForTransaction,
       getClientForActiveWallet,
       getPublicClientForActiveChain,
       getKitForWallet,

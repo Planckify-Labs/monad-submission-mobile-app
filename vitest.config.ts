@@ -80,6 +80,9 @@ export default defineConfig({
       "services/chains/sui/transferService.test.ts",
       "services/nanopay/solana/__tests__/*.test.ts",
       "services/nanopay/pathOnchainSettlement.test.ts",
+      "services/nanopay/settlementAmount.test.ts",
+      "services/nanopay/preflight.test.ts",
+      "services/errors/paymentErrors.test.ts",
       // Sui Intent Engine (Sui Overflow 2026 Phase 1)
       "services/chains/sui/intent/intentSchema.test.ts",
       "services/chains/sui/intent/intentStore.test.ts",

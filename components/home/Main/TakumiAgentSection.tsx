@@ -37,6 +37,7 @@ import {
   View,
 } from "react-native";
 import { AudioWaveBars } from "@/components/home/TakumiAgent/AudioWaveBars";
+import { FEATURE_PASSKEY_ONLY_ONBOARDING } from "@/constants/configs/featureFlags";
 import { useAgentPrefill } from "@/hooks/useAgentPrefill";
 import { useVoiceTranscription } from "@/hooks/useVoiceTranscription";
 import ActivitySection, { type ActivitySectionRef } from "./ActivitySection";
@@ -117,7 +118,44 @@ interface Capability {
   variant: CardVariant;
 }
 
-const CAPABILITIES: Capability[] = [
+/**
+ * The Monad Metropolis build (same switch as the passkey-only login; see
+ * `docs/monad-metropolis-2026-spec.md` §5) talks AUSD on Monad and only
+ * offers what the agent can actually do there: `send_token` AUSD, balances,
+ * points. No swap venue and no AUSD yield exist on Monad in this build, so
+ * those cards would be promises the agent can't keep — and none of the
+ * copy may mention USDC/USDT/Sui.
+ */
+const HACKATHON_BUILD = FEATURE_PASSKEY_ONLY_ONBOARDING;
+
+const HACKATHON_CAPABILITIES: Capability[] = [
+  {
+    id: "pay",
+    label: "Pay & Send",
+    sample: "Send 50 AUSD",
+    prompt: "Send 50 AUSD to my mom",
+    icon: Send,
+    variant: "red",
+  },
+  {
+    id: "balance",
+    label: "Balance",
+    sample: "how much AUSD?",
+    prompt: "How much AUSD do I have?",
+    icon: Wallet,
+    variant: "dark",
+  },
+  {
+    id: "redeem",
+    label: "Redeem",
+    sample: "use my points",
+    prompt: "What can I redeem with my points?",
+    icon: Gift,
+    variant: "light",
+  },
+];
+
+const DEFAULT_CAPABILITIES: Capability[] = [
   {
     id: "pay",
     label: "Pay & Send",
@@ -151,6 +189,10 @@ const CAPABILITIES: Capability[] = [
     variant: "light",
   },
 ];
+
+const CAPABILITIES: Capability[] = HACKATHON_BUILD
+  ? HACKATHON_CAPABILITIES
+  : DEFAULT_CAPABILITIES;
 
 // Quick chips complement the capability rail rather than duplicate it: the
 // cards launch transactional intents (Pay / Swap / Earn / Redeem) while
@@ -187,9 +229,26 @@ const QUICK_PROMPTS: {
   },
 ];
 
-// Prompt fired by the spotlight "Show me" CTA — matches the card's
-// auto-earn-yield pitch ("Grow your idle USDC, hands-free").
-const SPOTLIGHT_PROMPT = "Earn yield on my idle USDC";
+// Prompt fired by the spotlight "Show me" CTA — matches the card's pitch.
+// Hackathon build: the spec §5 demo script ("send $50 to my mom") in AUSD.
+// Default: the auto-earn-yield pitch ("Grow your idle USDC, hands-free").
+const SPOTLIGHT_PROMPT = HACKATHON_BUILD
+  ? "Send 50 AUSD to my mom"
+  : "Earn yield on my idle USDC";
+
+const SPOTLIGHT = HACKATHON_BUILD
+  ? {
+      badge: "Settles in seconds",
+      headline: "Send AUSD home,\nin one sentence",
+      tagline: "Say who and how much. I handle the rest.",
+      Icon: Send,
+    }
+  : {
+      badge: "~0.1 - 7% APY",
+      headline: "Grow your idle\nUSDC, hands-free",
+      tagline: "Auto-earn yield · I cover the gas.",
+      Icon: TrendingUp,
+    };
 
 const RAIL_GAP = 12;
 const CARD_HEIGHT = 176;
@@ -248,7 +307,7 @@ function SpotlightCard({
         pointerEvents="none"
         className="absolute right-3 bottom-1 opacity-100"
       >
-        <TrendingUp size={84} color="rgba(255,255,255,0.12)" />
+        <SPOTLIGHT.Icon size={84} color="rgba(255,255,255,0.12)" />
       </View>
 
       {/* top row */}
@@ -257,9 +316,11 @@ function SpotlightCard({
           ✦ TAKUMI PICK
         </Text>
         <View className="flex-row items-center gap-1 bg-white/20 rounded-full px-2.5 py-1">
-          <ArrowUp size={11} color="#ffffff" strokeWidth={3} />
+          {HACKATHON_BUILD ? null : (
+            <ArrowUp size={11} color="#ffffff" strokeWidth={3} />
+          )}
           <Text className="text-white text-[10px] font-bold">
-            ~0.1 - 7% APY
+            {SPOTLIGHT.badge}
           </Text>
         </View>
       </View>
@@ -267,10 +328,10 @@ function SpotlightCard({
       {/* headline */}
       <View>
         <Text className="text-white font-extrabold text-[18px] leading-[22px]">
-          Grow your idle{"\n"}USDC, hands-free
+          {SPOTLIGHT.headline}
         </Text>
         <Text className="text-white/75 text-[11px] mt-1">
-          Auto-earn yield · I cover the gas.
+          {SPOTLIGHT.tagline}
         </Text>
       </View>
 

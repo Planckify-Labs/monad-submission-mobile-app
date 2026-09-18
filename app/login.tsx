@@ -1,5 +1,11 @@
 import { router } from "expo-router";
-import { ChevronRight, KeyRound, Plus, ShieldCheck } from "lucide-react-native";
+import {
+  ChevronRight,
+  Fingerprint,
+  KeyRound,
+  Plus,
+  ShieldCheck,
+} from "lucide-react-native";
 import React, { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -17,9 +23,15 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import LoadinngSpinnerPopup from "@/components/common/LoadinngSpinnerPopup";
 import ImportPrivateKeySheet from "@/components/wallet/create/ImportPrivateKeySheet";
 import ImportSeedPhraseSheet from "@/components/wallet/create/ImportSeedPhraseSheet";
+import {
+  FEATURE_PASSKEY_ONBOARDING,
+  FEATURE_PASSKEY_ONLY_ONBOARDING,
+} from "@/constants/configs/featureFlags";
 import type { TWallet } from "@/constants/types/walletTypes";
+import { useBiometricLabel } from "@/hooks/useBiometricLabel";
 import { useGoogleWalletAuth } from "@/hooks/useGoogleWalletAuth";
 import { useLoadingSteps } from "@/hooks/useLoadingSteps";
+import { usePasskeyOnboarding } from "@/hooks/usePasskeyOnboarding";
 import { useWallet } from "@/hooks/useWallet";
 import { bootstrapFirstLoginWallets } from "@/services/walletKit/bootstrap";
 
@@ -76,6 +88,48 @@ export default function Login() {
     onRequestSeedPhrase: () => setSeedSheetVisible(true),
     onError: (title, message) => Alert.alert(title, message),
   });
+
+  // Mera passkey onboarding (docs/monad-metropolis-2026-spec.md §3.5).
+  // Same host/hook split as Google: the hook owns the ceremony, wallet
+  // placement and the silent session handshake; this screen owns the
+  // progress copy and where to land afterwards.
+  const {
+    isLoading: isPasskeySpinner,
+    currentMessage: passkeyMessage,
+    completeStep: completePasskeyStep,
+    start: startPasskey,
+    stop: stopPasskey,
+    delay: passkeyDelay,
+  } = useLoadingSteps([
+    "Verified, welcome...",
+    "Setting up your account...",
+    "Almost there...",
+    "You're all set! 🎉",
+  ]);
+  const biometric = useBiometricLabel();
+  const passkey = usePasskeyOnboarding({
+    onStep: completePasskeyStep,
+    onStart: startPasskey,
+    onStop: stopPasskey,
+    delay: passkeyDelay,
+    onComplete: () => {
+      router.replace("/");
+    },
+    onError: (copy) => Alert.alert(copy.title, copy.message),
+    onConfirmFirstTime: () =>
+      new Promise<boolean>((resolve) =>
+        Alert.alert(
+          "First time here?",
+          "If you've used TakumiPay before, tap Continue again and choose your account. Otherwise we'll set up a new one.",
+          [
+            { text: "Not now", style: "cancel", onPress: () => resolve(false) },
+            { text: "Set up new account", onPress: () => resolve(true) },
+          ],
+          { cancelable: true, onDismiss: () => resolve(false) },
+        ),
+      ),
+  });
+  const anyBusy = creating || google.isStarting || passkey.busy !== null;
 
   const handleCreateWallet = useCallback(async () => {
     if (creating) return;
@@ -188,111 +242,171 @@ export default function Login() {
               </Text>
             </View>
 
-            <View className="bg-light rounded-3xl p-6 shadow-md- mb-4">
-              <Text className="text-light-matte-black/80 font-medium mb-4">
-                GET STARTED
-              </Text>
+            {FEATURE_PASSKEY_ONBOARDING ? (
+              <View className="bg-light rounded-3xl p-6 shadow-md- mb-4">
+                <Text className="text-light-matte-black/80 font-medium mb-1">
+                  {FEATURE_PASSKEY_ONLY_ONBOARDING ? "GET STARTED" : "PASSKEY"}
+                </Text>
+                <Text className="text-light-matte-black/50 text-xs mb-4">
+                  Your phone keeps your account safe with your {biometric.noun}.
+                  Nothing to remember, nothing to write down.
+                </Text>
 
-              <TouchableOpacity
-                activeOpacity={0.7}
-                className="bg-light border border-light-matte-black/10 py-4 px-5 rounded-xl flex-row items-center justify-between mb-3"
-                onPress={google.start}
-                disabled={google.isStarting || creating}
-              >
-                <View className="flex-row items-center">
-                  <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
-                    {google.isStarting ? (
-                      <ActivityIndicator size="small" color="#c71c4b" />
-                    ) : (
-                      <Image
-                        source={require("@/assets/images/google-takumipay.png")}
-                        style={{ width: 20, height: 20 }}
-                      />
-                    )}
+                {/*
+                  One button. The hook asserts against any TakumiPay
+                  passkey already on this device / Google account (pinned
+                  to the last one used here when known, else the OS
+                  picker) and only creates a new one when the OS reports
+                  there is none. The user never has to know which
+                  ceremony ran. Dev-only: long-press runs the GPM probes
+                  in services/walletKit/evm/mera/diagnose.ts.
+                */}
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  className="bg-light-primary-red py-4 px-5 rounded-xl flex-row items-center justify-between"
+                  onPress={passkey.continue}
+                  onLongPress={
+                    __DEV__
+                      ? () => {
+                          void import(
+                            "@/services/walletKit/evm/mera/diagnose"
+                          ).then((m) => m.runPasskeyDiagnostics());
+                        }
+                      : undefined
+                  }
+                  disabled={anyBusy}
+                >
+                  <View className="flex-row items-center">
+                    <View className="w-11 h-11 bg-light/20 rounded-full items-center justify-center mr-3">
+                      {passkey.busy ? (
+                        <ActivityIndicator size="small" color="#ffffff" />
+                      ) : (
+                        <Fingerprint color="#ffffff" size={20} />
+                      )}
+                    </View>
+                    <View>
+                      <Text className="text-light font-semibold">
+                        {passkey.busy ? "Unlocking…" : biometric.cta}
+                      </Text>
+                      <Text className="text-light/70 text-xs">
+                        Same account on any phone you sign in to
+                      </Text>
+                    </View>
                   </View>
-                  <Text className="text-light-matte-black font-medium">
-                    {google.isStarting
-                      ? "Signing in..."
-                      : "Continue with Google"}
-                  </Text>
-                </View>
-                <ChevronRight color="#20222c" size={18} />
-              </TouchableOpacity>
+                  <ChevronRight color="#ffffff" size={18} />
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
-              <TouchableOpacity
-                activeOpacity={0.7}
-                className="bg-light-primary-red py-4 px-5 rounded-xl flex-row items-center justify-between mb-3"
-                onPress={handleCreateWallet}
-                disabled={creating}
-              >
-                <View className="flex-row items-center">
-                  <View className="w-11 h-11 bg-light/20 rounded-full items-center justify-center mr-3">
-                    {creating ? (
-                      <ActivityIndicator size="small" color="#ffffff" />
-                    ) : (
-                      <Plus color="#ffffff" size={20} />
-                    )}
-                  </View>
-                  <Text className="text-light font-semibold">
-                    {creating ? "Creating wallet…" : "Create New Wallet"}
-                  </Text>
-                </View>
-                <ChevronRight color="#ffffff" size={18} />
-              </TouchableOpacity>
-            </View>
+            {FEATURE_PASSKEY_ONLY_ONBOARDING ? null : (
+              <View className="bg-light rounded-3xl p-6 shadow-md- mb-4">
+                <Text className="text-light-matte-black/80 font-medium mb-4">
+                  GET STARTED
+                </Text>
 
-            <View className="bg-light rounded-3xl p-6 shadow-md- mb-8">
-              <Text className="text-light-matte-black/80 font-medium mb-4">
-                IMPORT EXISTING WALLET
-              </Text>
-
-              <TouchableOpacity
-                activeOpacity={0.7}
-                className="bg-light border border-light-matte-black/10 py-4 px-5 rounded-xl flex-row items-center justify-between mb-3"
-                onPress={() => {
-                  google.cancelSeedPhraseRecovery();
-                  setSeedSheetVisible(true);
-                }}
-                disabled={creating}
-              >
-                <View className="flex-row items-center">
-                  <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
-                    <ShieldCheck color="#c71c4b" size={20} />
-                  </View>
-                  <View>
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  className="bg-light border border-light-matte-black/10 py-4 px-5 rounded-xl flex-row items-center justify-between mb-3"
+                  onPress={google.start}
+                  disabled={anyBusy}
+                >
+                  <View className="flex-row items-center">
+                    <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
+                      {google.isStarting ? (
+                        <ActivityIndicator size="small" color="#c71c4b" />
+                      ) : (
+                        <Image
+                          source={require("@/assets/images/google-takumipay.png")}
+                          style={{ width: 20, height: 20 }}
+                        />
+                      )}
+                    </View>
                     <Text className="text-light-matte-black font-medium">
-                      Import Seed Phrase
-                    </Text>
-                    <Text className="text-light-matte-black/50 text-xs">
-                      12 or 24 words, derives every chain
+                      {google.isStarting
+                        ? "Signing in..."
+                        : "Continue with Google"}
                     </Text>
                   </View>
-                </View>
-                <ChevronRight color="#20222c" size={18} />
-              </TouchableOpacity>
+                  <ChevronRight color="#20222c" size={18} />
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                activeOpacity={0.7}
-                className="bg-light border border-light-matte-black/10 py-4 px-5 rounded-xl flex-row items-center justify-between"
-                onPress={() => setPkSheetVisible(true)}
-                disabled={creating}
-              >
-                <View className="flex-row items-center">
-                  <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
-                    <KeyRound color="#c71c4b" size={20} />
-                  </View>
-                  <View>
-                    <Text className="text-light-matte-black font-medium">
-                      Import Private Key
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  className="bg-light-primary-red py-4 px-5 rounded-xl flex-row items-center justify-between mb-3"
+                  onPress={handleCreateWallet}
+                  disabled={anyBusy}
+                >
+                  <View className="flex-row items-center">
+                    <View className="w-11 h-11 bg-light/20 rounded-full items-center justify-center mr-3">
+                      {creating ? (
+                        <ActivityIndicator size="small" color="#ffffff" />
+                      ) : (
+                        <Plus color="#ffffff" size={20} />
+                      )}
+                    </View>
+                    <Text className="text-light font-semibold">
+                      {creating ? "Creating wallet…" : "Create New Wallet"}
                     </Text>
-                    <Text className="text-light-matte-black/50 text-xs">
-                      One chain: EVM or Solana
-                    </Text>
                   </View>
-                </View>
-                <ChevronRight color="#20222c" size={18} />
-              </TouchableOpacity>
-            </View>
+                  <ChevronRight color="#ffffff" size={18} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {FEATURE_PASSKEY_ONLY_ONBOARDING ? null : (
+              <View className="bg-light rounded-3xl p-6 shadow-md- mb-8">
+                <Text className="text-light-matte-black/80 font-medium mb-4">
+                  IMPORT EXISTING WALLET
+                </Text>
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  className="bg-light border border-light-matte-black/10 py-4 px-5 rounded-xl flex-row items-center justify-between mb-3"
+                  onPress={() => {
+                    google.cancelSeedPhraseRecovery();
+                    setSeedSheetVisible(true);
+                  }}
+                  disabled={anyBusy}
+                >
+                  <View className="flex-row items-center">
+                    <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
+                      <ShieldCheck color="#c71c4b" size={20} />
+                    </View>
+                    <View>
+                      <Text className="text-light-matte-black font-medium">
+                        Import Seed Phrase
+                      </Text>
+                      <Text className="text-light-matte-black/50 text-xs">
+                        12 or 24 words, derives every chain
+                      </Text>
+                    </View>
+                  </View>
+                  <ChevronRight color="#20222c" size={18} />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  className="bg-light border border-light-matte-black/10 py-4 px-5 rounded-xl flex-row items-center justify-between"
+                  onPress={() => setPkSheetVisible(true)}
+                  disabled={anyBusy}
+                >
+                  <View className="flex-row items-center">
+                    <View className="w-11 h-11 bg-light-primary-red/10 rounded-full items-center justify-center mr-3">
+                      <KeyRound color="#c71c4b" size={20} />
+                    </View>
+                    <View>
+                      <Text className="text-light-matte-black font-medium">
+                        Import Private Key
+                      </Text>
+                      <Text className="text-light-matte-black/50 text-xs">
+                        One chain: EVM or Solana
+                      </Text>
+                    </View>
+                  </View>
+                  <ChevronRight color="#20222c" size={18} />
+                </TouchableOpacity>
+              </View>
+            )}
 
             <View className="items-center mt-auto">
               <Text className="text-light-matte-black/50 text-xs text-center max-w-80">
@@ -333,6 +447,12 @@ export default function Login() {
           visible={isSigningInSpinner}
           title="Signing In"
           message={signingInMessage}
+        />
+
+        <LoadinngSpinnerPopup
+          visible={isPasskeySpinner}
+          title="Setting Up"
+          message={passkeyMessage}
         />
       </SafeAreaView>
     </>

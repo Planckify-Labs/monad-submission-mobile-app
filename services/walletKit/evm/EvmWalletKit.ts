@@ -36,11 +36,13 @@ import {
   decideAuthorizationByAddress,
   decideAuthorizationByBytecode,
 } from "../../chains/evm/eip7702Guard.ts";
+import { fixedErc20TransferGasLimit } from "../../chains/evm/monad.ts";
 import {
   generateWalletMnemonic,
   getAccountForWallet,
 } from "../../walletService.ts";
 import type {
+  ContractCallFeeEstimate,
   CreateDelegationArgs,
   CreateWalletFromMnemonicParams,
   CreateWalletFromPrivateKeyParams,
@@ -48,6 +50,7 @@ import type {
   EncodeDelegationsArgs,
   Estimate7710TransactionArgs,
   Estimate7710TransactionResult,
+  EstimateContractCallFeeArgs,
   EstimateMaxTransferableArgs,
   GetRelayerFeeDataArgs,
   GetRelayerStatusArgs,
@@ -296,6 +299,13 @@ export function createEvmWalletKit(): WalletKitAdapter {
         throw new Error("EvmWalletKit: unable to reconstruct signer");
       }
       const wc = getWalletClient(account, chain.chain);
+      // Monad bills on gas_limit, not gas_used — pin the limit for the
+      // AUSD call shape instead of estimating (see `monad.ts`). Other
+      // pairs get `undefined`, i.e. viem's plain estimate, unchanged.
+      const gas = fixedErc20TransferGasLimit({
+        chainId: chain.chain.id,
+        contractAddress,
+      });
       return wc.writeContract({
         abi: erc20Abi,
         address: contractAddress as `0x${string}`,
@@ -303,6 +313,7 @@ export function createEvmWalletKit(): WalletKitAdapter {
         args: [to as `0x${string}`, amount],
         account: wc.account!,
         chain: wc.chain,
+        ...(gas !== undefined ? { gas } : {}),
       });
     },
 
@@ -368,6 +379,38 @@ export function createEvmWalletKit(): WalletKitAdapter {
       }
       const wc = getWalletClient(account, chain.chain);
       return wc.sendTransaction({ to, data, value: value ?? 0n });
+    },
+
+    async estimateContractCallFee({
+      from,
+      chain,
+      to,
+      data,
+      value,
+      fallbackGas,
+    }: EstimateContractCallFeeArgs): Promise<ContractCallFeeEstimate> {
+      assertEvm(chain);
+      const pc = getPublicClient(chain.chain);
+      // Gas WITHOUT fee fields: with them attached, a node folds the
+      // "can this account pay the fee" check into the estimate and the
+      // shortfall comes back as a bare revert — the very thing we are
+      // trying to detect and name.
+      const [gas, fees] = await Promise.all([
+        pc
+          .estimateGas({
+            account: from as `0x${string}`,
+            to,
+            data,
+            value: value ?? 0n,
+          })
+          .catch((err) => {
+            if (fallbackGas === undefined) throw err;
+            return fallbackGas;
+          }),
+        pc.estimateFeesPerGas(),
+      ]);
+      const maxFeePerGas = fees.maxFeePerGas ?? (await pc.getGasPrice());
+      return { gas, maxFeePerGas, feeWei: gas * maxFeePerGas };
     },
 
     async getTokenAllowance({

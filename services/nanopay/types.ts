@@ -184,12 +184,24 @@ export interface PaymentIntentResponse {
    */
   path?: "nanopay" | "x402" | "takumipay";
   /**
-   * Token amount in minor units (e.g. 6-decimal for USDC). Renamed from
-   * `nanopayUsdcAmountMicros` on backend for token-agnostic settlement.
+   * On-chain rail only: the settlement amount in `sourceToken`'s own minor
+   * units (`nanopayUsdcAmountMicros` scaled to its decimals). Display it
+   * with `sourceToken`, never as USDC.
    */
   tokenAmountMinor?: string;
-  /** Source token identifier for multi-token settlement. */
+  /** On-chain rail only: id of the token the payer settles in. */
   sourceTokenId?: string;
+  /**
+   * On-chain rail only: the settlement token itself, so the amount can be
+   * labelled without a second fetch (and without guessing "USDC" while a
+   * token list loads).
+   */
+  sourceToken?: {
+    id: string;
+    symbol: string;
+    decimals: number;
+    contractAddress: string | null;
+  };
   /** Signed quote commitment for the onchain settlement rail. */
   quoteCommitment?: QuoteCommitment;
   /** Backend ECDSA signature over the `quoteCommitment` struct. */
