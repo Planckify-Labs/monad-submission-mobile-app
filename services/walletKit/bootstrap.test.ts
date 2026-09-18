@@ -22,6 +22,10 @@ import {
   defaultWalletNameFor,
   walletNameFor,
 } from "./bootstrap.ts";
+import {
+  CHAIN_LOCKDOWN_ACTIVE,
+  getSupportedWalletKits,
+} from "./chainSupport.ts";
 import { walletKitRegistry } from "./registry.ts";
 
 describe("defaultWalletNameFor", () => {
@@ -53,12 +57,15 @@ describe("bootstrapFirstLoginWallets (zero-wallet first login)", () => {
     bootWalletKits();
   });
 
-  it("returns exactly one wallet per registered kit", async () => {
+  it("returns exactly one wallet per kit the app surfaces", async () => {
     const wallets = await bootstrapFirstLoginWallets();
-    assert.equal(wallets.length, walletKitRegistry.getAll().length);
-    // EVM + Solana + Sui + Stellar — assert the current registry size
-    // to catch accidental kit un-registration in future diffs.
-    assert.equal(wallets.length, 4);
+    // Every kit is registered regardless of build (that invariant is
+    // boot.test.ts's job); how many get a wallet is the chain lockdown's
+    // call: all four in the multi-chain build, EVM only when locked to
+    // Monad. Assert against the same source of truth the code uses.
+    assert.equal(wallets.length, getSupportedWalletKits().length);
+    assert.equal(walletKitRegistry.getAll().length, 4);
+    assert.equal(wallets.length, CHAIN_LOCKDOWN_ACTIVE ? 1 : 4);
   });
 
   it("each wallet has a non-empty address, a non-empty seedPhrase, and a registered namespace", async () => {
@@ -114,7 +121,7 @@ describe("bootstrapFirstLoginWallets (zero-wallet first login)", () => {
 
   it("preserves registry insertion order (EVM first, Solana second)", async () => {
     const wallets = await bootstrapFirstLoginWallets();
-    const expected = walletKitRegistry.getAll().map((k) => k.namespace);
+    const expected = getSupportedWalletKits().map((k) => k.namespace);
     assert.deepEqual(
       wallets.map((w) => w.namespace),
       expected,

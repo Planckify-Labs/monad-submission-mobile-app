@@ -28,7 +28,7 @@ import type React from "react";
 import { memo, useCallback } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import type { Namespace } from "@/services/chains/types";
-import { walletKitRegistry } from "@/services/walletKit/registry";
+import { getSupportedWalletKits } from "@/services/walletKit/chainSupport";
 import type { WalletKitAdapter } from "@/services/walletKit/types";
 import { computeNextSelection } from "./computeNextSelection";
 
@@ -45,9 +45,10 @@ const NamespacePicker: React.FC<Props> = memo(function NamespacePicker({
   onChange,
   filter,
 }) {
-  const kits = filter
-    ? walletKitRegistry.getAll().filter(filter)
-    : walletKitRegistry.getAll();
+  // Chain lockdown first, then the caller's own filter: a locked-down
+  // build never offers a hidden chain family, whoever is asking.
+  const supported = getSupportedWalletKits();
+  const kits = filter ? supported.filter(filter) : supported;
 
   const handleTap = useCallback(
     (ns: Namespace) => {

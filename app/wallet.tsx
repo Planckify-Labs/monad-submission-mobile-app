@@ -40,6 +40,7 @@ import {
   clearBackupTimestamp,
   getLocalBackupTimestamp,
 } from "@/services/backup/seedBackup";
+import { filterSupportedWallets } from "@/services/walletKit/chainSupport";
 import { revealWalletSecret } from "@/services/walletService";
 
 const CARD_WIDTH = 160;
@@ -338,22 +339,30 @@ export default function Wallet() {
   // Horizontal strip is the user's "pinned" set (max 3, in pin order).
   // When nothing is pinned we fall back to the first 3 wallets so the
   // strip isn't empty for users who haven't discovered pinning yet.
+  // Chain lockdown: wallets on hidden chains stay in storage but never on
+  // screen. Display copy only — modals still get the full list because
+  // their selection is index-based against `useWallet`'s array.
+  const visibleWallets = useMemo(
+    () => filterSupportedWallets(wallets),
+    [wallets],
+  );
+
   const displayedWallets = useMemo(() => {
     if (pinnedAddresses.length > 0) {
       return pinnedAddresses
-        .map((addr) => wallets.find((w) => w.address === addr))
+        .map((addr) => visibleWallets.find((w) => w.address === addr))
         .filter((w): w is TWallet => !!w)
         .slice(0, 3);
     }
-    if (wallets.length <= 3) return wallets;
-    const activeIdx = wallets.findIndex(
+    if (visibleWallets.length <= 3) return visibleWallets;
+    const activeIdx = visibleWallets.findIndex(
       (w) => w.address === activeWallet?.address,
     );
-    if (activeIdx < 0 || activeIdx < 3) return wallets.slice(0, 3);
-    const result = wallets.slice(0, 3);
-    result[0] = wallets[activeIdx];
+    if (activeIdx < 0 || activeIdx < 3) return visibleWallets.slice(0, 3);
+    const result = visibleWallets.slice(0, 3);
+    result[0] = visibleWallets[activeIdx];
     return result;
-  }, [wallets, activeWallet?.address, pinnedAddresses]);
+  }, [visibleWallets, activeWallet?.address, pinnedAddresses]);
 
   const getItemLayout = useCallback(
     (_: any, index: number) => ({
@@ -507,8 +516,8 @@ export default function Wallet() {
               </View>
             </View>
             <Text className="text-light-matte-black/50 text-sm">
-              You have {wallets.length}{" "}
-              {wallets.length === 1 ? "wallet" : "wallets"}
+              You have {visibleWallets.length}{" "}
+              {visibleWallets.length === 1 ? "wallet" : "wallets"}
             </Text>
           </View>
 

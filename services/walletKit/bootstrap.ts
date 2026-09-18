@@ -25,8 +25,8 @@
 import type { TWallet } from "@/constants/types/walletTypes";
 import type { Namespace } from "@/services/chains/types";
 import { generateWalletMnemonic } from "@/services/walletService";
+import { getSupportedWalletKits } from "./chainSupport";
 import { deriveWalletsFromMnemonic } from "./deriveAll";
-import { walletKitRegistry } from "./registry";
 
 /**
  * Default name applied to each auto-minted wallet. Keeps the UI stable
@@ -65,7 +65,7 @@ export async function bootstrapFirstLoginWallets(
   namePrefix = "Main Wallet",
 ): Promise<TWallet[]> {
   const mnemonic = generateWalletMnemonic(128);
-  const namespaces = walletKitRegistry.getAll().map((k) => k.namespace);
+  const namespaces = getSupportedWalletKits().map((k) => k.namespace);
   return deriveWalletsFromMnemonic(mnemonic, namespaces, (ns) =>
     walletNameFor(namePrefix, ns),
   );
@@ -84,7 +84,7 @@ export async function restoreWalletsFromMnemonic(
   mnemonic: string,
   namePrefix = "Main Wallet",
 ): Promise<TWallet[]> {
-  const namespaces = walletKitRegistry.getAll().map((k) => k.namespace);
+  const namespaces = getSupportedWalletKits().map((k) => k.namespace);
   return deriveWalletsFromMnemonic(mnemonic, namespaces, (ns) =>
     walletNameFor(namePrefix, ns),
   );

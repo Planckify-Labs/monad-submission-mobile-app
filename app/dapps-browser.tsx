@@ -157,6 +157,7 @@ import { displayHost, parseOmnibox } from "@/services/dappsBrowser/omnibox";
 import type { Suggestion } from "@/services/dappsBrowser/suggest";
 import { intakeFromWebView } from "@/services/deeplinks/entry";
 import { isFlaggedHost } from "@/services/security/scamDomainFeed";
+import { filterSupportedWallets } from "@/services/walletKit/chainSupport";
 import { getAccountForWallet } from "@/services/walletService";
 
 interface TBrowserState {
@@ -236,7 +237,8 @@ export default function DappsBrowser() {
   });
   ctxRef.current = {
     activeWallet: activeWallet && activeWallet.address ? activeWallet : null,
-    wallets,
+    // Chain lockdown: a dApp can only be offered wallets the build surfaces.
+    wallets: filterSupportedWallets(wallets),
     getAccount: getAccountForWallet,
     sessionNonce,
   };

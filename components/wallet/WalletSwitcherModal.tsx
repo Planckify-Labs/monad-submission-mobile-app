@@ -7,6 +7,10 @@ import type { TWallet } from "@/constants/types/walletTypes";
 import { usePinnedWallets } from "@/hooks/usePinnedWallets";
 import { useWalletAccountGroups } from "@/hooks/useWalletAccountGroups";
 import type { Namespace } from "@/services/chains/types";
+import {
+  filterSupportedWallets,
+  isWalletSupported,
+} from "@/services/walletKit/chainSupport";
 import { ownedNamespaces } from "@/services/walletPresence";
 import {
   flattenWalletGroups,
@@ -49,7 +53,7 @@ const WalletSwitcherModal = memo(function WalletSwitcherModal({
   // Only surface namespace pills the user actually has wallets in —
   // a solo-EVM user shouldn't see a dead "Solana" pill.
   const availableNamespaces = useMemo(
-    () => ownedNamespaces(wallets),
+    () => ownedNamespaces(filterSupportedWallets(wallets)),
     [wallets],
   );
 
@@ -66,6 +70,7 @@ const WalletSwitcherModal = memo(function WalletSwitcherModal({
     // collapsing would just hide matches, so force every group open.
     const forceExpand = query.length > 0 || nsFilter !== "all";
     const isVisible = (wallet: TWallet) => {
+      if (!isWalletSupported(wallet)) return false;
       if (nsFilter !== "all" && wallet.namespace !== nsFilter) return false;
       if (!query) return true;
       return (

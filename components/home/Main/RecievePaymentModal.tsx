@@ -9,6 +9,7 @@ import { takumipayLogoBase64 } from "@/constants/takumipay";
 import type { TWallet } from "@/constants/types/walletTypes";
 import { useWallet } from "@/hooks/useWallet";
 import { prefetchQRMatrix } from "@/services/qrMatrixCache";
+import { filterSupportedWallets } from "@/services/walletKit/chainSupport";
 import { copyToClipboard } from "@/utils/helperUtils";
 import Chip from "../../common/Chip";
 
@@ -109,7 +110,9 @@ export default function RecievePaymentModal({
     if (typeof seedGroup !== "string" || seedGroup.length === 0) {
       return [activeWallet];
     }
-    const group = wallets.filter((w) => w.seedGroupId === seedGroup);
+    const group = filterSupportedWallets(
+      wallets.filter((w) => w.seedGroupId === seedGroup),
+    );
     return group.length > 0 ? group : [activeWallet];
   }, [activeWallet, wallets]);
 

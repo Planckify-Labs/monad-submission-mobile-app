@@ -19,6 +19,13 @@ import { useAgentBusy } from "@/hooks/useAgentBusy";
 import { storage } from "@/lib/storage/mmkv";
 import type { Namespace } from "@/services/chains/types";
 import { formatChainLabel } from "@/services/walletKit/chainInfo";
+import {
+  CHAIN_LOCKDOWN_ACTIVE,
+  getSupportedWalletKits,
+  isChainConfigSupported,
+  isWalletSupported,
+  LOCKDOWN_DEFAULT_CHAIN_ID,
+} from "@/services/walletKit/chainSupport";
 import { deriveWalletsFromMnemonic } from "@/services/walletKit/deriveAll";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import type { WalletKitAdapter } from "@/services/walletKit/types";
@@ -74,6 +81,9 @@ import {
   walletForNamespace,
   walletIndexForAccountAndNamespace,
 } from "./useWallet.helpers";
+
+/** Chain lockdown pin ran for this app session (see the effect in `useWallet`). */
+let lockdownPinDone = false;
 
 export function useWallet() {
   const { deferredTask } = usePerformance();
@@ -876,6 +886,45 @@ export function useWallet() {
   //   - `InteractionManager.runAfterInteractions` pushes the derive
   //     + save off the first-paint critical path so touch handlers on
   //     home don't starve while WebCrypto spins up the polyfill.
+  // Chain lockdown (Monad Metropolis build): a user whose last active
+  // chain or wallet is one the build hides would otherwise keep seeing it
+  // on home — most screens read `activeChain` / `activeWallet` directly,
+  // not the (filtered) pickers. Pin both to what the build surfaces, once
+  // the chain feed is in. Also covers a fresh passkey wallet: the build's
+  // default chain is Monad, so no onboarding-time switch is needed.
+  // Identity when the flag is off.
+  // Module-level, not per-instance: `useWallet` is mounted by many
+  // components at once and the pin must run exactly once per app session.
+  useEffect(() => {
+    if (!CHAIN_LOCKDOWN_ACTIVE || lockdownPinDone) return;
+    if (isLoading || !blockchains?.length) return;
+    const chainOk = isChainConfigSupported(activeChain);
+    const walletOk =
+      !activeWallet?.namespace || isWalletSupported(activeWallet);
+    lockdownPinDone = true;
+    if (chainOk && walletOk) return;
+    if (!walletOk) {
+      const idx = wallets.findIndex(isWalletSupported);
+      if (idx >= 0) setActiveWalletInternal(idx);
+    }
+    if (!chainOk) {
+      const target = blockchains.some(
+        (b) => b.chainId === LOCKDOWN_DEFAULT_CHAIN_ID,
+      )
+        ? LOCKDOWN_DEFAULT_CHAIN_ID
+        : blockchains[0]?.chainId;
+      if (target != null) void changeActiveChainInternal(target);
+    }
+  }, [
+    isLoading,
+    blockchains,
+    activeChain,
+    activeWallet,
+    wallets,
+    setActiveWalletInternal,
+    changeActiveChainInternal,
+  ]);
+
   const backfillOnceRef = useRef(false);
   useEffect(() => {
     if (backfillOnceRef.current) return;
@@ -911,9 +960,9 @@ export function useWallet() {
           }
         }
         if (bySeed.size === 0) return;
-        const registered = walletKitRegistry
-          .getAll()
-          .map((kit) => kit.namespace);
+        // Only namespaces the app surfaces (chain lockdown aware): a
+        // locked-down build must not keep minting hidden-chain rows.
+        const registered = getSupportedWalletKits().map((kit) => kit.namespace);
         const derived: TWallet[] = [];
         for (const [groupId, have] of bySeed) {
           const missing = registered.filter((ns) => !have.has(ns));

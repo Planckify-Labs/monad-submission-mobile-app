@@ -26,6 +26,7 @@
 import { type Account, type Chain, defineChain } from "viem";
 import type { TBlockchain } from "@/api/types/blockchain";
 import { findEvmChainById } from "@/constants/configs/chainConfig";
+import { isChainIdSupported } from "@/services/walletKit/chainSupport";
 import { getPublicClient, getWalletClient } from "@/utils/clients";
 import {
   type ChainClients,
@@ -83,6 +84,16 @@ export function resolveChainDef(
   chainId: number,
   blockchains: TBlockchain[],
 ): Chain {
+  // Chain lockdown: `blockchains` is already filtered by the read hooks,
+  // but the static table below is not — without this, an agent tool
+  // could resolve (and read from) a chain the build hides.
+  if (!isChainIdSupported(chainId)) {
+    throw new ExecutorError(
+      ExecutorErrorCode.UnsupportedChain,
+      `chain_id ${chainId} is not supported by this wallet`,
+    );
+  }
+
   const cached = chainDefCache.get(chainId);
   if (cached) return cached;
 

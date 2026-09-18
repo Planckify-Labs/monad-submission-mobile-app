@@ -9,6 +9,7 @@ import {
   BLOCKCHAIN_STORAGE_KEY,
   BLOCKCHAIN_TIMESTAMP_KEY,
 } from "@/services/blockchains/cache";
+import { filterSupportedBlockchains } from "@/services/walletKit/chainSupport";
 
 const OFFLINE_CACHE_TTL = 24 * 60 * 60 * 1000; // 24h — offline fallback only
 const STALE_TIME = 5 * 60 * 1000; // 5 min — React Query freshness window
@@ -116,6 +117,10 @@ export const useBlockchainsWithStorage = (
         throw err;
       }
     },
+    // Chain lockdown (Monad Metropolis build) is applied at the read, not
+    // in the cache: the MMKV bundle keeps every row, so nothing is lost
+    // when the flag flips. Identity when the flag is off.
+    select: filterSupportedBlockchains,
     staleTime: STALE_TIME,
     gcTime: OFFLINE_CACHE_TTL,
     refetchOnMount: true,
