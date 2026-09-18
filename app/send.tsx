@@ -40,10 +40,8 @@ import { ProvenanceBanner } from "@/components/deeplinks/ProvenanceBanner";
 import RecipientPickerModal from "@/components/send/RecipientPickerModal";
 import TokenSelectorModal from "@/components/wallet/TokenSelectorModal";
 import WalletSelectorModal from "@/components/wallet/WalletSelectorModal";
-import { useIsAuthenticated } from "@/hooks/queries/useAuth";
 import { useBlockchains } from "@/hooks/queries/useBlockchains";
 import { useTokens } from "@/hooks/queries/useTokens";
-import { useCreateTransaction } from "@/hooks/queries/useTransactions";
 import { useAddressBook } from "@/hooks/useAddressBook";
 import { usePreferredGasToken } from "@/hooks/usePreferredGasToken";
 import { useWallet } from "@/hooks/useWallet";
@@ -54,6 +52,7 @@ import type { Provenance } from "@/services/deeplinks/types";
 import { classifySendError, sendErrorCopy } from "@/services/errors/sendErrors";
 import { pollRelayerTaskHash } from "@/services/gasAbstraction/pollTaskStatus";
 import { resolveGasPayment } from "@/services/gasAbstraction/resolveGasPayment";
+import { recordTransfer } from "@/services/transfers/transferRecordOutbox";
 import { classifySuiRecipient } from "@/utils/walletUtils";
 
 /**
@@ -120,9 +119,7 @@ export default function SendScreen() {
   // until the mismatch resolves.
   const kitMatchesChain = kit.namespace === activeChain.namespace;
 
-  const { isAuthenticated } = useIsAuthenticated();
   const { preferredGasToken } = usePreferredGasToken();
-  const { mutateAsync: createTransaction } = useCreateTransaction();
   const { data: blockchains } = useBlockchains();
   const activeBackendChain = React.useMemo(() => {
     if (!blockchains) return null;
@@ -772,47 +769,41 @@ export default function SendScreen() {
       console.log("Transaction sent with hash:", hash);
       setTransactionStatus("Transaction complete!");
 
-      try {
-        if (isAuthenticated && activeWallet?.address) {
-          if (
-            selectedToken &&
-            selectedToken.isNativeCurrency === false &&
-            selectedToken.contractAddress
-          ) {
-            const rawAmount = parseUnits(
-              amount,
-              selectedToken.decimals,
-            ).toString();
-            await createTransaction({
+      // Record the transfer with the backend — this is what triggers the
+      // recipient's "Transfer Received" push, so it goes through the
+      // persistent outbox rather than a one-shot call: if this wallet has
+      // no session right now, or the request fails, the record is kept and
+      // posted later (foreground / sign-in) instead of being lost. Never
+      // throws; the tx is already on chain.
+      if (activeWallet?.address) {
+        if (
+          selectedToken &&
+          selectedToken.isNativeCurrency === false &&
+          selectedToken.contractAddress
+        ) {
+          await recordTransfer({
+            fromAddress: activeWallet.address,
+            toAddress: recipient,
+            amount: parseUnits(amount, selectedToken.decimals).toString(),
+            txHash: hash,
+            token: {
               contractAddress: selectedToken.contractAddress,
               blockchainId: selectedToken.blockchainId,
-              type: "TRANSFER",
-              amount: rawAmount,
-              txHash: hash,
+            },
+          });
+        } else {
+          const nativeTokenId =
+            selectedToken?.id ?? tokenList?.find((t) => t.isNativeCurrency)?.id;
+          if (nativeTokenId) {
+            await recordTransfer({
               fromAddress: activeWallet.address,
               toAddress: recipient,
-            } as any);
-          } else {
-            const nativeTokenId =
-              selectedToken?.id ??
-              tokenList?.find((t) => t.isNativeCurrency)?.id;
-            if (nativeTokenId) {
-              const rawAmount = kit
-                .parseNativeAmount(amount, activeChain)
-                .toString();
-              await createTransaction({
-                tokenId: nativeTokenId,
-                type: "TRANSFER",
-                amount: rawAmount,
-                txHash: hash,
-                fromAddress: activeWallet.address,
-                toAddress: recipient,
-              });
-            }
+              amount: kit.parseNativeAmount(amount, activeChain).toString(),
+              txHash: hash,
+              token: { tokenId: nativeTokenId },
+            });
           }
         }
-      } catch (historyErr) {
-        console.warn("Failed to create transfer history:", historyErr);
       }
 
       console.log(

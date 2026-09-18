@@ -62,7 +62,15 @@ function notifyAuthStateChanged(): void {
     }
   });
 }
-function subscribeAuthStateChanged(listener: AuthChangeListener): () => void {
+/**
+ * Exported for the few non-UI listeners that must react to a session
+ * change the moment it happens: the transfer-record outbox (a sign-in is
+ * when a queued record can finally be posted) and push registration (the
+ * server links the device to the newly signed-in wallet's user).
+ */
+export function subscribeAuthStateChanged(
+  listener: AuthChangeListener,
+): () => void {
   authChangeListeners.add(listener);
   return () => {
     authChangeListeners.delete(listener);

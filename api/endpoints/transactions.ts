@@ -1,11 +1,5 @@
 import { api } from "@/constants/configs/ky";
-import {
-  getAccessToken,
-  getAccessTokenForWallet,
-  getAuthenticatedWalletAddress,
-} from "@/hooks/queries/useAuth";
-import { storage } from "@/lib/storage/mmkv";
-import * as walletService from "@/services/walletService";
+import { isAuthenticatedForActiveWallet } from "@/services/auth/activeWalletSession";
 import type {
   TCreateTransactionRequest,
   TPaymentTransactionDetail,
@@ -75,37 +69,4 @@ export const transactionApi = {
       "Failed to create transaction",
     );
   },
-};
-
-const isAuthenticatedForActiveWallet = async (): Promise<boolean> => {
-  try {
-    // `active_wallet_index` lives in MMKV (see `useWallet`'s
-    // `setActiveWalletMutation` + the ky beforeRequest hook). Reading
-    // from SecureStore here always returned null → idx fell back to 0
-    // → the guard evaluated the FIRST wallet instead of the active
-    // one, which is why Solana-active users ended up firing authed
-    // requests that ky later rejected with
-    // "Not authenticated for current wallet".
-    const indexStr = storage.getString("active_wallet_index");
-    const idx = indexStr ? parseInt(indexStr, 10) : 0;
-    const wallets = await walletService.loadWalletsFromStorage();
-    const activeAddr = wallets?.[idx]?.address?.toLowerCase() || null;
-
-    let token: string | null = null;
-    if (activeAddr) {
-      token = await getAccessTokenForWallet(activeAddr);
-    }
-
-    if (!token) {
-      const authedWallet =
-        (await getAuthenticatedWalletAddress())?.toLowerCase() || null;
-      if (authedWallet && authedWallet === activeAddr) {
-        token = await getAccessToken();
-      }
-    }
-
-    return !!token;
-  } catch {
-    return false;
-  }
 };

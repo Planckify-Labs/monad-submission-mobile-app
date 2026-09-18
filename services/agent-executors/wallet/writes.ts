@@ -17,13 +17,12 @@
  */
 
 import { type Abi, erc20Abi, parseUnits } from "viem";
-import { tokenApi } from "@/api/endpoints/tokens";
-import { transactionApi } from "@/api/endpoints/transactions";
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import { getPreferredGasToken } from "@/hooks/usePreferredGasToken";
 import { fixedErc20TransferGasLimit } from "@/services/chains/evm/monad";
 import { pollRelayerTaskHash } from "@/services/gasAbstraction/pollTaskStatus";
 import { resolveGasPayment } from "@/services/gasAbstraction/resolveGasPayment";
+import { recordTransfer } from "@/services/transfers/transferRecordOutbox";
 import {
   requireWalletClient,
   resolveChainClients,
@@ -105,27 +104,21 @@ export const sendNativeToken: MobileToolExecutor = (input, context) =>
       chain: walletClient.chain,
     });
 
-    // Record transfer history — mirrors send.tsx native-token path.
-    // Failure here must NOT fail the executor; the tx is already on chain.
+    // Record transfer history — same durable outbox as send.tsx, so the
+    // recipient's push survives a lapsed session or a dropped request.
+    // Never throws and must NOT fail the executor; the tx is already on chain.
     let transactionId: string | undefined;
-    try {
-      const blockchain = context.blockchains.find(
-        (b) => b.chainId === chainId && b.isEVM,
-      );
-      const nativeToken = blockchain?.tokens?.find((t) => t.isNativeCurrency);
-      if (nativeToken?.id) {
-        const record = await transactionApi.createTransaction({
-          tokenId: nativeToken.id,
-          type: "TRANSFER",
-          amount: value.toString(),
-          txHash: hash,
-          fromAddress: context.wallet.address,
-          toAddress: to,
-        });
-        transactionId = record?.id;
-      }
-    } catch (histErr) {
-      console.warn("[sendNativeToken] failed to record history:", histErr);
+    const nativeToken = context.blockchains
+      .find((b) => b.chainId === chainId && b.isEVM)
+      ?.tokens?.find((t) => t.isNativeCurrency);
+    if (nativeToken?.id) {
+      transactionId = await recordTransfer({
+        fromAddress: context.wallet.address,
+        toAddress: to,
+        amount: value.toString(),
+        txHash: hash,
+        token: { tokenId: nativeToken.id },
+      });
     }
 
     return {
@@ -216,35 +209,22 @@ export const transferErc20: MobileToolExecutor = (input, context) =>
       });
     }
 
-    // Record transfer history — mirrors send.tsx ERC20 path.
-    // Uses tokenApi.searchTokens to resolve tokenId from contractAddress +
-    // blockchainId, exactly as useCreateTransaction does in the hook.
-    // Failure must NOT fail the executor; the tx is already on chain.
+    // Record transfer history — same durable outbox as send.tsx. The
+    // outbox resolves the tokenId from contractAddress + blockchainId when
+    // it posts (public catalog lookup). Never throws; the tx is already on
+    // chain.
     let transactionId: string | undefined;
-    try {
-      const blockchain = context.blockchains.find(
-        (b) => b.chainId === chainId && b.isEVM,
-      );
-      if (blockchain) {
-        const tokens = await tokenApi.searchTokens({
-          contractAddress: tokenAddress,
-          blockchainId: blockchain.id,
-        });
-        const tokenId = tokens?.[0]?.id;
-        if (tokenId) {
-          const record = await transactionApi.createTransaction({
-            tokenId,
-            type: "TRANSFER",
-            amount: amount.toString(),
-            txHash: hash,
-            fromAddress: context.wallet.address,
-            toAddress: to,
-          });
-          transactionId = record?.id;
-        }
-      }
-    } catch (histErr) {
-      console.warn("[transferErc20] failed to record history:", histErr);
+    const blockchain = context.blockchains.find(
+      (b) => b.chainId === chainId && b.isEVM,
+    );
+    if (blockchain) {
+      transactionId = await recordTransfer({
+        fromAddress: context.wallet.address,
+        toAddress: to,
+        amount: amount.toString(),
+        txHash: hash,
+        token: { contractAddress: tokenAddress, blockchainId: blockchain.id },
+      });
     }
 
     return {

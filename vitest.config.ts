@@ -223,6 +223,9 @@ export default defineConfig({
       "services/backup/passphrasePolicy.test.ts",
       // App PIN store: hashed at rest, legacy plaintext migrated once.
       "services/security/pinStore.test.ts",
+      // Transfer-record outbox: the recipient's push hangs off this POST,
+      // so a lapsed session or a dropped request must defer it, never lose it.
+      "services/transfers/transferRecordOutbox.test.ts",
     ],
   },
 });

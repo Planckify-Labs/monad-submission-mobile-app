@@ -1,24 +1,23 @@
 /**
- * `recordTransferHistory` — best-effort backend recording of a
- * completed transfer/payment so the activity tab picks it up.
+ * `recordTransferHistory` — backend recording of a completed transfer so
+ * the activity tab picks it up and the recipient gets their push.
  *
- * Mirrors `app/send.tsx`'s history hook + the EVM recording paths in
- * `wallet/writes.ts`. Failure NEVER fails the executor — the tx is
- * already on chain, the user-facing card still works, we just log a
- * warn in dev. Raw errors never bubble to the user (CLAUDE.md).
+ * Thin adapter from the executor's chain-picker arguments onto the
+ * transfer-record outbox (`services/transfers/transferRecordOutbox.ts`),
+ * which is the same path `app/send.tsx` and `wallet/writes.ts` use.
+ * Failure NEVER fails the executor — the tx is already on chain, the
+ * user-facing card still works; the outbox retries later. Raw errors
+ * never bubble to the user (CLAUDE.md).
  */
 
-// NOTE: `tokenApi` / `transactionApi` are imported dynamically so the
-// helper's static import graph stays free of RN-only modules — the
-// Vitest harness for `wallet/sui` can otherwise choke on the
-// `react-native` Flow source pulled in transitively via `ky`. The
-// dynamic import lands lazily at the first call, which always happens
-// inside a real RN runtime where the modules resolve cleanly.
+// NOTE: the outbox is imported dynamically so this helper's static
+// import graph stays free of RN-only modules — the Vitest harness for
+// `wallet/sui` can otherwise choke on the `react-native` Flow source
+// pulled in transitively via `ky`. The dynamic import lands lazily at
+// the first call, which always happens inside a real RN runtime where
+// the modules resolve cleanly.
 import type { TBlockchain } from "@/api/types/blockchain";
-import type {
-  TCreateTransactionRequest,
-  TTransactionType,
-} from "@/api/types/transaction";
+import type { TTransactionType } from "@/api/types/transaction";
 
 export type RecordTransferArgs = {
   blockchains: TBlockchain[];
@@ -68,53 +67,37 @@ export async function recordTransferHistory(
     const blockchain = findBlockchain(args);
     if (!blockchain) return undefined;
 
-    let tokenId: string | undefined;
+    let token:
+      | { tokenId: string }
+      | { contractAddress: string; blockchainId: string }
+      | undefined;
     if (args.contractAddress) {
-      const { tokenApi } = await import("@/api/endpoints/tokens");
-      const tokens = await tokenApi.searchTokens({
+      token = {
         contractAddress: args.contractAddress,
         blockchainId: blockchain.id,
-      });
-      tokenId = tokens?.[0]?.id;
+      };
     } else {
-      tokenId = blockchain.tokens?.find((t) => t.isNativeCurrency)?.id;
+      const nativeId = blockchain.tokens?.find((t) => t.isNativeCurrency)?.id;
+      if (nativeId) token = { tokenId: nativeId };
     }
-    if (!tokenId) return undefined;
+    if (!token) return undefined;
 
-    const payload: TCreateTransactionRequest = {
-      tokenId,
-      type: args.type,
-      amount: args.amount,
-      txHash: args.txHash,
+    // Durable: persisted before it is posted, retried on foreground /
+    // sign-in if this wallet has no session right now. The recipient's
+    // push hangs off this record, so "best-effort once" was not enough.
+    // Invalidation of the Activity tab happens inside the outbox on
+    // success. Lazy import keeps this helper's static graph RN-free.
+    const { recordTransfer } = await import(
+      "@/services/transfers/transferRecordOutbox"
+    );
+    return await recordTransfer({
       fromAddress: args.fromAddress,
       toAddress: args.toAddress,
-    };
-    const { transactionApi } = await import("@/api/endpoints/transactions");
-    const record = await transactionApi.createTransaction(payload);
-
-    // Invalidate the React Query cache so the Activity tab refetches —
-    // mirrors `useCreateTransaction.onSuccess` in `hooks/queries/useTransactions.ts`.
-    // Dynamic-imported to keep this helper free of the RN module graph
-    // at static-import time (same reason `transactionApi` is lazy).
-    try {
-      const [{ queryClient }, { transactionsQueryKeys }] = await Promise.all([
-        import("@/app/_layout"),
-        import("@/constants/queryKeys/transactionsQueryKeys"),
-      ]);
-      queryClient.invalidateQueries({
-        queryKey: transactionsQueryKeys.all,
-        exact: false,
-      });
-    } catch (invalidateErr) {
-      if (__DEV__) {
-        console.warn(
-          "[recordTransferHistory] cache invalidation failed:",
-          invalidateErr,
-        );
-      }
-    }
-
-    return record?.id;
+      amount: args.amount,
+      txHash: args.txHash,
+      token,
+      type: args.type === "PAYMENT" ? "PAYMENT" : "TRANSFER",
+    });
   } catch (err) {
     if (__DEV__) {
       console.warn(

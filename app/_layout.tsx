@@ -63,6 +63,7 @@ import {
   refreshDeviceSecurityLevel,
 } from "@/services/security/deviceSecurityLevel";
 import { hydrateSigningMode } from "@/services/security/signingMode";
+import { useTransferRecordOutboxFlush } from "@/services/transfers/useTransferRecordOutboxFlush";
 import { bootTransports } from "@/services/transports/boot";
 import { bootWalletKits } from "@/services/walletKit/boot";
 import { hasStoredWallets } from "@/services/walletService";
@@ -224,6 +225,7 @@ function AppShell() {
 
   usePushNotificationHandler();
   usePushRegistrationRetry();
+  useTransferRecordOutboxFlush();
   useAppSessionTracking(locked);
   useAgentBackgroundKeepAlive();
 

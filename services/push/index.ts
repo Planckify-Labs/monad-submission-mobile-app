@@ -42,6 +42,7 @@ import { optionalAuthApi } from "@/constants/configs/ky";
 import { pointsQueryKeys } from "@/constants/queryKeys/pointsQueryKeys";
 import { redeemQueryKeys } from "@/constants/queryKeys/redeemQueryKeys";
 import { transactionsQueryKeys } from "@/constants/queryKeys/transactionsQueryKeys";
+import { subscribeAuthStateChanged } from "@/hooks/queries/useAuth";
 import {
   armPendingAgentPrompt,
   setAgentPrefillDirect,
@@ -177,12 +178,23 @@ export async function registerAndroidTransfersChannel(): Promise<void> {
   }
 }
 
-// Tracks the last attempted wallet list so the foreground-retry hook can
-// re-use it without the call site needing to pass it again.
+// Tracks the last attempted wallet list so the healing hook can re-register
+// without the call site needing to pass it again, plus when registration
+// last succeeded (so a long-running process re-asserts itself daily).
 const retryState = {
   failed: false,
   wallets: [] as string[],
+  lastSuccessAt: 0,
 };
+
+/**
+ * A registration older than this is re-sent on the next foreground even
+ * though nothing is known to have changed. Cheap (one idempotent POST) and
+ * it heals the states the server can't see from its side: a device row
+ * pruned after a stale-token receipt, a subscription lost to a racing
+ * registration, a process that has been alive across many days.
+ */
+const REGISTRATION_STALE_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Request push permission, obtain an Expo push token, and POST it to
@@ -202,6 +214,7 @@ export async function registerForPushNotifications(
 
   if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) {
     console.log("[push] skipping registration in Expo Go");
+    retryState.lastSuccessAt = Date.now();
     return true; // not a failure — expected environment
   }
 
@@ -215,6 +228,9 @@ export async function registerForPushNotifications(
     if (status !== "granted") {
       console.log("[push] permission not granted — not retrying");
       retryState.failed = false; // permission denied is not a transient failure
+      // Counts as handled: the daily refresh must not turn into a daily
+      // permission prompt for someone who said no.
+      retryState.lastSuccessAt = Date.now();
       return true;
     }
 
@@ -234,6 +250,7 @@ export async function registerForPushNotifications(
     const ok = await postPushToken(token, wallets);
     retryState.failed = !ok;
     retryState.wallets = wallets;
+    if (ok) retryState.lastSuccessAt = Date.now();
     return ok;
   } catch (err) {
     console.warn("[push] registerForPushNotifications threw:", err);
@@ -244,23 +261,53 @@ export async function registerForPushNotifications(
 }
 
 /**
- * Mount once at the app root. When the app comes back to the foreground
- * and the last registration attempt failed (e.g. was offline), retries
- * automatically — no user action required.
+ * Mount once at the app root. Keeps the server's picture of this device
+ * correct without the user doing anything:
+ *
+ *   - foreground: retry a failed registration (was offline), or refresh
+ *     one older than a day;
+ *   - push-token rotation (FCM/APNs hand out a new token without a cold
+ *     start): re-register immediately — the server prunes the old token
+ *     the first time a push to it bounces, so until this fires the device
+ *     would silently receive nothing;
+ *   - auth-state change (sign-in / wallet switch that changes the
+ *     session): re-register so the server links the device to the wallet
+ *     that is now signed in, which is what its user-based fallback route
+ *     for pushes keys off.
  */
 export function usePushRegistrationRetry(): void {
   useEffect(() => {
-    const sub = AppState.addEventListener("change", (nextState) => {
-      if (
-        nextState === "active" &&
-        retryState.failed &&
-        retryState.wallets.length > 0
-      ) {
-        console.log("[push] retrying registration on foreground");
-        void registerForPushNotifications(retryState.wallets);
-      }
+    const reregister = (why: string) => {
+      if (retryState.wallets.length === 0) return;
+      console.log(`[push] re-registering (${why})`);
+      void registerForPushNotifications(retryState.wallets);
+    };
+
+    const appState = AppState.addEventListener("change", (nextState) => {
+      if (nextState !== "active") return;
+      if (retryState.failed) reregister("retry after failure");
+      else if (Date.now() - retryState.lastSuccessAt > REGISTRATION_STALE_MS)
+        reregister("registration stale");
     });
-    return () => sub.remove();
+
+    let tokenSub: { remove: () => void } | undefined;
+    try {
+      tokenSub = Notifications.addPushTokenListener(() =>
+        reregister("push token rotated"),
+      );
+    } catch (err) {
+      console.warn("[push] addPushTokenListener unavailable:", err);
+    }
+
+    const unsubscribeAuth = subscribeAuthStateChanged(() =>
+      reregister("auth state changed"),
+    );
+
+    return () => {
+      appState.remove();
+      tokenSub?.remove();
+      unsubscribeAuth();
+    };
   }, []);
 }
 
