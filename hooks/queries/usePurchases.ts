@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { purchaseApi } from "@/api/endpoints/purchases";
+import { isFulfilmentOpen } from "@/api/types/fulfilment";
 import type { TPurchaseCreateRequest } from "@/api/types/purchase";
 import { transactionsQueryKeys } from "@/constants/queryKeys/transactionsQueryKeys";
 
@@ -18,6 +19,14 @@ export const usePurchaseById = (purchaseId: string | undefined) => {
       }
     },
     enabled: !!purchaseId,
+    refetchInterval: (query) => {
+      // Live timeline while the order is paid-but-not-delivered; the
+      // server asks the vendor on each read if nobody has recently.
+      const status = query.state.data?.fulfilment?.status;
+      if (!status || !isFulfilmentOpen(status)) return false;
+      const fetchCount = query.state.dataUpdateCount ?? 0;
+      return fetchCount < 40 ? 5000 : 30000;
+    },
   });
 };
 

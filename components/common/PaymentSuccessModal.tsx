@@ -136,10 +136,12 @@ export default function PaymentSuccessModal({
                 <CheckCircle size={64} color="#10b981" strokeWidth={2} />
               </View>
               <Text className="text-light-matte-black font-bold text-2xl mb-2">
-                Redemption Successful!
+                Order placed!
               </Text>
               <Text className="text-light-matte-black/60 text-center text-sm">
-                Your redemption has been completed successfully
+                {productName
+                  ? `We're preparing your ${productName}. We'll notify you the moment it's ready.`
+                  : "We're preparing your order. We'll notify you the moment it's ready."}
               </Text>
             </Animated.View>
 
@@ -206,7 +208,7 @@ export default function PaymentSuccessModal({
               >
                 <View className="flex-row items-center justify-center">
                   <Text className="text-white font-bold text-base ml-2">
-                    Activity Details
+                    Track order
                   </Text>
                 </View>
               </Pressable>

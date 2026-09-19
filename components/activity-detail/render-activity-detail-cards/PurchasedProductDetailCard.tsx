@@ -1,4 +1,5 @@
 import { Image } from "expo-image";
+import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import {
   CheckCircle,
@@ -16,47 +17,99 @@ import type { TPurchaseResponse } from "@/api/types/purchase";
 import type { TRedemptionDetail } from "@/api/types/redeem";
 import { formatCurrency } from "@/utils/currencyUtils";
 import { formatDate } from "@/utils/dateUtils";
+import {
+  fulfilmentStatusLabel,
+  moneyStatusLabel,
+} from "@/utils/fulfilmentUtils";
 import { copyToClipboard } from "@/utils/helperUtils";
-import { isPLNVoucher } from "@/utils/vcGamerUtils";
 import { truncateAddress } from "@/utils/walletUtils";
-import AditionalInformationCard from "./AditionalInformationCard";
-import PLNCard from "./PLNCard";
+import DeliveryCard from "./DeliveryCard";
+import FulfilmentTimeline from "./FulfilmentTimeline";
+
+/** Re-open checkout for the same variant with the same inputs. */
+function retryWithPoints(variantId: string, customerInfo: unknown) {
+  router.push({
+    pathname: "/payment",
+    params: {
+      variantId,
+      customerInfo: JSON.stringify(customerInfo ?? []),
+    },
+  });
+}
+
+/** Status glyph/colour keyed by either leg's status. */
+function statusIcon(status: string) {
+  switch (status) {
+    case "COMPLETED":
+    case "CONFIRMED":
+    case "DELIVERED":
+      return <CheckCircle size={16} color="#10b981" />;
+    case "PENDING":
+    case "PROCESSING":
+    case "QUEUED":
+    case "SUBMITTED":
+    case "DELAYED":
+    case "NEEDS_RECONCILE":
+      return <Clock size={16} color="#f59e0b" />;
+    case "FAILED":
+    case "REFUNDED":
+      return <XCircle size={16} color="#ef4444" />;
+    default:
+      return <Clock size={16} color="#6b7280" />;
+  }
+}
+
+function statusColor(status: string) {
+  switch (status) {
+    case "COMPLETED":
+    case "CONFIRMED":
+    case "DELIVERED":
+      return "text-emerald-600";
+    case "PENDING":
+    case "PROCESSING":
+    case "QUEUED":
+    case "SUBMITTED":
+    case "DELAYED":
+    case "NEEDS_RECONCILE":
+      return "text-yellow-600";
+    case "FAILED":
+    case "REFUNDED":
+      return "text-red-600";
+    default:
+      return "text-gray-600";
+  }
+}
 
 function RedemptionDetailCard({
   redemption,
 }: {
   redemption: TRedemptionDetail;
 }) {
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case "COMPLETED":
-        return <CheckCircle size={16} color="#10b981" />;
-      case "PENDING":
-      case "PROCESSING":
-        return <Clock size={16} color="#f59e0b" />;
-      case "FAILED":
-        return <XCircle size={16} color="#ef4444" />;
-      default:
-        return <Clock size={16} color="#6b7280" />;
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "COMPLETED":
-        return "text-emerald-600";
-      case "PENDING":
-      case "PROCESSING":
-        return "text-yellow-600";
-      case "FAILED":
-        return "text-red-600";
-      default:
-        return "text-gray-600";
-    }
-  };
+  const redemptionLabel = redemption.fulfilment
+    ? fulfilmentStatusLabel(redemption.fulfilment.status)
+    : moneyStatusLabel(redemption.status);
+  const redemptionStatus = redemption.fulfilment?.status ?? redemption.status;
 
   return (
     <View className="gap-4 p-4">
+      <FulfilmentTimeline
+        kind="redemption"
+        fulfilment={redemption.fulfilment}
+        moneyStatus={redemption.status}
+        onRetryWithPoints={() =>
+          retryWithPoints(
+            redemption.product.variant.id,
+            redemption.customerInfo,
+          )
+        }
+      />
+
+      <DeliveryCard
+        fulfilment={redemption.fulfilment}
+        legacyVoucherCode={redemption.voucherCode}
+        customerInfo={redemption.customerInfo}
+      />
+
       <View className="bg-white rounded-2xl p-4 shadow-sm">
         <Text className="text-light-matte-black font-bold text-lg mb-4">
           Redemption Details
@@ -68,11 +121,11 @@ function RedemptionDetailCard({
               Redemption #{redemption.id.slice(-8).toUpperCase()}
             </Text>
             <View className="flex-row items-center">
-              {getStatusIcon(redemption.status)}
+              {statusIcon(redemptionStatus)}
               <Text
-                className={`ml-1 font-medium text-sm ${getStatusColor(redemption.status)}`}
+                className={`ml-1 font-medium text-sm ${statusColor(redemptionStatus)}`}
               >
-                {redemption.status}
+                {redemptionLabel}
               </Text>
             </View>
           </View>
@@ -178,62 +231,6 @@ function RedemptionDetailCard({
           </View>
         </View>
 
-        {redemption.voucherCode &&
-          (() => {
-            const isPLN = isPLNVoucher(redemption.voucherCode);
-
-            if (isPLN) {
-              const customerInfo = redemption.customerInfo;
-              let meterNumber = 0;
-              if (Array.isArray(customerInfo) && customerInfo.length > 0) {
-                const meterEntry =
-                  customerInfo.find(
-                    (e) =>
-                      e.key === "userId" ||
-                      e.key.toLowerCase().includes("meter"),
-                  ) ?? customerInfo[0];
-                meterNumber = Number(meterEntry.value ?? 0);
-              } else if (customerInfo && !Array.isArray(customerInfo)) {
-                const val =
-                  customerInfo["userId"] ?? Object.values(customerInfo)[0] ?? 0;
-                meterNumber = Number(val);
-              }
-              return (
-                <PLNCard
-                  plnCustomerInfo={{
-                    vcGamerVoucher: redemption.voucherCode,
-                    meterNumber,
-                  }}
-                />
-              );
-            }
-
-            if (redemption.product.isVoucher) {
-              return (
-                <View className="bg-light-main-container/35 rounded-xl p-4 mt-4 border-2 border-dashed border-light-primary-red/40">
-                  <Text className="text-light-matte-black font-medium text-sm mb-2">
-                    Voucher Code
-                  </Text>
-                  <View className="flex-row items-center justify-between bg-white rounded-lg p-3">
-                    <Text className="text-light-primary-red font-bold text-base font-mono flex-1 tracking-widest">
-                      {redemption.voucherCode}
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() =>
-                        copyToClipboard(redemption.voucherCode!, "Voucher code")
-                      }
-                      className="ml-2 p-1"
-                    >
-                      <Copy size={16} color="#c71c4b" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              );
-            }
-
-            return null;
-          })()}
-
         {redemption.customerInfo &&
           (() => {
             const entries = Array.isArray(redemption.customerInfo)
@@ -291,36 +288,31 @@ export default function PurchasedProductDetailCard({
     await WebBrowser.openBrowserAsync(url);
   };
 
-  const getStatusIcon = (status: string) => {
-    switch (status) {
-      case "COMPLETED":
-      case "CONFIRMED":
-        return <CheckCircle size={16} color="#10b981" />;
-      case "PENDING":
-        return <Clock size={16} color="#f59e0b" />;
-      case "FAILED":
-        return <XCircle size={16} color="#ef4444" />;
-      default:
-        return <Clock size={16} color="#6b7280" />;
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "COMPLETED":
-      case "CONFIRMED":
-        return "text-emerald-600";
-      case "PENDING":
-        return "text-yellow-600";
-      case "FAILED":
-        return "text-red-600";
-      default:
-        return "text-gray-600";
-    }
-  };
+  const purchaseLabel = purchase.fulfilment
+    ? fulfilmentStatusLabel(purchase.fulfilment.status)
+    : moneyStatusLabel(purchase.status);
+  const purchaseStatus = purchase.fulfilment?.status ?? purchase.status;
 
   return (
     <View className="gap-4 p-4">
+      <FulfilmentTimeline
+        kind="purchase"
+        fulfilment={purchase.fulfilment}
+        moneyStatus={purchase.status}
+        onRetryWithPoints={() =>
+          retryWithPoints(
+            purchase.productVariantId,
+            purchase.booking?.customerInfo,
+          )
+        }
+      />
+
+      <DeliveryCard
+        fulfilment={purchase.fulfilment}
+        legacyVoucherCode={purchase.voucherCode}
+        customerInfo={purchase.booking?.customerInfo}
+      />
+
       <View className="bg-white rounded-2xl p-4 shadow-sm">
         <Text className="text-light-matte-black font-bold text-lg mb-4">
           Purchase Details
@@ -332,11 +324,11 @@ export default function PurchasedProductDetailCard({
               Purchase #{purchase.refId.slice(-8).toUpperCase()}
             </Text>
             <View className="flex-row items-center">
-              {getStatusIcon(purchase.status)}
+              {statusIcon(purchaseStatus)}
               <Text
-                className={`ml-1 font-medium text-sm ${getStatusColor(purchase.status)}`}
+                className={`ml-1 font-medium text-sm ${statusColor(purchaseStatus)}`}
               >
-                {purchase.status}
+                {purchaseLabel}
               </Text>
             </View>
           </View>
@@ -501,11 +493,11 @@ export default function PurchasedProductDetailCard({
                 Transaction Status
               </Text>
               <View className="flex-row items-center">
-                {getStatusIcon(purchase.transaction.status)}
+                {statusIcon(purchase.transaction.status)}
                 <Text
-                  className={`ml-1 font-medium text-sm ${getStatusColor(purchase.transaction.status)}`}
+                  className={`ml-1 font-medium text-sm ${statusColor(purchase.transaction.status)}`}
                 >
-                  {purchase.transaction.status}
+                  {moneyStatusLabel(purchase.transaction.status)}
                 </Text>
               </View>
             </View>
@@ -610,8 +602,6 @@ export default function PurchasedProductDetailCard({
           </View>
         </View>
       </View>
-
-      {purchase.voucherCode && <AditionalInformationCard purchase={purchase} />}
     </View>
   );
 }

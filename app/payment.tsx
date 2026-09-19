@@ -1,5 +1,5 @@
 import { router, useLocalSearchParams } from "expo-router";
-import { ArrowLeft } from "lucide-react-native";
+import { ArrowLeft, PackageCheck } from "lucide-react-native";
 import React, {
   useCallback,
   useEffect,
@@ -35,6 +35,7 @@ import {
 } from "@/hooks/queries/useRedeem";
 import { useGoToAuth } from "@/hooks/useGoToAuth";
 import { track } from "@/services/analytics/posthog";
+import { customerInfoTarget, deliveryTypeLabel } from "@/utils/fulfilmentUtils";
 
 export default function PaymentScreen() {
   const [transactionStatus, setTransactionStatus] = useState("");
@@ -98,6 +99,17 @@ export default function PaymentScreen() {
           points_spent: Number(redemptionStatus.pointsSpent),
         });
       }
+    } else if (redemptionStatus.fulfilmentStatus === "NEEDS_RECONCILE") {
+      // The vendor may or may not have the order; a human is checking.
+      // The order screen tells the story — don't leave them on a spinner.
+      setIsLoading(false);
+      setTransactionStatus("");
+      const id = redemptionStatus.id;
+      setRedemptionId(null);
+      router.replace({
+        pathname: "/activity-detail" as never,
+        params: { redemptionId: id },
+      });
     } else if (redemptionStatus.status === "REFUNDED") {
       setIsLoading(false);
       setTransactionStatus("");
@@ -290,6 +302,30 @@ export default function PaymentScreen() {
                 </View>
               </View>
 
+              {/* Set the expectation before they pay: where the product
+                  will show up, so "where is my purchase?" never starts. */}
+              <View className="flex-row items-start bg-light-primary-red/5 rounded-xl p-3 mb-4">
+                <PackageCheck size={16} color="#c71c4b" strokeWidth={2} />
+                <View className="ml-2 flex-1">
+                  <Text className="text-light-matte-black/60 text-xs">
+                    Delivered as
+                  </Text>
+                  <Text className="text-light-matte-black text-sm font-medium">
+                    {deliveryTypeLabel(
+                      variantData?.product?.deliveryType,
+                      customerInfoTarget(
+                        parsedCustomerInfo,
+                        variantData?.product?.deliveryType,
+                      ),
+                    )}
+                  </Text>
+                  <Text className="text-light-matte-black/50 text-xs mt-1">
+                    If the provider can't deliver, your points are refunded
+                    automatically.
+                  </Text>
+                </View>
+              </View>
+
               <View className="bg-light-main-container/50 rounded-xl p-3">
                 <Text className="text-light-matte-black font-medium text-sm mb-2">
                   Point Details
@@ -373,6 +409,17 @@ export default function PaymentScreen() {
           productName={paymentSuccess?.productName}
           pointsSpent={paymentSuccess?.pointsSpent}
           redemptionId={paymentSuccess?.redemptionId}
+          onViewActivity={() => {
+            const id = paymentSuccess?.redemptionId;
+            if (id) {
+              router.replace({
+                pathname: "/activity-detail" as never,
+                params: { redemptionId: id },
+              });
+            } else {
+              router.replace("/activities");
+            }
+          }}
         />
 
         <PaymentErrorModal

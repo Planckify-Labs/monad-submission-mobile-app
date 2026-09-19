@@ -5,6 +5,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { redeemApi } from "@/api/endpoints/redeem";
+import { isFulfilmentOpen } from "@/api/types/fulfilment";
 import type {
   TRedeemExecuteRequest,
   TRedemptionHistoryParams,
@@ -25,12 +26,22 @@ export const useRedemptionById = (id: string | null) => {
     retry: 1,
     refetchInterval: (query) => {
       const data = query.state.data;
+      // The order is still moving (paid → preparing → delivered): keep the
+      // timeline live. The server asks the vendor on each read if nobody
+      // has recently, so this is also what makes a slow order resolve
+      // while the user is looking at it. Backs off after a while — the
+      // push will bring them back.
+      if (data?.fulfilment) {
+        if (!isFulfilmentOpen(data.fulfilment.status)) return false;
+        const fetchCount = query.state.dataUpdateCount ?? 0;
+        return fetchCount < 40 ? 5000 : 30000;
+      }
+      // Older API: only the legacy voucherCode to wait for.
       if (
         data?.status === "COMPLETED" &&
         data.product.isVoucher &&
         data.voucherCode === null
       ) {
-        // Stop after 4 automatic retries to avoid infinite polling
         const fetchCount = query.state.dataUpdateCount ?? 0;
         return fetchCount < 4 ? 3000 : false;
       }
@@ -59,8 +70,13 @@ export const useRedemptionStatus = (redemptionId: string | null) => {
     queryFn: () => redeemApi.getStatus(redemptionId!),
     enabled: !!redemptionId,
     refetchInterval: (query) => {
-      const status = query.state.data?.status;
-      if (status === "COMPLETED" || status === "REFUNDED") return false;
+      const data = query.state.data;
+      if (data?.status === "COMPLETED" || data?.status === "REFUNDED") {
+        return false;
+      }
+      // Retries exhausted with the vendor outcome unknown: ops has it now,
+      // the order screen explains. Nothing more to wait for here.
+      if (data?.fulfilmentStatus === "NEEDS_RECONCILE") return false;
       return 3000; // Poll every 3s while PENDING/PROCESSING/FAILED (retrying)
     },
   });

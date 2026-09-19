@@ -1,3 +1,5 @@
+import type { TDeliveryType } from "./fulfilment";
+
 export type TProductCategory = {
   id: string;
   name: string;
@@ -50,6 +52,9 @@ export type TProduct = {
   code: string;
   categoryId: string;
   isActive: boolean;
+  isVoucher?: boolean;
+  /** How the provider hands it over; resolved server-side. Absent on older APIs. */
+  deliveryType?: TDeliveryType;
   createdAt: string;
   updatedAt: string;
   inputType: string | null;

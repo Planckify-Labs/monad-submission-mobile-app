@@ -202,6 +202,8 @@ export default defineConfig({
       // vcGamer PLN voucher_code parsing: unit-suffix-less / comma-decimal
       // variants are what silently hid the Token Code card on real orders.
       "utils/vcGamerUtils.test.ts",
+      // Fulfilment leg copy (paid → preparing → delivered / refunded).
+      "utils/fulfilmentUtils.test.ts",
       // dApps-browser address bar: what the user types decides the origin
       // the bridge grants permissions against, so the scheme allowlist and
       // the userinfo/zero-width stripping are covered here rather than

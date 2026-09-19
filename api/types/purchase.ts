@@ -1,3 +1,5 @@
+import type { TDeliveryType, TFulfilment } from "./fulfilment";
+
 export type TPurchaseCreateRequest = {
   refId: string;
   walletAddress: string;
@@ -26,6 +28,9 @@ export type TProduct = {
   code: string;
   categoryId: string;
   isActive: boolean;
+  isVoucher?: boolean;
+  /** Resolved server-side; absent on older API versions. */
+  deliveryType?: TDeliveryType;
   createdAt: string;
   updatedAt: string;
 };
@@ -102,7 +107,7 @@ export type TBooking = {
 
 export type TPurchaseResponse = {
   id: string;
-  status: "PENDING" | "COMPLETED" | "FAILED";
+  status: "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED" | "REFUNDED";
   transactionId: string;
   transactionCreatedAt: string;
   productVariantId: string;
@@ -111,6 +116,9 @@ export type TPurchaseResponse = {
   updatedAt: string;
   transaction: TTransaction;
   productVariant: TProductVariant;
-  voucherCode?: string;
+  /** Legacy — prefer `fulfilment.delivery`. */
+  voucherCode?: string | null;
+  /** Absent on API versions that predate the fulfilment leg. */
+  fulfilment?: TFulfilment;
   booking: TBooking;
 };

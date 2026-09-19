@@ -1,3 +1,9 @@
+import type {
+  TDeliveryType,
+  TFulfilment,
+  TFulfilmentStatus,
+} from "./fulfilment";
+
 export type TRedeemExecuteRequest = {
   productVariantId: string;
   productPriceId: string;
@@ -23,6 +29,8 @@ export type TRedemptionStatus =
 export type TRedemptionStatusResponse = {
   id: string;
   status: TRedemptionStatus;
+  fulfilmentStatus?: TFulfilmentStatus;
+  expectedBy?: string | null;
   pointsSpent: string;
   vendorRefId: string | null;
   createdAt: string;
@@ -33,6 +41,7 @@ export type TRedemptionProduct = {
   name: string;
   imageUrl: string | null;
   isVoucher: boolean;
+  deliveryType?: TDeliveryType;
   variant: {
     id: string;
     name: string;
@@ -61,7 +70,10 @@ export type TRedemptionHistoryItem = {
 };
 
 export type TRedemptionDetail = TRedemptionHistoryItem & {
+  /** Legacy — prefer `fulfilment.delivery`. */
   voucherCode: string | null;
+  /** Absent on API versions that predate the fulfilment leg. */
+  fulfilment?: TFulfilment;
 };
 
 export type TRedemptionHistoryResponse = {

@@ -411,6 +411,23 @@ interface PointsPushData {
   redemptionId?: string;
 }
 
+/**
+ * `data` of a product-purchase push (payment verified / preparing /
+ * delivered / delayed / refunded — see api `sendFulfilmentPush` and
+ * `sendPurchaseOutcomePush`). Every one of them deep-links to the order.
+ */
+function readPurchasePushData(
+  notification: Notifications.Notification,
+): { purchaseId: string } | null {
+  const raw = notification.request.content.data;
+  if (!raw || typeof raw !== "object") return null;
+  const data = raw as Record<string, unknown>;
+  if (data.type !== "purchase" || typeof data.purchaseId !== "string") {
+    return null;
+  }
+  return { purchaseId: data.purchaseId };
+}
+
 function readPointsPushData(
   notification: Notifications.Notification,
 ): PointsPushData | null {
@@ -608,6 +625,19 @@ export function usePushNotificationHandler(): void {
       (response) => {
         const data = readPayoutData(response.notification);
         if (!data?.intentId) {
+          const purchaseData = readPurchasePushData(response.notification);
+          if (purchaseData) {
+            try {
+              router.push({
+                pathname: "/activity-detail" as never,
+                params: { purchaseId: purchaseData.purchaseId },
+              });
+            } catch (err) {
+              console.warn("[push] activity-detail route not available:", err);
+            }
+            return;
+          }
+
           const pointsData = readPointsPushData(response.notification);
           if (pointsData) {
             if (pointsData.type === "redemption" && pointsData.redemptionId) {
