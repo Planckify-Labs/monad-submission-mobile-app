@@ -29,6 +29,13 @@
  * Chain-extension discipline (memory `feedback_chain_extension_discipline.md`):
  * the deep-link is namespace-agnostic. `intentId` is all the receipt
  * needs — the intent carries its own chain discriminator.
+ *
+ * Registration reliability: a failed POST is retried in-process up to 3x
+ * (`postPushToken`), then `usePushRegistrationRetry` re-asserts on
+ * foreground, token rotation, and auth-state change. All of that lives in
+ * memory, so it only helps while the process stays alive — `retryState` is
+ * hydrated from and persisted to MMKV (`pushRegistrationState.ts`) so a
+ * failure survives the app being killed instead of being silently lost.
  */
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -49,6 +56,11 @@ import {
 } from "@/hooks/useAgentPrefill";
 import { usePaymentIntentInvalidator } from "@/hooks/usePaymentIntentInvalidator";
 import { deepLinkNotices } from "@/services/deeplinks/notices";
+import {
+  type PushRegistrationState,
+  readPushRegistrationState,
+  writePushRegistrationState,
+} from "@/services/push/pushRegistrationState";
 import { walletConnectTransport } from "@/services/transports/walletconnect";
 
 /**
@@ -181,11 +193,17 @@ export async function registerAndroidTransfersChannel(): Promise<void> {
 // Tracks the last attempted wallet list so the healing hook can re-register
 // without the call site needing to pass it again, plus when registration
 // last succeeded (so a long-running process re-asserts itself daily).
-const retryState = {
-  failed: false,
-  wallets: [] as string[],
-  lastSuccessAt: 0,
-};
+// Hydrated from MMKV at module load and persisted on every change
+// (`pushRegistrationState.ts`) — a failure survives a kill, so the next
+// launch (and `usePushRegistrationRetry` on mount, before `useWallet` even
+// finishes rehydrating) knows immediately that the last attempt didn't
+// land, instead of starting from a blank slate and waiting on a foreground
+// event to find out.
+const retryState: PushRegistrationState = readPushRegistrationState();
+
+function persistRetryState(): void {
+  writePushRegistrationState(retryState);
+}
 
 /**
  * A registration older than this is re-sent on the next foreground even
@@ -193,8 +211,21 @@ const retryState = {
  * it heals the states the server can't see from its side: a device row
  * pruned after a stale-token receipt, a subscription lost to a racing
  * registration, a process that has been alive across many days.
+ *
+ * `POST /users/me/push-token` answers 204 with no signal back to the
+ * client (`api/src/push/push.controller.ts`), so there is no way to be
+ * told "your device row got pruned" — the api prunes on `DeviceNotRegistered`
+ * from either the send ticket or the later receipt check
+ * (`api/src/push/push.service.ts` `attemptDelivery` / `checkReceipts`),
+ * silently. If that prune was a transient false-positive (a receipt read
+ * while the OS had merely paused the app) rather than a genuine token
+ * rotation, the underlying Expo token is still good and just needs
+ * re-sending — this window is how long that can go unrepaired. Kept short
+ * relative to the old 24h default specifically to shrink that exposure;
+ * still cheap because the POST is a no-op on the server when nothing
+ * changed.
  */
-const REGISTRATION_STALE_MS = 24 * 60 * 60 * 1000;
+const REGISTRATION_STALE_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Request push permission, obtain an Expo push token, and POST it to
@@ -214,9 +245,14 @@ export async function registerForPushNotifications(
 
   if (Constants.executionEnvironment === ExecutionEnvironment.StoreClient) {
     console.log("[push] skipping registration in Expo Go");
+    retryState.failed = false;
+    retryState.consecutiveFailures = 0;
     retryState.lastSuccessAt = Date.now();
+    persistRetryState();
     return true; // not a failure — expected environment
   }
+
+  retryState.lastAttemptAt = Date.now();
 
   try {
     const existing = await Notifications.getPermissionsAsync();
@@ -228,9 +264,11 @@ export async function registerForPushNotifications(
     if (status !== "granted") {
       console.log("[push] permission not granted — not retrying");
       retryState.failed = false; // permission denied is not a transient failure
+      retryState.consecutiveFailures = 0;
       // Counts as handled: the daily refresh must not turn into a daily
       // permission prompt for someone who said no.
       retryState.lastSuccessAt = Date.now();
+      persistRetryState();
       return true;
     }
 
@@ -238,6 +276,11 @@ export async function registerForPushNotifications(
     const token = tokenRes.data;
     if (!token) {
       console.warn("[push] getExpoPushTokenAsync returned empty");
+      retryState.failed = true;
+      retryState.wallets = wallets;
+      retryState.consecutiveFailures += 1;
+      retryState.lastError = "empty push token";
+      persistRetryState();
       return false;
     }
 
@@ -250,14 +293,30 @@ export async function registerForPushNotifications(
     const ok = await postPushToken(token, wallets);
     retryState.failed = !ok;
     retryState.wallets = wallets;
-    if (ok) retryState.lastSuccessAt = Date.now();
+    if (ok) {
+      retryState.lastSuccessAt = Date.now();
+      retryState.consecutiveFailures = 0;
+      retryState.lastError = undefined;
+    } else {
+      retryState.consecutiveFailures += 1;
+      retryState.lastError = "backend post failed after retries";
+    }
+    persistRetryState();
     return ok;
   } catch (err) {
     console.warn("[push] registerForPushNotifications threw:", err);
     retryState.failed = true;
     retryState.wallets = wallets;
+    retryState.consecutiveFailures += 1;
+    retryState.lastError = err instanceof Error ? err.message : String(err);
+    persistRetryState();
     return false;
   }
+}
+
+/** Diagnostic snapshot of the persisted retry state (e.g. for a debug screen). */
+export function pushRegistrationDiagnostics(): Readonly<PushRegistrationState> {
+  return { ...retryState };
 }
 
 /**
@@ -274,6 +333,12 @@ export async function registerForPushNotifications(
  *     session): re-register so the server links the device to the wallet
  *     that is now signed in, which is what its user-based fallback route
  *     for pushes keys off.
+ *   - mount, when the persisted state (`pushRegistrationState.ts`) shows
+ *     the last attempt failed: this can be a fresh process that never
+ *     got the chance to retry before being killed, so don't wait for a
+ *     foreground event or for `useWallet` to rehydrate and re-trigger the
+ *     boot effect in `app/_layout.tsx` — retry with the last-known wallet
+ *     list right away.
  */
 export function usePushRegistrationRetry(): void {
   useEffect(() => {
@@ -282,6 +347,8 @@ export function usePushRegistrationRetry(): void {
       console.log(`[push] re-registering (${why})`);
       void registerForPushNotifications(retryState.wallets);
     };
+
+    if (retryState.failed) reregister("resuming after previous failure");
 
     const appState = AppState.addEventListener("change", (nextState) => {
       if (nextState !== "active") return;

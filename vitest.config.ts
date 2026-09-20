@@ -228,6 +228,9 @@ export default defineConfig({
       // Transfer-record outbox: the recipient's push hangs off this POST,
       // so a lapsed session or a dropped request must defer it, never lose it.
       "services/transfers/transferRecordOutbox.test.ts",
+      // Push-token registration retry state: persisted so a failed
+      // registration survives the app being killed mid-retry.
+      "services/push/pushRegistrationState.test.ts",
     ],
   },
 });
