@@ -31,6 +31,13 @@ export interface PushRegistrationState {
   lastAttemptAt: number;
   consecutiveFailures: number;
   lastError?: string;
+  /**
+   * The Expo push token last successfully POSTed to the backend. Lets a
+   * fresh call skip the network entirely when the token and wallet list
+   * are both unchanged and the registration isn't stale — most calls
+   * (every cold start, every foreground) have nothing new to say.
+   */
+  lastRegisteredToken?: string;
 }
 
 const STATE_KEY = "takumipay_push_registration_state";

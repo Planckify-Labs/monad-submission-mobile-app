@@ -228,13 +228,101 @@ function persistRetryState(): void {
 const REGISTRATION_STALE_MS = 6 * 60 * 60 * 1000;
 
 /**
+ * Coalesces concurrent callers into one in-flight request. Several triggers
+ * (mount resume-on-failure, foreground, token listener, auth change) can
+ * fire within the same tick — without this each would start its own
+ * `getExpoPushTokenAsync` → POST round trip in parallel.
+ */
+let inFlightRegistration: Promise<boolean> | null = null;
+
+/**
+ * Hard floor between actual network attempts — unconditional, no bypass.
+ * At most one `POST /users/me/push-token` leaves the device per window,
+ * no matter how many times or why `registerForPushNotifications` gets
+ * called; a call inside the window is coalesced into a single trailing
+ * call scheduled for the moment the window reopens (using whichever
+ * wallet list was most recently requested), so nothing is silently
+ * dropped — it is delayed, at most by one window.
+ *
+ * This is deliberately unconditional (earlier versions of this gate only
+ * throttled when the wallet list matched and the last attempt hadn't
+ * failed, which meant any drift in either of those — a stuck `failed`
+ * flag, a wallet list that differs by casing between renders — fell
+ * straight through with no protection). A device hammering
+ * `POST /users/me/push-token` in a tight loop is a real production
+ * incident (real DB writes per `api`'s `registerToken`), so this must
+ * hold regardless of *why* something is calling it too often, including
+ * a future bug we haven't found yet.
+ */
+const MIN_REREGISTRATION_INTERVAL_MS = 30 * 1000;
+
+let lastAttemptStartedAt = 0;
+let pendingWallets: string[] | null = null;
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+
+function sameWallets(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  const setB = new Set(b);
+  return a.every((w) => setB.has(w));
+}
+
+function scheduleTrailingRegistration(wallets: string[]): void {
+  pendingWallets = wallets;
+  if (pendingTimer) return; // already scheduled — it'll pick up the latest pendingWallets when it fires
+  const wait = Math.max(
+    0,
+    MIN_REREGISTRATION_INTERVAL_MS - (Date.now() - lastAttemptStartedAt),
+  );
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null;
+    const wallets = pendingWallets;
+    pendingWallets = null;
+    if (wallets) void registerForPushNotifications(wallets);
+  }, wait);
+}
+
+/**
  * Request push permission, obtain an Expo push token, and POST it to
  * the backend. Idempotent — safe to call whenever the wallet list changes.
  * Returns true on success, false on any unrecoverable failure (so callers
  * can decide whether to retry). Fails-closed on every branch so the app
  * always keeps working without push.
+ *
+ * Rate-limited to at most one actual attempt per
+ * `MIN_REREGISTRATION_INTERVAL_MS` (see above) — a call arriving sooner
+ * resolves immediately without hitting the network, and its wallet list
+ * is what gets sent by the trailing call once the window reopens.
  */
-export async function registerForPushNotifications(
+export function registerForPushNotifications(
+  wallets: string[],
+): Promise<boolean> {
+  if (inFlightRegistration) {
+    scheduleTrailingRegistration(wallets);
+    return inFlightRegistration;
+  }
+
+  const sinceLastAttempt = Date.now() - lastAttemptStartedAt;
+  if (
+    lastAttemptStartedAt > 0 &&
+    sinceLastAttempt < MIN_REREGISTRATION_INTERVAL_MS
+  ) {
+    if (__DEV__) {
+      console.log(
+        `[push] throttled — last attempt ${sinceLastAttempt}ms ago, will retry with latest wallets in ${MIN_REREGISTRATION_INTERVAL_MS - sinceLastAttempt}ms`,
+      );
+    }
+    scheduleTrailingRegistration(wallets);
+    return Promise.resolve(!retryState.failed);
+  }
+
+  lastAttemptStartedAt = Date.now();
+  inFlightRegistration = doRegisterForPushNotifications(wallets).finally(() => {
+    inFlightRegistration = null;
+  });
+  return inFlightRegistration;
+}
+
+async function doRegisterForPushNotifications(
   wallets: string[],
 ): Promise<boolean> {
   await registerAndroidPayoutChannel();
@@ -290,6 +378,26 @@ export async function registerForPushNotifications(
       );
     }
 
+    // Nothing to tell the backend: this exact token is already registered
+    // for this exact wallet list, the last attempt succeeded, and that
+    // success isn't stale. This is the common case — every cold start and
+    // every foreground land here once steady state is reached — so it
+    // must never cost a `POST /users/me/push-token` / DB write.
+    const alreadyCurrent =
+      token === retryState.lastRegisteredToken &&
+      sameWallets(wallets, retryState.wallets) &&
+      !retryState.failed &&
+      Date.now() - retryState.lastSuccessAt < REGISTRATION_STALE_MS;
+    if (alreadyCurrent) {
+      if (__DEV__) {
+        console.log(
+          "[push] already registered — nothing changed, skipping POST",
+        );
+      }
+      persistRetryState(); // lastAttemptAt moves forward even on a no-op check
+      return true;
+    }
+
     const ok = await postPushToken(token, wallets);
     retryState.failed = !ok;
     retryState.wallets = wallets;
@@ -297,6 +405,7 @@ export async function registerForPushNotifications(
       retryState.lastSuccessAt = Date.now();
       retryState.consecutiveFailures = 0;
       retryState.lastError = undefined;
+      retryState.lastRegisteredToken = token;
     } else {
       retryState.consecutiveFailures += 1;
       retryState.lastError = "backend post failed after retries";
@@ -359,9 +468,21 @@ export function usePushRegistrationRetry(): void {
 
     let tokenSub: { remove: () => void } | undefined;
     try {
-      tokenSub = Notifications.addPushTokenListener(() =>
-        reregister("push token rotated"),
-      );
+      // `token.data` is the raw device token this event carries. Expo's own
+      // docs warn that calling `getDevicePushTokenAsync` (which
+      // `registerForPushNotifications` does, via `getExpoPushTokenAsync`)
+      // FROM a reaction to this listener "may lead to an infinite loop" —
+      // in practice the native side re-emits this event on every fetch,
+      // not only on a genuine change. Compare against the last value we
+      // actually saw and ignore a re-emit of the same one; only a real
+      // change is a rotation worth re-registering for.
+      let lastDeviceToken: string | null = null;
+      tokenSub = Notifications.addPushTokenListener((token) => {
+        const value = JSON.stringify(token?.data ?? null);
+        if (value === lastDeviceToken) return;
+        lastDeviceToken = value;
+        reregister("push token rotated");
+      });
     } catch (err) {
       console.warn("[push] addPushTokenListener unavailable:", err);
     }
