@@ -41,11 +41,28 @@ export const RELAYER_TESTNET_URL = "https://relayer.1shotapi.dev/relayers";
 const TESTNET_CHAIN_IDS = new Set<number>([11155111, 84532]);
 
 /**
- * SI-1 fee-overcharge ceiling, in USDC atoms (6 decimals) ⇒ $5.00. Any
+ * SI-1 fee-overcharge ceiling in whole stablecoin units ⇒ $5.00. Any
  * `requiredPaymentAmount` above this is treated as a safety violation and
  * the estimate is failed before a `send` can ever quote it.
  */
-export const RELAYER_FEE_SAFETY_MAX_USDC_ATOMS = 5_000_000n;
+export const RELAYER_FEE_SAFETY_MAX_WHOLE = 5n;
+
+/**
+ * {@link RELAYER_FEE_SAFETY_MAX_WHOLE} in the fee token's atoms. The
+ * relayer tags the same stablecoin with different decimals per chain
+ * (USDC / USDT are 6dp on most chains but 18dp on BSC), so callers that
+ * know the fee token pass its `decimals` here instead of assuming 6.
+ */
+export function relayerFeeSafetyMaxAtoms(decimals: number): bigint {
+  const dp = Number.isInteger(decimals) && decimals >= 0 ? decimals : 6;
+  return RELAYER_FEE_SAFETY_MAX_WHOLE * 10n ** BigInt(dp);
+}
+
+/**
+ * Default SI-1 ceiling in 6-decimal atoms (USDC on every chain but BSC).
+ * Kept for callers that only ever pay in 6dp USDC (x402 settlement).
+ */
+export const RELAYER_FEE_SAFETY_MAX_USDC_ATOMS = relayerFeeSafetyMaxAtoms(6);
 
 /**
  * Resolves the relayer endpoint for a chain. Testnets (Sepolia, Base

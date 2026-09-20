@@ -1,22 +1,26 @@
 /**
  * `oneShotRelayerProvider` — gas abstraction via the 1Shot ERC-7710
- * public relayer. Pays transaction gas in a stablecoin (USDC) — the
- * gas-settings preference is the source of truth for the FEE token,
- * independent of the token actually being sent.
+ * public relayer. Pays transaction gas in a stablecoin — the gas-settings
+ * preference (`feeTokenSymbol`) is the source of truth for the FEE token,
+ * independent of the token actually being sent. Which stablecoins are
+ * offerable on a chain is whatever the live `relayer_getCapabilities`
+ * lists for it (USDC everywhere, USDT / USDT0 / mUSD / USDG on some
+ * chains, USDC only on the two testnets as of 2026-09) — nothing is
+ * hardcoded here, so the provider is the same on mainnets and testnets.
  *
  * Two shapes, picked automatically:
- *   - Sending USDC itself (work token == fee token): one
+ *   - Sending the fee token itself (work token == fee token): one
  *     `Erc20TransferAmount` delegation scoped to `fee + work` covers both
  *     legs in a single bundle entry (skill Example 1b).
  *   - Sending any other token, e.g. IDRX (work token != fee token): two
- *     delegations — a USDC fee delegation (→ `feeCollector`) and a
+ *     delegations — a fee-token delegation (→ `feeCollector`) and a
  *     work-token delegation (→ recipient) — batched as two bundle entries
  *     that the relayer merges into one on-chain `redeemDelegations`
  *     (skill Example 2).
  *
  * The feature still declines (→ native fallback via `resolveGasPayment`)
- * when the chain isn't supported or USDC isn't an accepted relayer fee
- * token on that chain.
+ * when the chain isn't supported or the preferred symbol isn't an
+ * accepted relayer fee token on that chain.
  *
  * The orchestration core (`runRelayerTransfer`, `quoteRelayerTransfer`,
  * `resolveRelayerContext`) is exported and takes a `RelayerKit` so it can
@@ -29,6 +33,7 @@ import type { ChainConfig } from "@/constants/configs/chainConfig";
 import {
   getRelayerErrorCode,
   RELAYER_ERROR,
+  relayerFeeSafetyMaxAtoms,
 } from "@/services/walletKit/evm/relayer";
 import { walletKitRegistry } from "@/services/walletKit/registry";
 import type {
@@ -41,6 +46,8 @@ import type {
 } from "@/services/walletKit/types";
 import { isGasAbstractionSupported } from "../supportedChains";
 import {
+  type FeeToken,
+  feeTokenSymbolMatches,
   type GasAbstractionArgs,
   type GasAbstractionExecuteResult,
   type GasAbstractionProvider,
@@ -142,11 +149,11 @@ export function computeRoughFee(
 interface ResolvedRelayerContext {
   chainCaps: RelayerChainCapabilities;
   /**
-   * The token gas is charged in — USDC, the gas-settings preference.
-   * Resolved by symbol against the relayer's accepted fee tokens, NOT
-   * from the token being sent.
+   * The token gas is charged in — the gas-settings preference. Resolved
+   * by symbol against the relayer's accepted fee tokens for this chain,
+   * NOT from the token being sent.
    */
-  feeToken: { address: string; symbol: string; decimals: number };
+  feeToken: FeeToken;
   /** The token actually being transferred to the recipient. */
   workTokenAddress: string;
   /**
@@ -158,16 +165,14 @@ interface ResolvedRelayerContext {
 }
 
 /**
- * Resolves the relayer capabilities for the chain and the USDC fee token
- * (the gas-settings preference). The token being SENT is independent — it
- * may be USDC, IDRX, or anything else. Declines (typed unavailable error)
- * only when the chain isn't covered or USDC isn't an accepted fee token,
- * so `resolveGasPayment` can fall back to native gas.
+ * Live relayer capabilities for `chain`, or `null` when the relayer does
+ * not serve it. Routed to the right relayer host (mainnet / testnet) by
+ * the kit; this helper is host-agnostic.
  */
-export async function resolveRelayerContext(
+export async function fetchRelayerChainCapabilities(
   kit: RelayerKit,
-  { chain, intent }: GasAbstractionArgs,
-): Promise<ResolvedRelayerContext> {
+  chain: ChainConfig,
+): Promise<RelayerChainCapabilities | null> {
   if (!kit.getRelayerCapabilities) {
     throw new GasAbstractionUnavailableError(
       "relayer capabilities unsupported",
@@ -175,21 +180,38 @@ export async function resolveRelayerContext(
   }
   const chainId = chain.namespace === "eip155" ? chain.chain.id : -1;
   const caps = await kit.getRelayerCapabilities({ chain });
-  const chainCaps = caps[chainId];
+  return caps[chainId] ?? null;
+}
+
+/**
+ * Resolves the relayer capabilities for the chain and the fee token the
+ * user asked for (`feeTokenSymbol`, the gas-settings preference). The
+ * token being SENT is independent — it may be the fee token itself, IDRX,
+ * or anything else. Declines (typed unavailable error) only when the
+ * chain isn't covered or the symbol isn't an accepted fee token there, so
+ * `resolveGasPayment` can fall back to native gas.
+ */
+export async function resolveRelayerContext(
+  kit: RelayerKit,
+  { chain, intent, feeTokenSymbol }: GasAbstractionArgs,
+): Promise<ResolvedRelayerContext> {
+  const chainCaps = await fetchRelayerChainCapabilities(kit, chain);
   if (!chainCaps) {
     throw new GasAbstractionUnavailableError(
       "chain not in relayer capabilities",
     );
   }
-  // Gas is paid in USDC regardless of what's being sent — gas settings is
-  // the source of truth for the fee token. Match by symbol (the relayer
-  // keys accepted tokens by address but tags each with its symbol).
-  const feeToken = chainCaps.tokens.find(
-    (t) => t.symbol.toUpperCase() === "USDC",
+  // Gas is paid in the preferred stablecoin regardless of what's being
+  // sent — gas settings is the source of truth for the fee token. Match by
+  // symbol (the relayer keys accepted tokens by address but tags each with
+  // its symbol); the accepted set is per chain and comes from the live
+  // capabilities, so the same code serves every chain the relayer does.
+  const feeToken = chainCaps.tokens.find((t) =>
+    feeTokenSymbolMatches(t.symbol, feeTokenSymbol),
   );
   if (!feeToken) {
     throw new GasAbstractionUnavailableError(
-      "usdc not accepted as relayer fee token",
+      "preferred token not accepted as relayer fee token",
     );
   }
   return {
@@ -214,10 +236,10 @@ export async function quoteRelayerTransfer(
   });
   const feeAmount = computeRoughFee(feeData);
   // The fee-token balance gate must cover the fee. When the work transfer
-  // also draws on the fee token (sending USDC itself), it must additionally
-  // cover the send amount. For a different work token (e.g. IDRX) the work
-  // balance is on its own token and validated by the send flow / relayer
-  // simulation — the USDC gate only needs to cover the fee.
+  // also draws on the fee token (sending the fee token itself), it must
+  // additionally cover the send amount. For a different work token (e.g.
+  // IDRX) the work balance is on its own token and validated by the send
+  // flow / relayer simulation — the fee-token gate only needs the fee.
   const totalRequired = sameToken ? feeAmount + args.intent.amount : feeAmount;
   return {
     providerId: ONE_SHOT_PROVIDER_ID,
@@ -266,6 +288,12 @@ export async function runRelayerTransfer(
   }
   const authList = authorizationList.length ? authorizationList : undefined;
 
+  // SI-1 overcharge ceiling expressed in THIS fee token's atoms. The
+  // relayer tags the same stablecoin with different decimals per chain
+  // (USDC is 6dp on Base, 18dp on BSC), so a fixed 6dp bound would reject
+  // every honest 18dp quote.
+  const feeSafetyMax = relayerFeeSafetyMaxAtoms(feeToken.decimals);
+
   // Signs one `Erc20TransferAmount` delegation to the relayer's target.
   const signScopedDelegation = async (
     tokenAddress: string,
@@ -298,8 +326,8 @@ export async function runRelayerTransfer(
     feeAmount: bigint,
   ): Promise<RelayerBundleEntry[]> => {
     if (sameToken) {
-      // Sending USDC itself: one delegation scoped to fee + work covers
-      // both legs in a single bundle entry (skill Example 1b).
+      // Sending the fee token itself: one delegation scoped to fee + work
+      // covers both legs in a single bundle entry (skill Example 1b).
       const signed = await signScopedDelegation(
         feeToken.address,
         feeAmount + intent.amount,
@@ -322,7 +350,7 @@ export async function runRelayerTransfer(
         },
       ];
     }
-    // Sending a different token (e.g. IDRX): a USDC fee delegation and a
+    // Sending a different token (e.g. IDRX): a fee-token delegation and a
     // work-token delegation, batched as two bundle entries the relayer
     // merges into one on-chain redeemDelegations (skill Example 2). One
     // authorizationList entry still covers both — same delegator EOA.
@@ -371,6 +399,7 @@ export async function runRelayerTransfer(
     chain,
     transactions: bundle,
     authorizationList: authList,
+    feeSafetyMax,
   });
   if (!estimate.success) {
     throw new GasAbstractionUnavailableError(
@@ -388,6 +417,7 @@ export async function runRelayerTransfer(
       chain,
       transactions: bundle,
       authorizationList: authList,
+      feeSafetyMax,
     });
     if (!estimate.success) {
       throw new GasAbstractionUnavailableError(
@@ -431,6 +461,7 @@ export async function runRelayerTransfer(
           chain,
           transactions: bundle,
           authorizationList: authList,
+          feeSafetyMax,
         });
         if (refreshed.success && refreshed.context) {
           context = refreshed.context;
@@ -453,6 +484,12 @@ export function createOneShotRelayerProvider(): GasAbstractionProvider {
 
     supportsChain(chain: ChainConfig): boolean {
       return isGasAbstractionSupported(chain);
+    },
+
+    async listFeeTokens(chain: ChainConfig): Promise<FeeToken[]> {
+      if (!this.supportsChain(chain)) return [];
+      const caps = await fetchRelayerChainCapabilities(resolveEvmKit(), chain);
+      return caps ? caps.tokens.map((t) => ({ ...t })) : [];
     },
 
     async supportsIntent(args: GasAbstractionArgs): Promise<boolean> {

@@ -634,12 +634,14 @@ export function createEvmWalletKit(): WalletKitAdapter {
       chain,
       transactions,
       authorizationList,
+      feeSafetyMax,
     }: Estimate7710TransactionArgs): Promise<Estimate7710TransactionResult> {
       assertEvm(chain);
       return relayerEstimate7710Transaction({
         chainId: chain.chain.id,
         transactions,
         authorizationList,
+        feeSafetyMax,
       });
     },
 

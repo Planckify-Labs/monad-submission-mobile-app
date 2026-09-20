@@ -145,9 +145,9 @@ export const transferErc20: MobileToolExecutor = (input, context) =>
     const decimals =
       typeof input.token_decimals === "number" ? input.token_decimals : 18;
 
-    // Decide how gas is paid (USDC abstraction vs native) via the same
-    // single policy `app/send.tsx` uses. `getPreferredGasToken()` reads
-    // the persisted setting (this runs off the React tree).
+    // Decide how gas is paid (stablecoin abstraction vs native) via the
+    // same single policy `app/send.tsx` uses. `getPreferredGasToken()`
+    // reads the persisted setting (this runs off the React tree).
     const chain: ChainConfig = {
       namespace: "eip155",
       chain: resolveChainDef(chainId, context.blockchains),
@@ -159,9 +159,11 @@ export const transferErc20: MobileToolExecutor = (input, context) =>
       preferredGasToken: getPreferredGasToken(),
     });
 
-    // Prefer USDC, else block — don't silently fall back to native gas.
+    // Prefer the stablecoin, else block — don't silently fall back to
+    // native gas. Stable code only (curated copy lives in agentErrorCopy);
+    // the token in question is the user's gas-settings choice.
     if (gasPlan.mode === "blocked") {
-      return { status: "failed", error: "insufficient_usdc_for_gas" };
+      return { status: "failed", error: "insufficient_fee_token_for_gas" };
     }
 
     let hash: `0x${string}`;
@@ -171,6 +173,7 @@ export const transferErc20: MobileToolExecutor = (input, context) =>
           wallet: context.wallet,
           chain,
           intent: { to, tokenAddress, amount, decimals, memo: "takumi-agent" },
+          feeTokenSymbol: gasPlan.quote.feeToken.symbol,
         });
         hash = (await pollRelayerTaskHash(
           gasPlan.provider,
@@ -180,7 +183,7 @@ export const transferErc20: MobileToolExecutor = (input, context) =>
       } catch (relayErr) {
         if (__DEV__)
           console.warn("[transferErc20] abstracted failed:", relayErr);
-        return { status: "failed", error: "gasless_transfer_failed" };
+        return { status: "failed", error: "relayed_transfer_failed" };
       }
     } else {
       // Native gas path — unchanged viem writeContract.

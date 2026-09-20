@@ -735,6 +735,12 @@ export interface Estimate7710TransactionArgs {
   transactions: RelayerBundleEntry[];
   /** ≤1 entry; for an in-flight EIP-7702 upgrade combined with the send. */
   authorizationList?: RelayerAuthorizationEntry[];
+  /**
+   * SI-1 overcharge ceiling in the FEE token's atoms. Callers that know
+   * the fee token (`oneShotRelayerProvider`) derive it from its decimals
+   * via `relayerFeeSafetyMaxAtoms`; omitted → the 6-decimal default.
+   */
+  feeSafetyMax?: bigint;
 }
 
 export interface Estimate7710TransactionResult {

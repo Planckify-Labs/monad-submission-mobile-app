@@ -81,7 +81,7 @@ function splitFormattedNative(formatted: string): {
 
 /**
  * Formats a raw token amount (smallest units) into a trimmed decimal
- * string — used to show the abstracted (USDC) gas fee on the success
+ * string — used to show the abstracted (stablecoin) gas fee on the success
  * screen. Mirrors the manual token-balance formatting below; kept here so
  * the screen stays namespace-agnostic (no viem `formatUnits` import path
  * difference between native and token).
@@ -673,7 +673,7 @@ export default function SendScreen() {
       let hash: string;
       // What the user paid network gas in — surfaced on the success
       // screen. Symbol is always known; the amount is exact only on the
-      // abstracted (USDC) path, where the relayer locks the fee.
+      // abstracted (stablecoin) path, where the relayer locks the fee.
       let gasFeeSymbol = nativeSymbol;
       let gasFeeAmount = "";
       if (selectedToken && selectedToken.isNativeCurrency === false) {
@@ -682,9 +682,9 @@ export default function SendScreen() {
         const tokenAmount = parseUnits(amount, decimals);
         const contractAddress = selectedToken.contractAddress!;
 
-        // Decide how gas is paid (USDC abstraction vs native) via the
-        // single gas-payment policy — the same seam the agent uses. No
-        // chain/provider branching here.
+        // Decide how gas is paid (stablecoin abstraction vs native) via
+        // the single gas-payment policy — the same seam the agent uses.
+        // No chain/provider branching here.
         const intent = {
           to: recipient,
           tokenAddress: contractAddress,
@@ -700,24 +700,30 @@ export default function SendScreen() {
         });
 
         if (plan.mode === "blocked") {
-          // Prefer USDC, else block — never silently spend native gas.
+          // Prefer the stablecoin, else block — never silently spend
+          // native gas. Copy names the token the user actually chose.
+          const feeSymbol = plan.feeToken.symbol;
           setIsLoading(false);
           Alert.alert(
-            "Not enough USDC",
-            "You don't have enough USDC to cover this transfer plus the network fee. Add USDC, or switch the fee currency back to native in Gas Settings.",
+            `Not enough ${feeSymbol}`,
+            `You don't have enough ${feeSymbol} to cover this transfer plus the network fee. Add ${feeSymbol}, or switch the fee currency back to native in Gas Settings.`,
           );
           return;
         }
 
         if (plan.mode === "abstracted") {
+          const feeSymbol = plan.quote.feeToken.symbol;
           try {
-            setTransactionStatus("Paying the network fee in USDC…");
+            setTransactionStatus(`Paying the network fee in ${feeSymbol}…`);
+            // Execute with the token the quote resolved, not the raw
+            // preference, so quote and send can never disagree.
             const execResult = await plan.provider.execute({
               wallet: activeWallet,
               chain: activeChain,
               intent,
+              feeTokenSymbol: feeSymbol,
             });
-            // Show the exact, price-locked gas fee in its token (USDC).
+            // Show the exact, price-locked gas fee in its token.
             const feeTokenInfo = execResult.feeToken ?? plan.quote.feeToken;
             gasFeeSymbol = feeTokenInfo.symbol;
             const feeAtoms = execResult.feeAmount ?? plan.quote.feeAmount;
@@ -733,7 +739,7 @@ export default function SendScreen() {
             setIsLoading(false);
             Alert.alert(
               "Transfer failed",
-              "We couldn't send this transfer with the fee paid in USDC. Please try again, or switch the fee currency back to native in Gas Settings.",
+              `We couldn't send this transfer with the fee paid in ${feeSymbol}. Please try again, or switch the fee currency back to native in Gas Settings.`,
             );
             return;
           }

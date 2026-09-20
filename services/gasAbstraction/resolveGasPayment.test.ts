@@ -37,6 +37,7 @@ function fakeProvider(
   return {
     id: "1shot",
     supportsChain: () => true,
+    listFeeTokens: async () => [quote.feeToken],
     supportsIntent: async () => true,
     getQuote: async () => quote,
     execute: async () => ({ providerId: "1shot", taskId: "0xt" }),
@@ -61,7 +62,7 @@ describe("resolveGasPayment", () => {
 
   it("returns native on an unsupported (non-EVM) chain", async () => {
     const plan = await resolveGasPayment(
-      { wallet, chain: solanaChain, intent, preferredGasToken: "usdc" },
+      { wallet, chain: solanaChain, intent, preferredGasToken: "USDC" },
       deps(fakeProvider(), 10_000_000n),
     );
     assert.equal(plan.mode, "native");
@@ -74,7 +75,7 @@ describe("resolveGasPayment", () => {
       chain: { ...mainnet, id: 999999 },
     };
     const plan = await resolveGasPayment(
-      { wallet, chain: unlisted, intent, preferredGasToken: "usdc" },
+      { wallet, chain: unlisted, intent, preferredGasToken: "USDC" },
       deps(fakeProvider(), 10_000_000n),
     );
     assert.equal(plan.mode, "native");
@@ -87,7 +88,7 @@ describe("resolveGasPayment", () => {
       },
     });
     const plan = await resolveGasPayment(
-      { wallet, chain, intent, preferredGasToken: "usdc" },
+      { wallet, chain, intent, preferredGasToken: "USDC" },
       deps(provider, 10_000_000n),
     );
     assert.equal(plan.mode, "native");
@@ -95,7 +96,7 @@ describe("resolveGasPayment", () => {
 
   it("returns abstracted when the wallet covers amount + fee", async () => {
     const plan = await resolveGasPayment(
-      { wallet, chain, intent, preferredGasToken: "usdc" },
+      { wallet, chain, intent, preferredGasToken: "USDC" },
       deps(fakeProvider(), 600_000n),
     );
     assert.equal(plan.mode, "abstracted");
@@ -105,9 +106,24 @@ describe("resolveGasPayment", () => {
     }
   });
 
+  it("forwards the preferred symbol to the provider quote", async () => {
+    let seen: string | undefined;
+    const provider = fakeProvider({
+      getQuote: async (args) => {
+        seen = args.feeTokenSymbol;
+        return quote;
+      },
+    });
+    await resolveGasPayment(
+      { wallet, chain, intent, preferredGasToken: "USDT0" },
+      deps(provider, 10_000_000n),
+    );
+    assert.equal(seen, "USDT0");
+  });
+
   it("blocks (no silent native) when balance < amount + fee", async () => {
     const plan: GasPaymentPlan = await resolveGasPayment(
-      { wallet, chain, intent, preferredGasToken: "usdc" },
+      { wallet, chain, intent, preferredGasToken: "USDC" },
       deps(fakeProvider(), 550_000n),
     );
     assert.equal(plan.mode, "blocked");

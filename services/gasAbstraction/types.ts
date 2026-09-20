@@ -17,15 +17,41 @@
 import type { ChainConfig } from "@/constants/configs/chainConfig";
 import type { TWallet } from "@/constants/types/walletTypes";
 
-/** User preference for which token pays gas. Persisted in settings. */
-export type GasFeeTokenPreference = "usdc" | "native";
+/** The "pay gas in the chain's native coin" preference. */
+export const NATIVE_GAS_TOKEN = "native";
+
+/**
+ * User preference for which token pays gas. Persisted in settings.
+ *
+ * Either {@link NATIVE_GAS_TOKEN} or the symbol the relayer tags an
+ * accepted fee token with (`"USDC"`, `"USDT0"`, `"mUSD"`, …). The set of
+ * offerable symbols is NOT hardcoded: it is whatever the provider's live
+ * capabilities list for the chains the app surfaces (mainnet or testnet
+ * alike), so a token the relayer starts accepting shows up without an app
+ * change. On a chain where the chosen symbol is not accepted, gas falls
+ * back to native (`resolveGasPayment`).
+ *
+ * `(string & {})` keeps `"native"` in autocomplete while admitting any
+ * symbol string.
+ */
+export type GasFeeTokenPreference = typeof NATIVE_GAS_TOKEN | (string & {});
+
+export function isNativeGasPreference(pref: GasFeeTokenPreference): boolean {
+  return pref === NATIVE_GAS_TOKEN;
+}
+
+/** Case-insensitive symbol compare (`"USDC"` ⇔ `"usdc"`, `"mUSD"` ⇔ `"MUSD"`). */
+export function feeTokenSymbolMatches(a: string, b: string): boolean {
+  return a.trim().toUpperCase() === b.trim().toUpperCase();
+}
 
 /**
  * A token transfer the user wants to make, expressed independently of
- * how gas is paid. `tokenAddress` is the ERC-20 being sent; for v1 the
- * abstracted path requires it to be an accepted relayer fee token (USDC),
- * so a single `Erc20TransferAmount` delegation covers both the fee leg
- * and the work leg (see `oneShotRelayerProvider`).
+ * how gas is paid. `tokenAddress` is the ERC-20 being sent; the fee token
+ * is chosen separately (`GasAbstractionArgs.feeTokenSymbol`). When both
+ * are the same token a single delegation covers the fee leg and the work
+ * leg; otherwise the provider signs one per token (see
+ * `oneShotRelayerProvider`).
  */
 export interface TransferIntent {
   /** Recipient of the work transfer. */
@@ -43,6 +69,13 @@ export interface GasAbstractionArgs {
   wallet: TWallet;
   chain: ChainConfig;
   intent: TransferIntent;
+  /**
+   * Symbol of the token that pays gas (the gas-settings preference, or
+   * the already-resolved `quote.feeToken.symbol` when executing a plan).
+   * Matched case-insensitively against the provider's accepted fee tokens
+   * on `chain`; no match → the intent is not abstractable there.
+   */
+  feeTokenSymbol: string;
 }
 
 export interface FeeToken {
@@ -74,7 +107,7 @@ export interface GasAbstractionExecuteResult {
    * gas. May be absent for providers that don't expose it.
    */
   feeAmount?: bigint;
-  /** The token the gas fee was charged in (e.g. USDC). */
+  /** The token the gas fee was charged in (e.g. USDC, USDT0). */
   feeToken?: FeeToken;
 }
 
@@ -95,6 +128,13 @@ export interface GasAbstractionProvider {
 
   /** Cheap, synchronous chain gate (constant allowlist + namespace). */
   supportsChain(chain: ChainConfig): boolean;
+
+  /**
+   * The fee tokens this provider accepts on `chain` right now, from its
+   * live capabilities (never a static table). Empty when the chain is
+   * not served. Drives the gas-settings option list.
+   */
+  listFeeTokens(chain: ChainConfig): Promise<FeeToken[]>;
 
   /**
    * Whether this exact transfer can be abstracted right now (e.g. the

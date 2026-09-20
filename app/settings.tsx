@@ -34,6 +34,7 @@ import { useDappConnections } from "@/hooks/useDappConnections";
 import { usePreferredGasToken } from "@/hooks/usePreferredGasToken";
 import { useTransportSessions } from "@/hooks/useTransportSessions";
 import { useWallet } from "@/hooks/useWallet";
+import { isNativeGasPreference } from "@/services/gasAbstraction/types";
 
 const CARD_SHADOW = {
   shadowColor: "#000",
@@ -100,8 +101,10 @@ export default function SettingsScreen() {
           hint: "Which token pays your network fees",
           href: "/gas-settings",
           accessibilityHint:
-            "Choose whether transaction gas is paid in USDC or the native token",
-          value: preferredGasToken === "usdc" ? "USDC" : "Native",
+            "Choose whether transaction gas is paid in a stablecoin or the native token",
+          value: isNativeGasPreference(preferredGasToken)
+            ? "Native"
+            : preferredGasToken,
         },
       ],
     },

@@ -5,31 +5,32 @@
  * synchronously both inside React (this hook, via `useRQGlobalState` for
  * reactive UI) and outside it (`getPreferredGasToken()` for the agent
  * executor, which runs off the render tree). `"native"` is the default —
- * gas is paid in the chain's native coin unless the user opts into the
- * USDC gas-abstraction path.
+ * gas is paid in the chain's native coin unless the user opts into a
+ * stablecoin (any symbol the relayer accepts on the chain in use — the
+ * option list itself comes from `useGasFeeTokenOptions`).
  */
 
 import { useCallback } from "react";
 import { storage } from "@/lib/storage/mmkv";
-import type { GasFeeTokenPreference } from "@/services/gasAbstraction/types";
+import { normalizeGasTokenPreference } from "@/services/gasAbstraction/preference";
+import {
+  type GasFeeTokenPreference,
+  NATIVE_GAS_TOKEN,
+} from "@/services/gasAbstraction/types";
 import useRQGlobalState from "./useRQGlobalState";
 
 const STORAGE_KEY = "takumipay_preferred_gas_token";
 const QUERY_KEY = ["preferredGasToken"];
-const DEFAULT: GasFeeTokenPreference = "native";
-
-function normalize(raw: string | undefined): GasFeeTokenPreference {
-  return raw === "native" || raw === "usdc" ? raw : DEFAULT;
-}
+const DEFAULT: GasFeeTokenPreference = NATIVE_GAS_TOKEN;
 
 /** Non-reactive accessor for code outside React (agent executors). */
 export function getPreferredGasToken(): GasFeeTokenPreference {
-  return normalize(storage.getString(STORAGE_KEY));
+  return normalizeGasTokenPreference(storage.getString(STORAGE_KEY));
 }
 
 /** Persist + broadcast. Exported so non-hook callers can also write. */
 export function setStoredPreferredGasToken(pref: GasFeeTokenPreference): void {
-  storage.set(STORAGE_KEY, pref);
+  storage.set(STORAGE_KEY, normalizeGasTokenPreference(pref));
 }
 
 export function usePreferredGasToken() {
@@ -40,8 +41,9 @@ export function usePreferredGasToken() {
 
   const setPreferredGasToken = useCallback(
     (pref: GasFeeTokenPreference) => {
-      setStoredPreferredGasToken(pref);
-      setNewData(pref);
+      const normalized = normalizeGasTokenPreference(pref);
+      setStoredPreferredGasToken(normalized);
+      setNewData(normalized);
     },
     [setNewData],
   );

@@ -67,6 +67,13 @@ const COPY: Record<string, string> = {
   // insufficient_funds family
   insufficient_balance:
     "You don't have enough balance for this, including a little for gas.",
+  // stablecoin-gas family (`transfer_erc20` via `resolveGasPayment`). The
+  // token is whichever the user picked in Gas Settings, so the copy names
+  // the setting rather than a hardcoded symbol.
+  insufficient_fee_token_for_gas:
+    "You don't have enough of your chosen gas token to cover this transfer plus the network fee. Top it up, or switch the fee currency to native in Gas Settings.",
+  relayed_transfer_failed:
+    "I couldn't send this with the fee paid in your chosen gas token. Please try again, or switch the fee currency to native in Gas Settings.",
   // invalid_input family
   invalid_intent: "I couldn't read that plan. Try rephrasing what you want.",
   unsupported_asset: "That asset isn't available on this network.",
