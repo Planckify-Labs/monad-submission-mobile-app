@@ -178,7 +178,8 @@ export default function ChatInput({
                 )}
 
                 <GHTouchableOpacity
-                  className="p-2 justify-center items-center"
+                  className="p-3 justify-center items-center"
+                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   disabled={micDisabled}
                   onPress={() => {
                     void handleMicPress();
@@ -222,6 +223,7 @@ export default function ChatInput({
                 backgroundColor: isSendDisabled ? "#d1d5db" : "#c71c4b",
                 opacity: isSendDisabled ? 0.6 : 1,
               }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               activeOpacity={1}
               onPress={() => {
                 void handleSend();
@@ -304,7 +306,8 @@ export default function ChatInput({
 
             <View className="flex-row items-center justify-between px-4 py-4">
               <GHTouchableOpacity
-                className="p-2 justify-center items-center"
+                className="p-3 justify-center items-center"
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 disabled={micDisabled}
                 onPress={() => {
                   void handleMicPress();
@@ -324,6 +327,7 @@ export default function ChatInput({
                     ? "bg-gray-300 opacity-60"
                     : "bg-light-primary-red"
                 }`}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                 onPress={() => {
                   void handleSend().then(() => setIsExpanded(false));
                 }}
