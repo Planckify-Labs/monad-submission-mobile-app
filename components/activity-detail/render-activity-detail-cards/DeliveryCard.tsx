@@ -130,11 +130,9 @@ export default function DeliveryCard({
   }
 
   // PLN keeps its dedicated card: the raw is always the vendor string.
-  if (
-    delivery.kind === "voucher" &&
-    delivery.raw &&
-    isPLNVoucher(delivery.raw)
-  ) {
+  // Decided by content, not `kind`: vendor feeds type PLN as a top-up, and
+  // rows parsed before the server learned that still say "topup".
+  if (delivery.raw && isPLNVoucher(delivery.raw)) {
     return (
       <View className="bg-white rounded-2xl shadow-sm">
         <PLNCard
