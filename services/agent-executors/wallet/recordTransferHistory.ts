@@ -16,6 +16,12 @@
 // pulled in transitively via `ky`. The dynamic import lands lazily at
 // the first call, which always happens inside a real RN runtime where
 // the modules resolve cleanly.
+//
+// This is the ONE place that may lazy-import the outbox. Under Metro's
+// lazy bundling an `import()` is a split point that costs the dev server
+// a whole extra module graph (~500 MB); lazy bundling is therefore off
+// for local dev (`.env.development`, EXPO_NO_METRO_LAZY), which makes
+// this a plain in-bundle require at runtime.
 import type { TBlockchain } from "@/api/types/blockchain";
 import type { TTransactionType } from "@/api/types/transaction";
 

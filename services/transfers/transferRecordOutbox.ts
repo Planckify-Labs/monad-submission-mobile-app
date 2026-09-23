@@ -27,14 +27,29 @@
  * active wallet — never as whichever wallet happens to be selected when
  * the retry fires.
  *
- * Static imports are limited to the MMKV helper (stubbed in both test
- * harnesses). Everything RN-flavoured (`walletService`, the ky clients,
- * the auth hooks) is imported lazily, so the agent executors that call
- * this keep an RN-free import graph — see the note at the top of
+ * Imports here are STATIC on purpose. Under Metro's lazy bundling (what
+ * Expo Go requests by default) every `import()` is a split point, and
+ * Metro builds and keeps a separate server-side module graph per split
+ * entry; because these modules sit deep in the app's import graph each
+ * such graph is ~7.5k modules / ~500 MB of dev-server heap. An earlier
+ * version lazy-imported the five modules below, so a boot with queued
+ * entries fetched three to five of those graphs and pushed `expo start`
+ * past Node's 2 GB default heap ("FATAL ERROR: Reached heap limit").
+ * Everything imported here is already in the base bundle, so there was
+ * nothing to defer. The agent executors that need an RN-free static
+ * graph for their vitest harness lazy-import THIS module instead — see
  * `agent-executors/wallet/recordTransferHistory.ts`.
  */
 
+import { tokenApi } from "@/api/endpoints/tokens";
+import { transactionApi } from "@/api/endpoints/transactions";
+import { queryClient } from "@/app/_layout";
+import { transactionsQueryKeys } from "@/constants/queryKeys/transactionsQueryKeys";
 import { storage } from "@/lib/storage/mmkv";
+import {
+  getActiveWalletAddress,
+  isAuthenticatedForWallet,
+} from "@/services/auth/activeWalletSession";
 
 /** How the entry names its token. Non-native tokens are resolved to a
  * `tokenId` at post time (the token catalog is public, so that lookup
@@ -163,7 +178,6 @@ function noteFailure(key: string, error: string): void {
 
 async function resolveTokenId(ref: TransferTokenRef): Promise<string | null> {
   if ("tokenId" in ref) return ref.tokenId;
-  const { tokenApi } = await import("@/api/endpoints/tokens");
   const tokens = await tokenApi.searchTokens({
     contractAddress: ref.contractAddress,
     blockchainId: ref.blockchainId,
@@ -183,7 +197,6 @@ async function postEntry(entry: TransferRecordEntry): Promise<PostOutcome> {
     const tokenId = await resolveTokenId(entry.token);
     if (!tokenId) return { status: "drop", error: "token not in catalog" };
 
-    const { transactionApi } = await import("@/api/endpoints/transactions");
     const record = await transactionApi.createTransaction({
       tokenId,
       type: entry.type ?? "TRANSFER",
@@ -203,13 +216,11 @@ async function postEntry(entry: TransferRecordEntry): Promise<PostOutcome> {
 
 async function invalidateActivity(): Promise<void> {
   // The Activity tab is React Query-backed; poke it so the new row shows
-  // without a pull-to-refresh. Lazy so this module never pulls the app
-  // root into a test's import graph.
+  // without a pull-to-refresh. `queryClient` comes from the app root the
+  // same way `hooks/useRQGlobalState.ts` gets it; the import cycle
+  // (`_layout` → `useTransferRecordOutboxFlush` → here → `_layout`) is
+  // fine because the binding is only touched at call time.
   try {
-    const [{ queryClient }, { transactionsQueryKeys }] = await Promise.all([
-      import("@/app/_layout"),
-      import("@/constants/queryKeys/transactionsQueryKeys"),
-    ]);
     queryClient.invalidateQueries({
       queryKey: transactionsQueryKeys.all,
       exact: false,
@@ -265,9 +276,6 @@ export async function flushTransferRecordOutbox(): Promise<FlushResult> {
   if (entries.length === 0) return result;
 
   const now = Date.now();
-  const { getActiveWalletAddress } = await import(
-    "@/services/auth/activeWalletSession"
-  );
   const active = await getActiveWalletAddress();
 
   let posts = 0;
@@ -309,9 +317,6 @@ async function attempt(
   entry: TransferRecordEntry,
   known: { activeAddress?: string | null } = {},
 ): Promise<PostOutcome> {
-  const { getActiveWalletAddress, isAuthenticatedForWallet } = await import(
-    "@/services/auth/activeWalletSession"
-  );
   const active =
     known.activeAddress !== undefined
       ? known.activeAddress

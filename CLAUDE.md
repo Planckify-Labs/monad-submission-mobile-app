@@ -29,6 +29,24 @@ eas build --platform ios --profile development
 eas build --platform android --profile production
 ```
 
+### Metro lazy bundling is OFF for local dev (2026-09-20)
+
+`.env.development` sets `EXPO_NO_METRO_LAZY=1`, which Expo CLI loads for
+`expo start` and `expo run:*`. With lazy bundling on, every `import()` in
+the app is a Metro split point and Metro keeps a **separate** server-side
+module graph per split entry; this app's import graph is dense enough that
+each one is ~7.5k modules / ~500 MB of heap, so a few `import()`s hit in
+one session OOM the dev server (`FATAL ERROR: Reached heap limit`). It
+saved <1% of the initial bundle here. Two rules follow:
+
+- Don't reach for `import()` to "keep a test's import graph small" for a
+  module that is already in the base bundle. Mock it (`vi.mock` hoists
+  above static imports) or stub it in the node resolver instead. The one
+  sanctioned lazy import is `agent-executors/wallet/recordTransferHistory.ts`.
+- If `expo start` ever OOMs again, the crash line names the bundle entry
+  (`Android <entry> ▓▓▓ 95%`). An entry other than `index.js` means a
+  split bundle was being built: find the `import()` that requested it.
+
 `test:node` runs through `scripts/run-node-tests.sh`, which loads
 `services/walletKit/evm/_test-resolver.mjs` to stub RN-only modules
 (`expo-secure-store`, `@/lib/storage/mmkv`) and rewrite `@/*` aliases +

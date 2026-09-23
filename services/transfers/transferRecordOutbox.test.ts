@@ -1,32 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ─── module doubles ──────────────────────────────────────────────────────────
-// The outbox lazy-imports everything RN-flavoured; vitest's `vi.mock` hoists
-// over dynamic imports too, so these doubles are what those imports resolve to.
+// The outbox imports its RN-flavoured collaborators statically (see the note
+// at the top of the module: `import()` is a Metro split point); `vi.mock` is
+// hoisted above those imports, so these doubles are what they resolve to.
 
-const session = {
-  active: "0xSENDER" as string | null,
-  authed: true,
-};
+// `vi.hoisted` so the doubles exist when the (equally hoisted) factories run.
+const h = vi.hoisted(() => ({
+  session: {
+    active: "0xSENDER" as string | null,
+    authed: true,
+  },
+  createTransaction: vi.fn(),
+  searchTokens: vi.fn(),
+  invalidateQueries: vi.fn(),
+}));
+const { session, createTransaction, searchTokens, invalidateQueries } = h;
+
 vi.mock("@/services/auth/activeWalletSession", () => ({
-  getActiveWalletAddress: async () => session.active,
+  getActiveWalletAddress: async () => h.session.active,
   isAuthenticatedForWallet: async (addr: string) =>
-    session.authed && addr.toLowerCase() === session.active?.toLowerCase(),
+    h.session.authed && addr.toLowerCase() === h.session.active?.toLowerCase(),
 }));
-
-const createTransaction = vi.fn();
 vi.mock("@/api/endpoints/transactions", () => ({
-  transactionApi: { createTransaction },
+  transactionApi: { createTransaction: h.createTransaction },
 }));
-
-const searchTokens = vi.fn();
 vi.mock("@/api/endpoints/tokens", () => ({
-  tokenApi: { searchTokens },
+  tokenApi: { searchTokens: h.searchTokens },
 }));
-
-const invalidateQueries = vi.fn();
 vi.mock("@/app/_layout", () => ({
-  queryClient: { invalidateQueries },
+  queryClient: { invalidateQueries: h.invalidateQueries },
 }));
 vi.mock("@/constants/queryKeys/transactionsQueryKeys", () => ({
   transactionsQueryKeys: { all: ["transactions"] },
