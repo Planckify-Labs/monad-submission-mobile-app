@@ -22,11 +22,13 @@ import {
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { HalftoneHalo } from "@/components/common/HalftoneHalo";
+import { HalftoneVoiceWave } from "@/components/common/HalftoneVoiceWave";
 import { ThinkingOrb } from "@/components/common/ThinkingOrb";
 import { useVoiceTranscription } from "@/hooks/useVoiceTranscription";
-import { AudioWaveBars } from "./AudioWaveBars";
 
 const SEND_BUTTON_SIZE = 44;
+/** Extra touch area around the small cancel-recording X, without moving it. */
+const CANCEL_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 10 };
 
 export interface ChatInputProps {
   value: string;
@@ -194,16 +196,21 @@ export default function ChatInput({
               >
                 {voice.status === "recording" ? (
                   <View className="flex-1 flex-row items-center py-2.5">
+                    {/* The icon is small and the layout must not change, so
+                        the tap target grows through hitSlop only: about
+                        46dp square around the 18dp icon. */}
                     <GHTouchableOpacity
                       className="pl-1 pr-2 justify-center items-center"
+                      hitSlop={CANCEL_HIT_SLOP}
                       onPress={() => {
                         void voice.cancel();
                       }}
+                      accessibilityRole="button"
                       accessibilityLabel="Cancel voice input"
                     >
                       <X size={18} color="#1a1a1a" />
                     </GHTouchableOpacity>
-                    <AudioWaveBars recorder={voice.recorder} />
+                    <HalftoneVoiceWave recorder={voice.recorder} />
                   </View>
                 ) : (
                   <TextInput
@@ -324,14 +331,16 @@ export default function ChatInput({
                 <View className="flex-1 flex-row items-center">
                   <GHTouchableOpacity
                     className="pr-2 justify-center items-center"
+                    hitSlop={CANCEL_HIT_SLOP}
                     onPress={() => {
                       void voice.cancel();
                     }}
+                    accessibilityRole="button"
                     accessibilityLabel="Cancel voice input"
                   >
                     <X size={20} color="#1a1a1a" />
                   </GHTouchableOpacity>
-                  <AudioWaveBars recorder={voice.recorder} />
+                  <HalftoneVoiceWave recorder={voice.recorder} />
                 </View>
               ) : (
                 <TextInput

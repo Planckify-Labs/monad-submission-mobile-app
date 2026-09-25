@@ -36,7 +36,7 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { AudioWaveBars } from "@/components/home/TakumiAgent/AudioWaveBars";
+import { HalftoneVoiceWave } from "@/components/common/HalftoneVoiceWave";
 import { FEATURE_PASSKEY_ONLY_ONBOARDING } from "@/constants/configs/featureFlags";
 import { useAgentPrefill } from "@/hooks/useAgentPrefill";
 import { useVoiceTranscription } from "@/hooks/useVoiceTranscription";
@@ -74,8 +74,8 @@ const SPEAKING_DB = -40;
 /**
  * Recording-state content for the ask bar. Mirrors agent mode's
  * `ChatInput` recording UX: shows a "hold to speak" hint until the user
- * actually starts talking, then swaps in the shared `AudioWaveBars`
- * oscilloscope.
+ * actually starts talking, then swaps in the shared `HalftoneVoiceWave`
+ * (halftone dots, falling back to bars without Skia).
  */
 function VoiceRecordingBar({ recorder }: { recorder: AudioRecorder }) {
   const state = useAudioRecorderState(recorder, 100);
@@ -94,7 +94,7 @@ function VoiceRecordingBar({ recorder }: { recorder: AudioRecorder }) {
   return (
     <View className="flex-1 justify-center" style={{ height: 22 }}>
       {started ? (
-        <AudioWaveBars recorder={recorder} />
+        <HalftoneVoiceWave recorder={recorder} />
       ) : (
         <Text
           className="text-light-matte-black/40 text-[13px]"

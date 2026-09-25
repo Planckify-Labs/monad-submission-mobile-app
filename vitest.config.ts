@@ -130,6 +130,8 @@ export default defineConfig({
       "components/home/TakumiAgent/agentOrbState.test.ts",
       // Per-state motion of the edge strips beside the orb.
       "components/common/thinkingEdgePatterns.test.ts",
+      // Noise-gated mic level behind the halftone voice wave.
+      "components/common/voiceLevel.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",

@@ -10,8 +10,8 @@ const BAR_COUNT = 40;
 const BAR_WIDTH = 3;
 const BAR_GAP = 2;
 const MIN_HEIGHT = 1.5;
-const MAX_HEIGHT = 22;
-const POLL_INTERVAL_MS = 50;
+export const MAX_HEIGHT = 22;
+export const POLL_INTERVAL_MS = 50;
 const BAR_COLOR = "#999";
 const FLOOR_DB = -60;
 
@@ -19,7 +19,7 @@ const FLOOR_DB = -60;
 // land between -25 and -5 dB, so we clamp the floor at -60 dB (just
 // below background-noise level) and apply a square-root curve so soft
 // speech still moves the bars visibly without exploding loud peaks.
-function meteringToNorm(metering: number | undefined): number {
+export function meteringToNorm(metering: number | undefined): number {
   if (metering === undefined || !Number.isFinite(metering)) return 0;
   const clamped = Math.max(FLOOR_DB, Math.min(0, metering));
   const linear = (clamped - FLOOR_DB) / -FLOOR_DB;
