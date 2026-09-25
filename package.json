@@ -50,6 +50,7 @@
     "@react-navigation/native": "^7.1.6",
     "@reown/walletkit": "1.5.6",
     "@shopify/flash-list": "2.0.2",
+    "@shopify/react-native-skia": "2.2.12",
     "@solana-mobile/mobile-wallet-adapter-walletlib": "1.4.5",
     "@solana-program/address-lookup-table": "^0.6.0",
     "@solana-program/system": "^0.7.0",
@@ -136,6 +137,7 @@
     "react-native-worklets": "0.5.1",
     "react-native-worklets-core": "^1.6.3",
     "tailwindcss": "^3.4.17",
+    "thinking-orbs": "^0.3.2",
     "viem": "^2.33.1",
     "zod": "^4.1.12"
   },

@@ -126,6 +126,10 @@ export default defineConfig({
       // it — `capability: "write"` tagging alone shows no prompt, which is
       // how `bridge_execute` once shipped ungated.
       "components/home/TakumiAgent/StructuredUI/writeCardGate.test.ts",
+      // Status chip text -> ThinkingOrb motion.
+      "components/home/TakumiAgent/agentOrbState.test.ts",
+      // Per-state motion of the edge strips beside the orb.
+      "components/common/thinkingEdgePatterns.test.ts",
       // Pool-level DeFi deposits (docs/defi-pool-level-deposits-spec.md)
       "services/defi/opportunityDisplay.test.ts",
       "services/defi/registry.test.ts",

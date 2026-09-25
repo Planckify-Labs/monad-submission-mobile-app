@@ -114,7 +114,7 @@ export default function Home() {
             <HomeMain onOpenAgentChat={handleChatModePress} />
           </View>
           <View style={{ width: SCREEN_WIDTH }}>
-            {hasVisitedAgentMode && <AgentMode />}
+            {hasVisitedAgentMode && <AgentMode isActive={currentIndex === 1} />}
           </View>
         </ScrollView>
 

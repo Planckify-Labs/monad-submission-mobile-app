@@ -1,3 +1,4 @@
+import { useIsFocused } from "@react-navigation/native";
 import { FlashList, ListRenderItemInfo } from "@shopify/flash-list";
 import { useQueryClient } from "@tanstack/react-query";
 import { BlurView } from "expo-blur";
@@ -10,20 +11,23 @@ import React, {
   useState,
 } from "react";
 import {
-  ActivityIndicator,
   Animated,
   Dimensions,
   Keyboard,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   Platform,
   Pressable,
   ScrollView,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
   ViewStyle,
 } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
+import Reanimated, { FadeIn, FadeOut } from "react-native-reanimated";
 import type { ConversationSummary } from "@/api/conversations.types";
 import {
   ApprovalSheet,
@@ -31,6 +35,8 @@ import {
   type GrantChoice,
   specialWarning,
 } from "@/components/agent/ApprovalSheet";
+import { ThinkingEdges } from "@/components/common/ThinkingEdges";
+import { ThinkingOrb } from "@/components/common/ThinkingOrb";
 import { approvalSummaryFromToolInput } from "@/components/home/TakumiAgent/StructuredUI/approvalSummary";
 import { resolveAssetMeta } from "@/components/home/TakumiAgent/StructuredUI/resolveAssetMeta";
 import { useIsAuthenticated } from "@/hooks/queries/useAuth";
@@ -57,6 +63,7 @@ import {
   assertRegistryParity,
   type ExecutorContext,
 } from "@/services/agent-executors";
+import { MOBILE_WRITE_TOOLS } from "@/services/agent-executors/expectedMobileTools";
 import { checkPointsAuth } from "@/services/agent-executors/pointsAuth";
 import {
   type ServerModelMessage,
@@ -92,6 +99,11 @@ import {
 import { ownedNamespaces } from "@/services/walletPresence";
 import * as walletService from "@/services/walletService";
 import AgentOnboarding from "./AgentModeOnboarding/AgentOnboarding";
+import {
+  agentOrbState,
+  agentStatusLabel,
+  findRunningTool,
+} from "./agentOrbState";
 import ChatInput from "./ChatInput";
 import ConversationHistory from "./ConversationHistory";
 import MessageContent from "./MessageContent";
@@ -102,6 +114,13 @@ import { useMintPaymentIntentTool } from "./useMintPaymentIntentTool";
 const { width: screenWidth } = Dimensions.get("window");
 
 type ChatMessage = AgentMessage;
+
+// Height of the orb dock ChatInput renders above the input while Takumi
+// works: the 64dp orb, one reserved label line, and the gap to the input.
+// The list keeps this much space at its end for as long as a conversation
+// is open, not only while busy, so the dock never covers the last message
+// and nothing shifts when a turn starts, pauses for approval, or ends.
+const ORB_DOCK_HEIGHT = 92;
 
 function getMessageText(msg: ChatMessage): string {
   return msg.parts
@@ -226,8 +245,35 @@ function resolveMode(
   return message.id === streamingMessageId ? "live" : "historical";
 }
 
-export default function AgentMode() {
+type TAgentModeProps = {
+  /**
+   * Whether Home's pager is showing this screen. Home keeps AgentMode
+   * mounted after the first visit, so without this the busy orb and edge
+   * strips would keep animating behind the wallet home. @default true
+   */
+  isActive?: boolean;
+};
+
+// Home's pager slides this whole screen in; the edge strips wait this
+// long before lighting up, or they'd be seen sweeping across the screen.
+const HOME_PAGER_SLIDE_MS = 400;
+
+type TPagerPos = "chat" | "moving" | "history";
+
+export default function AgentMode({ isActive = true }: TAgentModeProps) {
   const scrollViewRef = useRef<ScrollView>(null);
+  // Where the history/chat pager sits; pauses the orb and edges while
+  // history fully covers the chat page (see orbDock).
+  const [pagerPos, setPagerPos] = useState<TPagerPos>("chat");
+  const handlePagerScroll = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const x = e.nativeEvent.contentOffset.x;
+      setPagerPos(
+        Math.abs(x - screenWidth) < 2 ? "chat" : x < 2 ? "history" : "moving",
+      );
+    },
+    [],
+  );
   const [input, setInput] = useState("");
   const lastSendTimeRef = useRef<number>(0);
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -1406,7 +1452,8 @@ export default function AgentMode() {
 
   const chatContentContainerStyle = useMemo(
     () => ({
-      paddingBottom: 50 + keyboardHeight,
+      paddingBottom:
+        50 + keyboardHeight + (chatMessages.length > 0 ? ORB_DOCK_HEIGHT : 0),
       paddingTop: 45,
       flexGrow: 1,
       justifyContent: chatMessages.length === 0 ? "center" : "flex-start",
@@ -1483,10 +1530,147 @@ export default function AgentMode() {
 
   const isLoading = isStreaming;
 
+  // What the in-flight reply is doing: streaming words (last part is
+  // text), and which of its tools is still running on the phone. The
+  // server labels almost none of this (see agentOrbState.ts), so the
+  // orb reads it from the reply itself.
+  const liveActivity = useMemo(() => {
+    const live = messages.find((m) => m.id === streamingMessageId);
+    if (!live) return { composing: false, runningTool: null };
+    const last = live.parts[live.parts.length - 1];
+    return {
+      composing: last?.type === "text" && last.text.length > 0,
+      runningTool: findRunningTool(live.parts, MOBILE_WRITE_TOOLS),
+    };
+  }, [messages, streamingMessageId]);
+
+  // ── Orb dock ─────────────────────────────────────────────────────
+  // While busy, Takumi's presence is the orb, docked bottom-center above
+  // the input. The turn stays "streaming" while a write card or the
+  // approval sheet waits on the user, and a pulsing orb then would say
+  // Takumi is busy when it's the user's move, so it hides until they
+  // act. Words appear under it only for phases the motion can't explain;
+  // the a11y label always says what's happening, since the orb is
+  // decorative.
+  const isAgentWorking = isStreaming && !approvalState && !inlinePreview;
+
+  // Where the orb and edges can actually be seen. The input bar (and so
+  // the dock) belongs to the chat page, which slides with the history
+  // pager and with Home's pager, and another route can cover the screen
+  // (a chat link opens the in-app browser). Off screen they hide, which
+  // also stops their render loops.
+  //  - The orb and the edge strips belong to the chat page: they slide
+  //    with it on the history swipe, and don't hide or re-animate for it.
+  //    Once history fully covers the page they're off screen, so their
+  //    render loops pause (holding the frame) until it slides back.
+  //  - The edges wait out Home's slide-in, which moves the whole screen.
+  const isFocused = useIsFocused();
+  const [edgesArmed, setEdgesArmed] = useState(false);
+  useEffect(() => {
+    if (!isActive) {
+      setEdgesArmed(false);
+      return;
+    }
+    const id = setTimeout(() => setEdgesArmed(true), HOME_PAGER_SLIDE_MS);
+    return () => clearTimeout(id);
+  }, [isActive]);
+  const isOnScreen = isActive && isFocused;
+  const orbVisible = isAgentWorking && isOnScreen;
+  const offPage = pagerPos === "history";
+  const edgesVisible = isAgentWorking && isOnScreen && edgesArmed;
+
+  const activity = { status: currentStatus, ...liveActivity };
+  // Gated on the orb being shown: a write waiting on the user still reads
+  // as a running tool, and must not be labelled while the orb is away.
+  const statusLabel = orbVisible ? agentStatusLabel(activity) : null;
+
+  // The motion to draw. Held at the last working state while the orb
+  // shrinks away: at turn end the activity falls back to "breathing" at
+  // the same moment the exit starts, which would switch shape mid-exit.
+  const liveOrbState = agentOrbState(activity);
+  const [orbState, setOrbState] = useState(liveOrbState);
+  if (isAgentWorking && orbState !== liveOrbState) {
+    setOrbState(liveOrbState);
+  }
+
+  // Mounted for the screen's whole life and toggled through `visible`,
+  // so the Skia canvases are already up when a turn starts and the bloom
+  // is seen in full (a canvas mounted on demand swallows most of it).
+  // When hidden they draw nothing, run no loop and are out of the a11y
+  // tree.
+  //
+  // The dock is as tall as the edge strips, which rise about a third of
+  // the way up the screen from the input. Only the orb area needs space
+  // reserved in the list (ORB_DOCK_HEIGHT): the strips live in the chat's
+  // side padding and never sit on content.
+  const { height: windowHeight } = useWindowDimensions();
+  // About a third of the screen, but no more than 40% of what an open
+  // keyboard leaves visible.
+  const edgeHeight = Math.round(
+    Math.min(windowHeight * 0.36, (windowHeight - keyboardHeight) * 0.4),
+  );
+  const orbDockCore = useMemo(
+    () => (
+      <View
+        style={{ height: ORB_DOCK_HEIGHT }}
+        className="w-full items-center justify-end pb-2"
+        {...(orbVisible
+          ? {
+              accessible: true,
+              accessibilityRole: "progressbar" as const,
+              accessibilityLabel: statusLabel ?? "Takumi is thinking",
+              accessibilityLiveRegion: "polite" as const,
+            }
+          : {
+              accessibilityElementsHidden: true,
+              importantForAccessibility: "no-hide-descendants" as const,
+            })}
+      >
+        <ThinkingOrb
+          state={orbState}
+          size={64}
+          visible={orbVisible}
+          paused={offPage}
+          decorative
+        />
+        {/* A fixed-height line, so the dock never changes size; the
+            label crossfades in it when it changes. */}
+        <View className="mt-1 h-4 w-full">
+          {statusLabel ? (
+            <Reanimated.Text
+              key={statusLabel}
+              entering={FadeIn.duration(200)}
+              exiting={FadeOut.duration(150)}
+              numberOfLines={1}
+              className="absolute left-6 right-6 text-center text-xs text-light-matte-black/70"
+            >
+              {statusLabel}
+            </Reanimated.Text>
+          ) : null}
+        </View>
+      </View>
+    ),
+    [orbVisible, offPage, orbState, statusLabel],
+  );
+  const orbDock = useMemo(
+    () => (
+      <View style={{ height: edgeHeight }} className="w-full justify-end">
+        <ThinkingEdges
+          visible={edgesVisible}
+          paused={offPage}
+          height={edgeHeight}
+          state={orbState}
+        />
+        {orbDockCore}
+      </View>
+    ),
+    [edgesVisible, offPage, edgeHeight, orbState, orbDockCore],
+  );
+
   const listFooterComponent = useMemo(() => {
     const hasRetryableError = retryableError !== null;
     const hasNonRetryableError = nonRetryableError !== null;
-    if (!isLoading && !hasRetryableError && !hasNonRetryableError) {
+    if (!hasRetryableError && !hasNonRetryableError) {
       return null;
     }
 
@@ -1494,18 +1678,9 @@ export default function AgentMode() {
     // footer side-channel. They now render inline as `tool` parts on
     // the assistant message via the StructuredUI registry
     // (generative-ui-spec §4.3), so new user turns stack below them
-    // correctly.
+    // correctly. The busy orb lives in ChatInput's dock (see `orbDock`).
     return (
       <View className="gap-2">
-        {isLoading && (
-          <View className="self-start mt-2 bg-white/80 border border-light-primary-red/10 rounded-3xl px-4 py-2 flex-row items-center gap-2">
-            <ActivityIndicator size="small" color="#c71c4b" />
-            <Text className="text-xs text-light-matte-black">
-              {currentStatus ?? "Takumi is thinking..."}
-            </Text>
-          </View>
-        )}
-
         {hasRetryableError && retryableError ? (
           <View
             accessible
@@ -1571,14 +1746,7 @@ export default function AgentMode() {
         ) : null}
       </View>
     );
-  }, [
-    isLoading,
-    currentStatus,
-    retryableError,
-    nonRetryableError,
-    handleRetry,
-    handleNewConversation,
-  ]);
+  }, [retryableError, nonRetryableError, handleRetry, handleNewConversation]);
 
   // ── Approval sheet handlers ───────────────────────────────────────
   const approvalGrantOptions = useMemo(() => {
@@ -1624,6 +1792,8 @@ export default function AgentMode() {
           horizontal
           pagingEnabled
           scrollEventThrottle={16}
+          onScroll={handlePagerScroll}
+          onMomentumScrollEnd={handlePagerScroll}
           showsHorizontalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
           className="flex-1 bg-light-main-container"
@@ -1739,6 +1909,7 @@ export default function AgentMode() {
                 isLoading={isLoading}
                 onCancel={stopAgent}
                 placeholder="Ask me anything..."
+                accessory={orbDock}
               />
             </View>
           </View>

@@ -21,8 +21,12 @@ import {
 } from "react-native-gesture-handler";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { HalftoneHalo } from "@/components/common/HalftoneHalo";
+import { ThinkingOrb } from "@/components/common/ThinkingOrb";
 import { useVoiceTranscription } from "@/hooks/useVoiceTranscription";
 import { AudioWaveBars } from "./AudioWaveBars";
+
+const SEND_BUTTON_SIZE = 44;
 
 export interface ChatInputProps {
   value: string;
@@ -37,6 +41,14 @@ export interface ChatInputProps {
    * can read the streaming reply without accidentally sending.
    */
   onCancel?: () => void | Promise<void>;
+  /**
+   * Rendered centered directly above the input, so it rides the keyboard
+   * with it. It never receives touches: the chat underneath still scrolls
+   * and taps through it. The input floats over the list, so the caller
+   * must reserve space at the end of the list for any part of the
+   * accessory that would otherwise sit on the last message.
+   */
+  accessory?: React.ReactNode;
 }
 
 export default function ChatInput({
@@ -46,6 +58,7 @@ export default function ChatInput({
   isLoading = false,
   placeholder = "Ask me anything...",
   onCancel,
+  accessory,
 }: ChatInputProps) {
   const [contentHeight, setContentHeight] = useState(0);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -68,7 +81,9 @@ export default function ChatInput({
 
   const renderMicIcon = () => {
     if (voice.status === "transcribing") {
-      return <ActivityIndicator size="small" color="#c71c4b" />;
+      // Speech being woven into text; the button's own label carries the
+      // accessible name.
+      return <ThinkingOrb state="weaving" size={20} decorative />;
     }
     if (voice.status === "recording") {
       return <Square size={18} color="#c71c4b" fill="#c71c4b" />;
@@ -100,6 +115,10 @@ export default function ChatInput({
   // empty / loading. When cancellable, the button is *always* tappable
   // so the user can stop the agent.
   const isSendDisabled = canCancel ? false : isLoading || !value.trim();
+  // A draft ready to send: the send button wears the Replying halo, which
+  // dissolves on send as the agent's orb takes over above the input.
+  const showSendHalo = !isLoading && !isExpanded && value.trim().length > 0;
+  const rowPaddingX = Platform.OS === "ios" ? 20 : 12;
 
   const handleSend = useCallback(() => {
     if (canCancel) {
@@ -113,19 +132,49 @@ export default function ChatInput({
 
   return (
     <>
+      {/* box-none on both wrappers: with an accessory mounted they span
+          the space above the input, and a plain View there would swallow
+          the list's scroll and taps even though nothing in it is
+          interactive. */}
       <KeyboardAvoidingView
         behavior="padding"
         keyboardVerticalOffset={bottomInset ? bottomInset + 40 : 40}
         style={{ width: "100%" }}
         className="absolute bottom-1 left-0 w-full"
+        pointerEvents="box-none"
       >
-        <View>
+        <View pointerEvents="box-none">
+          {/* Mounted even when empty (zero height): if this wrapper
+              unmounted with the accessory, the accessory's own Reanimated
+              `exiting` animation would never run. */}
+          <View pointerEvents="none" className="items-center">
+            {accessory}
+          </View>
           <View
             className="flex-row items-center px-3- gap-2"
             style={{
-              paddingHorizontal: Platform.OS === "ios" ? 20 : 12,
+              paddingHorizontal: rowPaddingX,
             }}
           >
+            {/* Anchored on the send button's center (44dp, last in the row).
+                First in the row, so the input pill and the button draw
+                over it; it fades toward the pill on the left. */}
+            <View
+              pointerEvents="none"
+              style={{
+                position: "absolute",
+                right: rowPaddingX + SEND_BUTTON_SIZE / 2,
+                top: "50%",
+                width: 0,
+                height: 0,
+              }}
+            >
+              <HalftoneHalo
+                visible={showSendHalo}
+                radius={SEND_BUTTON_SIZE / 2}
+                fadeToward={Math.PI}
+              />
+            </View>
             <View
               style={{
                 flex: 1,
@@ -187,7 +236,9 @@ export default function ChatInput({
                   accessibilityLabel={
                     voice.status === "recording"
                       ? "Stop recording"
-                      : "Start voice input"
+                      : voice.status === "transcribing"
+                        ? "Transcribing voice input"
+                        : "Start voice input"
                   }
                 >
                   {renderMicIcon()}
@@ -215,8 +266,8 @@ export default function ChatInput({
 
             <GHTouchableOpacity
               style={{
-                width: 44,
-                height: 44,
+                width: SEND_BUTTON_SIZE,
+                height: SEND_BUTTON_SIZE,
                 borderRadius: 9999,
                 justifyContent: "center",
                 alignItems: "center",
