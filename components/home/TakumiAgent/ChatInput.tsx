@@ -29,6 +29,8 @@ import { useVoiceTranscription } from "@/hooks/useVoiceTranscription";
 const SEND_BUTTON_SIZE = 44;
 /** Extra touch area around the small cancel-recording X, without moving it. */
 const CANCEL_HIT_SLOP = { top: 14, bottom: 14, left: 14, right: 10 };
+/** Visible gap between the input pill's bottom border and the keyboard. */
+const KEYBOARD_GAP = 12;
 
 export interface ChatInputProps {
   value: string;
@@ -64,7 +66,7 @@ export default function ChatInput({
 }: ChatInputProps) {
   const [contentHeight, setContentHeight] = useState(0);
   const [isExpanded, setIsExpanded] = useState(false);
-  const { bottom: bottomInset, top: topInset } = useSafeAreaInsets();
+  const { top: topInset } = useSafeAreaInsets();
   const voice = useVoiceTranscription();
 
   const handleMicPress = useCallback(async () => {
@@ -140,7 +142,12 @@ export default function ChatInput({
           interactive. */}
       <KeyboardAvoidingView
         behavior="padding"
-        keyboardVerticalOffset={bottomInset ? bottomInset + 40 : 40}
+        // The library measures this view with onLayout (relative to its
+        // parent) but places the keyboard in full-screen coordinates. The
+        // parent starts below the status bar (app/index.tsx SafeAreaView
+        // edges={["top"]}), so that distance has to be added back here or
+        // the pill lands topInset too low and the keyboard cuts its border.
+        keyboardVerticalOffset={topInset + KEYBOARD_GAP}
         style={{ width: "100%" }}
         className="absolute bottom-1 left-0 w-full"
         pointerEvents="box-none"
