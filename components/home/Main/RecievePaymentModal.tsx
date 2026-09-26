@@ -196,7 +196,7 @@ export default function RecievePaymentModal({
     >
       <ModalHeader title="Receive Funds" />
 
-      <View>
+      <View className="pb-4">
         {pairedWallets.length > 1 && (
           <View className="flex-row bg-light-main-container rounded-full p-1 mb-4">
             {pairedWallets.map((w) => {

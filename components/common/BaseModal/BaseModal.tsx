@@ -24,6 +24,24 @@ import type { BaseModalProps, BaseModalRef, ModalHeight } from "./types";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
+/**
+ * Floor for the Android bottom safe-area offset, independent of whatever
+ * `useSafeAreaInsets()` reports.
+ *
+ * `react-native-safe-area-context`'s insets are measured by a native view
+ * mounted once at the app root (`SafeAreaProvider` in `app/_layout.tsx`).
+ * This `Modal` is a SEPARATE native window (`statusBarTranslucent` +
+ * `navigationBarTranslucent`), and on Android that split is a documented
+ * source of a stale/zero `bottom` reaching this hook
+ * (react-native-safe-area-context#124, #153): the sheet then renders flush
+ * to the physical edge, painting over the gesture-nav pill's reserved
+ * space instead of stopping above it. 24dp mirrors Android's own gesture
+ * handle touch-target height, so this is a safety floor, not a substitute
+ * for the real inset — `Math.max` below always keeps the larger of the
+ * two, so a device that DOES report a bigger real inset is unaffected.
+ */
+const ANDROID_MIN_BOTTOM_INSET = 24;
+
 const resolvePx = (
   value: ModalHeight | number | `${number}%` | undefined,
   screen: number,
@@ -97,12 +115,15 @@ const BaseModal = forwardRef<BaseModalRef, BaseModalProps>(
       className,
       contentClassName,
       handleClassName,
-      statusBarTranslucent = false,
+      statusBarTranslucent = true,
     },
     ref,
   ) => {
     const { top, bottom } = useSafeAreaInsets();
-    const bottomOffset = Platform.OS === "ios" ? 16 : bottom > 0 ? bottom : 0;
+    const bottomOffset =
+      Platform.OS === "ios"
+        ? 16
+        : Math.max(bottom, ANDROID_MIN_BOTTOM_INSET);
     const statusBarHeight = Math.max(
       top,
       Platform.OS === "android" ? (StatusBar.currentHeight ?? 0) : 0,
@@ -304,6 +325,7 @@ const BaseModal = forwardRef<BaseModalRef, BaseModalProps>(
         visible
         animationType="none"
         statusBarTranslucent={statusBarTranslucent}
+        navigationBarTranslucent={statusBarTranslucent}
         onRequestClose={requestClose}
       >
         <View style={{ flex: 1 }}>

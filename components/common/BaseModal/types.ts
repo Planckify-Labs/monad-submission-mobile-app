@@ -85,8 +85,14 @@ export interface BaseModalProps {
   /** Grab-handle row className. */
   handleClassName?: string;
 
-  /** Android: draw the modal under the (translucent) status bar. Matches the
-   * app's existing sheets when left off. @default false */
+  /** Android: draw the modal under the (translucent) status bar AND
+   * navigation bar — drives both `Modal` props together since RN requires
+   * them to match (mismatched pairing is unsupported / warns). RN's `Modal`
+   * opens its own native window, separate from the app's edge-to-edge
+   * Activity window, so its relationship to the system nav bar isn't
+   * consistent across Android versions unless this is explicitly on; the
+   * `bottom` safe-area inset used for `paddingBottom` below assumes it is.
+   * See `react-native-edge-to-edge`'s "Modal component quirks". @default true */
   statusBarTranslucent?: boolean;
 }
 
