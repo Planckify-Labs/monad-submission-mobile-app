@@ -8,11 +8,11 @@ export const ONBOARDING_SLIDE_DATA = [
     accentColor: "#c71c4b",
     title: "Meet Your AI Wallet Agent",
     description:
-      "Your personal assistant for managing crypto and redeeming points through natural conversations.",
+      "Your personal assistant for managing AUSD and payments on Monad through natural conversations.",
     features: [
-      "Natural language transaction execution",
+      "Natural language transaction execution on Monad",
       "Optional wallet access, you decide what the agent can do",
-      "Multi-chain blockchain support",
+      "Built for Monad, powered by AUSD",
     ],
   },
   {
@@ -21,12 +21,11 @@ export const ONBOARDING_SLIDE_DATA = [
     iconBgColor: "#ecfdf5",
     accentColor: "#059669",
     title: "On-Chain Actions",
-    description:
-      "Send tokens, check balances, and monitor gas fees across multiple chains.",
+    description: "Send AUSD, check balances, and monitor gas fees on Monad.",
     features: [
-      "Native tokens: ETH, MATIC, BNB",
-      "ERC-20: USDT, USDC, DAI & more",
-      "NFT transfers (ERC-721)",
+      "Native token: MON",
+      "Stablecoin: AUSD",
+      "Instant AUSD transfers on Monad",
       "Real-time gas estimates",
     ],
   },
