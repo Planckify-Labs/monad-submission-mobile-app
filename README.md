@@ -5,11 +5,15 @@
 
 - **Team:** Planckify Labs
 - **Track Entered:** Track 02 — Consumer Products & Payments
+- **Technical Demo (3 min):** [Watch on YouTube](https://youtu.be/5kS-HD6G_bo)
+- **Live Preview APK (Android):** [Download on Google Drive](https://drive.google.com/file/d/1Z9yxv1afO5y32r0b_qIRSNtPM52lS1RN/view?usp=sharing)
 - **Targeted Sponsor Bounties:**
   - **Mera Bounty:** Passkey account layer as the entire onboarding experience (zero seed phrase)
   - **Agora Bounty:** End-to-end AUSD stablecoin integration on Monad
   - **Kimi Bounty:** Takumi Agent powered by Kimi K2.6 for conversational remittance
 - **License:** [GNU General Public License v3.0 (GPLv3)](./LICENSE)
+
+> 📱 **Notice for Judges & Testers**: Please install and test the Preview APK on a **physical device** (Android phone with biometric support such as fingerprint or Face Unlock). Mera's passkey authentication utilizes hardware-backed WebAuthn PRF extensions, which may not operate correctly on Android emulators or simulators lacking native biometric authenticators.
 
 ---
 
@@ -116,7 +120,16 @@ mobile-app/
 
 ## Quick Start & Verification
 
-### Prerequisites
+### Testing the Standalone Preview APK (Direct Install)
+If you prefer not to build from source, you can install the pre-built APK directly onto an Android device:
+- **Download APK:** [Google Drive Link](https://drive.google.com/file/d/1Z9yxv1afO5y32r0b_qIRSNtPM52lS1RN/view?usp=sharing)
+- **Important**: Test on a **physical Android phone** with fingerprint/face biometric hardware. Emulators generally lack hardware PRF WebAuthn support and may fail during key derivation.
+
+---
+
+### Building & Running from Source
+
+#### Prerequisites
 - Node.js 20+
 - `pnpm` (v10 or v11)
 - Expo CLI
