@@ -30,6 +30,95 @@ TakumiPay redefines this experience by removing every point of crypto friction:
 
 ---
 
+## End-to-End System Architecture
+
+The following diagram illustrates how TakumiPay's multi-agent intelligence, backend microservices, Monad smart contracts, and real-world payment rails communicate end-to-end:
+
+```mermaid
+flowchart TD
+    subgraph UI ["1. Mobile Client (React Native + Expo)"]
+        User(["👤 Consumer User"])
+        AppUI["📱 TakumiPay Mobile App"]
+        MeraPasskey["🔑 Mera Passkey (WebAuthn PRF EOA)"]
+        HeroUI["⚡ Non-Blocking Settlement Hero (UX)"]
+        MobileExec["📲 Mobile Tool Executor (SSE Gate)"]
+        User -->|"Chat / Voice / Tap"| AppUI
+        AppUI -->|"One-Tap Biometric Sign"| MeraPasskey
+        AppUI -->|"Instant Optimistic Receipt"| HeroUI
+    end
+
+    subgraph AgentSystem ["2. Takumi Agent Intelligence (Kimi K2.6)"]
+        AgentAPI["🤖 Agent Orchestrator (/agent-api)"]
+        CoreAgent["🧠 Core Agent (Orchestrator, Zero Write Rights)"]
+        WalletAgent["💳 Wallet Specialist (Balances, AUSD Remittances)"]
+        DefiAgent["📈 DeFi Specialist (Yields, Swaps, Routes)"]
+        
+        AppUI <-->|"SSE Protocol / Voice Waveforms"| AgentAPI
+        AgentAPI --> CoreAgent
+        CoreAgent -->|"Intent Routing"| WalletAgent
+        CoreAgent -->|"Intent Routing"| DefiAgent
+        WalletAgent -->|"Tool Call (Envelopes)"| MobileExec
+        DefiAgent -->|"Tool Call (Envelopes)"| MobileExec
+    end
+
+    subgraph BackendAPI ["3. TakumiPay Backend Services (/api)"]
+        APIGateway["🌐 NestJS API Gateway"]
+        IntentService["📋 Payment Intent Service"]
+        QuoteSigner["✍️ QuoteSignerService (EIP-712 Signer)"]
+        FulfilmentQueue["📬 BullMQ Fulfilment Queue"]
+        VendorRegistry["🔌 Vendor Registry Adapter"]
+        PushService["🔔 Push Notification Service"]
+        ZerionWebhook["🛰️ Zerion Subscriptions Client"]
+        
+        MobileExec <-->|"API Tool Calls"| APIGateway
+        AppUI -->|"POST /v1/pay/intents"| IntentService
+        IntentService -->|"Request Quote"| QuoteSigner
+        QuoteSigner -->|"Signed EIP-712 Quote"| AppUI
+        IntentService -->|"Enqueues Settled Order"| FulfilmentQueue
+        FulfilmentQueue --> VendorRegistry
+        ZerionWebhook -->|"On-Chain Event Decoded"| PushService
+        PushService -->|"Push Alert (FCM/APNs)"| AppUI
+    end
+
+    subgraph Blockchain ["4. Monad Blockchain (~600ms Finality)"]
+        MonadRPC["⚡ Monad EVM (Mainnet 143 / Testnet 10143)"]
+        TakumiContract["🏛️ TakumiPay.sol (v2.1.0 UUPS Proxy)"]
+        AUSDToken["💵 Agora AUSD Token (0x0000...012a)"]
+        
+        MeraPasskey -->|"Broadcast processMerchantPayment"| MonadRPC
+        MonadRPC --> TakumiContract
+        TakumiContract -->|"Validate EIP-712 & Pull AUSD"| AUSDToken
+        MonadRPC -.->|"Tx Stream"| ZerionService["🛰️ Zerion Indexer"]
+    end
+
+    subgraph ExternalServices ["5. External Providers & Real-World Fulfilment"]
+        ZerionService -->|"Webhook Payload"| ZerionWebhook
+        VendorRegistry -->|"API Fulfilment Request"| PPOBVendor["⚡ PPOB Providers (PLN Electricity, Pulsa, Data)"]
+        VendorRegistry -->|"Fiat Payout"| QRISAcquirer["🏪 QRIS / UMKM Merchant Accounts"]
+        PPOBVendor -->|"Electricity Token / Top-up Confirmed"| FulfilmentQueue
+    end
+```
+
+### Architectural Highlights
+
+1. **Takumi Agent Specialist Model**:
+   - **Core Agent**: Acts strictly as the orchestrator. It manages session context, parses natural-language user intent with Kimi K2.6, and routes tasks to specialized agents without holding write permissions.
+   - **Wallet Specialist & DeFi Specialist**: Handle domain-specific capabilities (e.g. `send_token`, `get_wallet_assets`). Tool calls are dispatched over SSE envelopes to the mobile client, enforcing **Wallet Context Isolation** (intents execute against the intent wallet, not the active UI wallet).
+2. **End-to-End QRIS & PPOB Bill Settlement**:
+   - The user scans a QRIS merchant code or selects a utility bill (PLN electricity token, mobile pulsa/data).
+   - The mobile app requests an intent from the backend API, where `QuoteSignerService` issues an EIP-712 cryptographic quote signed by `backendSigner`.
+   - The user signs the transaction with their **Mera Passkey (WebAuthn PRF)** via Face ID or fingerprint.
+   - The transaction broadcasts to Monad, calling `processMerchantPayment` on `TakumiPay.sol` (v2.1.0 UUPS Proxy), transferring Agora AUSD in ~600ms.
+   - The UI immediately renders a non-blocking settlement timeline (`Preparing` → `Confirming` → `Paid`).
+3. **PPOB Fulfilment & QRIS Merchant Disbursement**:
+   - Once the Monad transaction confirms, `FulfilmentService` routes the settled order through `VendorRegistry` to the PPOB Provider (e.g. VCGamers/Acme PPOB) to deliver electricity prepaid tokens or mobile pulsa in real-time.
+   - For merchant payments, the equivalent fiat amount is disbursed directly to the merchant's local bank or e-wallet account (GoPay, OVO, DANA).
+4. **Real-Time Indexing & Push Notifications (Zerion Integration)**:
+   - Monad on-chain activity is indexed via Zerion.
+   - Zerion webhook subscriptions (`ZerionSubscriptionsClient`) stream decoded transaction events back to TakumiPay's backend, triggering instant push notifications to the user via FCM/APNs.
+
+---
+
 ## Monad On-Chain Deployments & Smart Contracts
 
 TakumiPay is deployed live on both **Monad Mainnet** (for the real AUSD remittance leg) and **Monad Testnet** (for the QRIS merchant-spend verification rail).
