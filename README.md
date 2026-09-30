@@ -68,8 +68,8 @@ Foundational mobile UI design system, cryptographic signing utilities, and core 
 
 ### 2. Substantial New Work Built During Hackathon Window (September 18 – September 26, 2026)
 *The entire consumer remittance, passkey, and settlement interface was engineered specifically for the Monad ecosystem:*
-- **Monad-First App Experience & Chain Lockdown (`services/walletKit/chainSupport.ts`):**
-  Implemented an app-wide lockdown switch (`FEATURE_PASSKEY_ONLY_ONBOARDING`), focusing wallet creation, chain pickers, and transaction flows exclusively on Monad Mainnet (`143`) and Testnet (`10143`).
+- **Dedicated Monad Architecture & Streamlined UX (`services/walletKit/chainSupport.ts`):**
+  Engineered a single-ecosystem consumer flow centered on Monad Mainnet (`143`) and Testnet (`10143`), eliminating network dropdowns and configuration friction for everyday consumers.
 
 
 - **Mera Passkey Account Layer (`services/walletKit/evm/mera/`, `hooks/usePasskeyOnboarding.ts`, `app/login.tsx`):**
@@ -82,8 +82,6 @@ Foundational mobile UI design system, cryptographic signing utilities, and core 
   Built an optimistic settlement timeline (`Preparing` → `Confirming` → `Paid`) that displays immediate visual receipt upon transaction broadcast while asynchronously confirming on Monad.
 - **Consumer Error Sanitization (`services/errors/sendErrors.ts`, `services/nanopay/preflight.ts`):**
   Replaced raw RPC/EVM revert messages with friendly, actionable copy tailored for non-crypto consumers.
-- **App-Side Hackathon Chain Lockdown (`services/walletKit/chainSupport.ts`):**
-  Implemented lockdown switches that focus the judge build exclusively on Monad Mainnet and Testnet.
 - **Takumi Agent Voice & Remittance Extensions (`components/home/TakumiAgent/`):**
   Integrated Kimi K2.6 natural-language intent parsing to resolve recipients, chains, and AUSD transfers with visual voice waveforms.
 
@@ -110,7 +108,7 @@ mobile-app/
     ├── chains/evm/monad.ts         # Monad chain & Agora AUSD constants
     ├── errors/sendErrors.ts        # User-friendly error sanitization
     └── walletKit/
-        ├── chainSupport.ts         # Hackathon-specific Monad lockdown filter
+        ├── chainSupport.ts         # Monad network support filter
         └── evm/mera/               # Passkey EOA derivation & credential storage
 ```
 
@@ -142,7 +140,7 @@ pnpm test
 
 ### Running Locally
 ```bash
-# Start Expo development server (Monad lockdown active by default)
+# Start Expo development server
 pnpm start
 
 # Run on Android emulator or connected device
