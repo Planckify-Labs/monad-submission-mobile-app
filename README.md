@@ -64,10 +64,14 @@ TakumiPay is deployed live on both **Monad Mainnet** (for the real AUSD remittan
 *(Mandatory disclosure under Section 4.1 Clause 4 of Metropolis Hackathon Rules)*
 
 ### 1. Pre-Existing Foundation (Prior to September 1, 2026)
-TakumiPay's foundational multi-chain wallet architecture (React Native, Expo 54, viem, and base UI components) existed prior to the hackathon.
+Foundational mobile UI design system, cryptographic signing utilities, and core payment gateway components originated prior to the hackathon.
 
 ### 2. Substantial New Work Built During Hackathon Window (September 18 – September 26, 2026)
-All Monad-specific functionality was conceptualized, implemented, and deployed during the official hackathon build window:
+*The entire consumer remittance, passkey, and settlement interface was engineered specifically for the Monad ecosystem:*
+- **Monad-First App Experience & Chain Lockdown (`services/walletKit/chainSupport.ts`):**
+  Implemented an app-wide lockdown switch (`FEATURE_PASSKEY_ONLY_ONBOARDING`), focusing wallet creation, chain pickers, and transaction flows exclusively on Monad Mainnet (`143`) and Testnet (`10143`).
+
+
 - **Mera Passkey Account Layer (`services/walletKit/evm/mera/`, `hooks/usePasskeyOnboarding.ts`, `app/login.tsx`):**
   Engineered PRF-derived secp256k1 EOA authentication using WebAuthn. Replaced all legacy seed-phrase onboarding with a single biometric "Continue with Face ID / Fingerprint" tap.
 - **Monad & AUSD Integration (`services/chains/evm/monad.ts`):**
