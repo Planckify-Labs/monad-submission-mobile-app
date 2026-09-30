@@ -13,7 +13,7 @@
   - **Kimi Bounty:** Takumi Agent powered by Kimi K2.6 for conversational remittance
 - **License:** [GNU General Public License v3.0 (GPLv3)](./LICENSE)
 
-> 📱 **Notice for Judges & Testers**: Please install and test the Preview APK on a **physical device** (Android phone with biometric support such as fingerprint or Face Unlock). Mera's passkey authentication utilizes hardware-backed WebAuthn PRF extensions, which may not operate correctly on Android emulators or simulators lacking native biometric authenticators.
+> 📱 **Notice for Judges & Testers**: Please install and test the Preview APK on a **physical device** (Android phone with biometric support such as fingerprint or Face Unlock). Mera's passkey key derivation relies on the **WebAuthn PRF (Pseudo-Random Function) extension** and platform biometric authenticators (Google Credential Manager). Android emulators typically lack biometric enrollment and PRF extension support in their virtual Google Play Services environment, which will prevent the passkey onboarding ceremony from completing.
 
 ---
 
@@ -212,7 +212,7 @@ mobile-app/
 ### Testing the Standalone Preview APK (Direct Install)
 If you prefer not to build from source, you can install the pre-built APK directly onto an Android device:
 - **Download APK:** [Google Drive Link](https://drive.google.com/file/d/1Z9yxv1afO5y32r0b_qIRSNtPM52lS1RN/view?usp=sharing)
-- **Important**: Test on a **physical Android phone** with fingerprint/face biometric hardware. Emulators generally lack hardware PRF WebAuthn support and may fail during key derivation.
+- **Important**: Test on a **physical Android phone** with fingerprint/face biometric hardware. Emulators generally lack biometric enrollment and WebAuthn PRF extension support in virtual Google Play Services, which will prevent passkey key derivation.
 
 ---
 
