@@ -155,5 +155,6 @@
     "typescript": "~5.9.3",
     "vitest": "^4.1.5"
   },
-  "private": true
+  "private": true,
+  "license": "GPL-3.0-only"
 }

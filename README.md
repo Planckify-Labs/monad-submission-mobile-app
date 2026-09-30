@@ -1,107 +1,133 @@
-# TakumiPay (mobile)
+# TakumiPay — Metropolis Monad Hackathon 2026
 
-## Official distribution channels (TWV-2026-065)
+> **Consumer Cross-Border Remittance & Merchant Settlement on Monad**  
+> *Seedless onboarding with Mera passkeys, sub-second settlement in Agora AUSD, and AI-driven remittance via Takumi Agent.*
 
-These are the **only** places a genuine TakumiPay binary is ever
-published. If you found a "Takumi" installer somewhere that is not
-listed here — a paid search ad, a sideloaded `.apk`, a desktop app, a
-browser extension — it is not ours. Do not install it.
+- **Team:** Planckify Labs
+- **Track Entered:** Track 02 — Consumer Products & Payments
+- **Targeted Sponsor Bounties:**
+  - **Mera Bounty:** Passkey account layer as the entire onboarding experience (zero seed phrase)
+  - **Agora Bounty:** End-to-end AUSD stablecoin integration on Monad
+  - **Kimi Bounty:** Takumi Agent powered by Kimi K2.6 for conversational remittance
+- **License:** [GNU General Public License v3.0 (GPLv3)](./LICENSE)
 
-- **Google Play Store:** https://play.google.com/store/apps/details?id=com.planckify.takumiwallet
-- **Website:** https://takumipay.xyz
+---
 
-App identifiers:
+## Overview
 
-- **iOS Bundle ID:** `com.planckify.takumiwallet`
-- **Android Package:** `com.planckify.takumiwallet`
-- **Signing-cert SHA-256:** shown in the in-app **About** screen (Wallet
-  tab → About). Users can compare the published fingerprint to what the
-  OS reports. The value in `constants/about.ts` is the source of truth;
-  updates require security-team review.
+Cross-border remittance is the quintessential consumer application where on-chain rails offer an undeniable real-world advantage. Migrant workers sending money home to Southeast Asia face multi-day delays, 5–10% hidden FX fees, and the friction of physical cash pickup.
 
-Distribution-discipline notes:
-`docs/distribution-discipline.md` (public runbook excerpt) and the
-private ops folder (full impersonation-monitoring runbook).
+TakumiPay redefines this experience by removing every point of crypto friction:
+1. **Passkey-First Onboarding (Mera):** Users sign up in seconds using Face ID or Touch ID. No seed phrase, no private keys to copy, and no "Connect Wallet" modal.
+2. **Sub-Second Finality (Monad):** Payments settle in ~600ms on Monad with sub-cent gas fees.
+3. **Purchasing Power Preservation (Agora AUSD):** Funds move in Agora AUSD (`0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a`), backed 1:1 by high-quality US liquid reserves.
+4. **Spendable Anywhere:** The recipient doesn't just receive tokens; they can immediately spend them at over 44M+ QRIS/UMKM merchants across Indonesia without manually off-ramping.
+5. **Conversational Remittance (Takumi Agent):** Powered by Kimi K2.6, users can send funds by simply typing or speaking: *"Send $50 to my mom in Jakarta"*.
 
-## Welcome to your Expo app 👋
+---
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+## Monad Blockchain & Contract Deployments
 
-## Get started
+The application integrates Monad Mainnet and Testnet natively:
 
-1. Install dependencies
+| Network | Chain ID | Contract / Asset | Address | Explorer |
+|---|---|---|---|---|
+| **Monad Mainnet** | `143` | Native Currency | `MON` (18 decimals) | [MonadVision](https://monadvision.com) |
+| **Monad Mainnet** | `143` | Agora AUSD (ERC-20) | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` (6 decimals) | [MonadVision Contract](https://monadvision.com/address/0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a) |
+| **Monad Testnet** | `10143` | Native Currency | `MON` (18 decimals) | [Monad Testnet Explorer](https://testnet.monadvision.com) |
+| **Monad Testnet** | `10143` | Agora AUSD (ERC-20) | `0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC` (6 decimals) | [Monad Testnet Contract](https://testnet.monadvision.com/address/0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC) |
 
-   ```bash
-   npm install
-   ```
+---
 
-2. Start the app
+## Metropolis Hackathon Build & Originality Disclosure
 
-   ```bash
-   npx expo start
-   ```
+*(Mandatory disclosure under Section 4.1 Clause 4 of Metropolis Hackathon Rules)*
 
-In the output, you'll find options to open the app in a
+### 1. Pre-Existing Foundation (Prior to September 1, 2026)
+TakumiPay's foundational multi-chain wallet architecture (React Native, Expo 54, viem, and base UI components) existed prior to the hackathon.
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+### 2. Substantial New Work Built During Hackathon Window (September 18 – September 26, 2026)
+All Monad-specific functionality was conceptualized, implemented, and refined during the official hackathon build window:
+- **Mera Passkey Account Layer (`services/walletKit/evm/mera/`, `hooks/usePasskeyOnboarding.ts`, `app/login.tsx`):**
+  Engineered PRF-derived secp256k1 EOA authentication using WebAuthn. Replaced all legacy seed-phrase onboarding with a single biometric "Continue with Face ID / Fingerprint" tap.
+- **Monad & AUSD Integration (`services/chains/evm/monad.ts`):**
+  Added Monad Mainnet (`143`) and Testnet (`10143`) support, Agora AUSD token integration, deterministic gas cap rules for Monad execution, and balance feeds.
+- **Non-Blocking Settlement UI (`components/pay-merchant/PaymentProgressHero.tsx`, `services/nanopay/pathOnchainSettlement.ts`):**
+  Built an optimistic settlement timeline (`Preparing` → `Confirming` → `Paid`) that displays immediate visual receipt upon transaction broadcast while asynchronously confirming on Monad.
+- **Consumer Error Sanitization (`services/errors/sendErrors.ts`, `services/nanopay/preflight.ts`):**
+  Replaced raw RPC/EVM revert messages with friendly, actionable copy tailored for non-crypto consumers.
+- **App-Side Hackathon Chain Lockdown (`services/walletKit/chainSupport.ts`):**
+  Implemented lockdown switches that focus the judge build exclusively on Monad Mainnet and Testnet.
+- **Takumi Agent Voice & Remittance Extensions (`components/home/TakumiAgent/`):**
+  Integrated Kimi K2.6 natural-language intent parsing to resolve recipients, chains, and AUSD transfers with visual voice waveforms.
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+### 3. AI Coding Tools Disclosure
+As permitted by Hackathon Rule 4.1, generative AI coding assistants (Claude Sonnet/Opus and Google Gemini) were utilized for drafting, refactoring, and test generation.
 
-## Troubleshooting
+---
 
-### EAS Build Errors
-
-If you encounter the following error during EAS build:
+## Architecture Overview
 
 ```
-Build failed
-pnpm install --frozen-lockfile exited with non-zero code: 1
+mobile-app/
+├── app/
+│   ├── login.tsx                   # Biometric passkey-only onboarding
+│   ├── pay-merchant.tsx            # Merchant payment flow
+│   └── send.tsx                    # Consumer AUSD transfer screen
+├── components/
+│   ├── home/TakumiAgent/           # Kimi-powered AI assistant & voice waves
+│   └── pay-merchant/
+│       └── PaymentProgressHero.tsx # Optimistic settlement timeline
+├── hooks/
+│   └── usePasskeyOnboarding.ts     # Mera WebAuthn/PRF ceremony orchestrator
+└── services/
+    ├── chains/evm/monad.ts         # Monad chain & Agora AUSD constants
+    ├── errors/sendErrors.ts        # User-friendly error sanitization
+    └── walletKit/
+        ├── chainSupport.ts         # Hackathon-specific Monad lockdown filter
+        └── evm/mera/               # Passkey EOA derivation & credential storage
 ```
 
-**Temporary solution:**
-- For EAS builds: Delete the pnpm lock file before building
-- For local machine: Run the following command:
-  ```bash
-  pnpm install --no-frozen-lockfile --ignore-scripts
-  ```
+---
 
-## Building the App
+## Quick Start & Verification
 
-### Development Build
+### Prerequisites
+- Node.js 20+
+- `pnpm` (v10 or v11)
+- Expo CLI
 
-To create a development build for Android:
-
+### Setup
 ```bash
-eas build --platform android --profile development
+# Clone the repository
+git clone https://github.com/Planckify-Labs/monad-submission-mobile-app.git
+cd monad-submission-mobile-app
+
+# Install dependencies
+pnpm install
+
+# Run TypeScript and architecture conformance checks
+pnpm check:syntax
+pnpm check:chains
+
+# Run unit and integration tests
+pnpm test
 ```
 
-This command will build the app using the development profile defined in your eas.json file, which includes development client features for testing.
-
-## Get a fresh project
-
-When you're ready, run:
-
+### Running Locally
 ```bash
-npm run reset-project
+# Start Expo development server (Monad lockdown active by default)
+pnpm start
+
+# Run on Android emulator or connected device
+pnpm android
+
+# Run on iOS simulator or device
+pnpm ios
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+---
 
-## Learn more
+## Open Source License
 
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
-
-
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**. See the [LICENSE](./LICENSE) file for the full license text.
