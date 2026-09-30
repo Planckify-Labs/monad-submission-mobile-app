@@ -21,21 +21,41 @@ TakumiPay redefines this experience by removing every point of crypto friction:
 1. **Passkey-First Onboarding (Mera):** Users sign up in seconds using Face ID or Touch ID. No seed phrase, no private keys to copy, and no "Connect Wallet" modal.
 2. **Sub-Second Finality (Monad):** Payments settle in ~600ms on Monad with sub-cent gas fees.
 3. **Purchasing Power Preservation (Agora AUSD):** Funds move in Agora AUSD (`0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a`), backed 1:1 by high-quality US liquid reserves.
-4. **Spendable Anywhere:** The recipient doesn't just receive tokens; they can immediately spend them at over 44M+ QRIS/UMKM merchants across Indonesia without manually off-ramping.
+4. **Spendable Anywhere (QRIS / UMKM):** The recipient doesn't just receive tokens; they can immediately spend them at over 44M+ QRIS/UMKM merchants across Indonesia without manually off-ramping.
 5. **Conversational Remittance (Takumi Agent):** Powered by Kimi K2.6, users can send funds by simply typing or speaking: *"Send $50 to my mom in Jakarta"*.
 
 ---
 
-## Monad Blockchain & Contract Deployments
+## Monad On-Chain Deployments & Smart Contracts
 
-The application integrates Monad Mainnet and Testnet natively:
+TakumiPay is deployed live on both **Monad Mainnet** (for the real AUSD remittance leg) and **Monad Testnet** (for the QRIS merchant-spend verification rail).
 
-| Network | Chain ID | Contract / Asset | Address | Explorer |
-|---|---|---|---|---|
-| **Monad Mainnet** | `143` | Native Currency | `MON` (18 decimals) | [MonadVision](https://monadvision.com) |
-| **Monad Mainnet** | `143` | Agora AUSD (ERC-20) | `0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a` (6 decimals) | [MonadVision Contract](https://monadvision.com/address/0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a) |
-| **Monad Testnet** | `10143` | Native Currency | `MON` (18 decimals) | [Monad Testnet Explorer](https://testnet.monadvision.com) |
-| **Monad Testnet** | `10143` | Agora AUSD (ERC-20) | `0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC` (6 decimals) | [Monad Testnet Contract](https://testnet.monadvision.com/address/0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC) |
+### 1. Monad Mainnet (`chainId: 143`) — Production Remittance Rail
+
+| Component | Detail | Address / Hash |
+|---|---|---|
+| **TakumiPay Proxy (UUPS)** | Main Treasury & Settlement Contract (v2.1.0) | [`0x479B0843C3e0627f36551660506dEd5b349Fa968`](https://monadvision.com/address/0x479B0843C3e0627f36551660506dEd5b349Fa968) |
+| **Implementation** | `TakumiPay.sol` logic implementation | `0x1aC593085Fa34c651E805085da4b2cabAC676F99` |
+| **Proxy Deploy Tx** | Contract deployment transaction | `0x0c50d974055f91c9b093d45026d4ab214f7b0f67e30627976f8bc66f6128f8c7` |
+| **Implementation Deploy Tx** | Implementation contract deploy | `0x051d16f8b67b71945231f82550060a565496883a02f95404e5c4152b01f83525` |
+| **Primary Token (Agora AUSD)** | Real Agora AUSD (ERC-20, 6 decimals) | [`0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a`](https://monadvision.com/address/0x00000000eFE302BEAA2b3e6e1b18d08D69a9012a) |
+| **Enable AUSD Tx** | `addAllowedPaymentToken(AUSD)` | `0x8d12ec7d42afd22e9f436a0832fb1814ea047f7e7cf9dbcdd7b6feafbc37d0a2` |
+| **Native Gas** | Monad native gas asset | `MON` (18 decimals) |
+| **Backend Signer** | Authorized merchant quote signer | `0x299E4E56e9F05A21414A62479DA1514C20aA61e8` |
+
+### 2. Monad Testnet (`chainId: 10143`) — Merchant Spend Verification Rail
+
+| Component | Detail | Address / Hash |
+|---|---|---|
+| **TakumiPay Proxy (UUPS)** | Main Treasury & Settlement Contract (v2.1.0) | [`0x9EEC5aD4FC092fD468A8114007e541238F4Ba5ee`](https://testnet.monadvision.com/address/0x9EEC5aD4FC092fD468A8114007e541238F4Ba5ee) |
+| **Implementation** | `TakumiPay.sol` logic implementation | `0xbB074ED383dA5C99756D72b62f7Fdff97A8c9022` |
+| **Proxy Deploy Tx** | Contract deployment transaction | `0x6eed45f5b5bac2652706f8f7bd765887dd278d8df0a54edd1476f8578b4386d6` |
+| **Implementation Deploy Tx** | Implementation contract deploy | `0x76b3f2c44af2fd9ba31cb9d81eb2f79eb316d2effbc5e2d04649c718c3234e0e` |
+| **Open-Mint MockAUSD** | 6-decimal testnet stand-in (`src/MockAUSD.sol`) | [`0x1aC593085Fa34c651E805085da4b2cabAC676F99`](https://testnet.monadvision.com/address/0x1aC593085Fa34c651E805085da4b2cabAC676F99) |
+| **MockAUSD Deploy Tx** | Mock contract deployment | `0xdca51260a5709ccbadbd39f86dbd2e7ef6046647d9ff2e3a64882dacf1f4aa01` |
+| **MockAUSD Initial Mint Tx** | Initial mint transaction (1M AUSD) | `0x2f1fc4a16acd3deca75e40f3695421799a46bb807d2b52fa028398f434726605` |
+
+*(Note on testnet AUSD: Agora's testnet AUSD has a permissioned mint with no public faucet. For open merchant-spend testing on testnet, our open-mint `MockAUSD` (with identical 6 decimals) is allowlisted on `TakumiPay`, while the mainnet remittance rail uses the real Agora AUSD).*
 
 ---
 
@@ -47,11 +67,13 @@ The application integrates Monad Mainnet and Testnet natively:
 TakumiPay's foundational multi-chain wallet architecture (React Native, Expo 54, viem, and base UI components) existed prior to the hackathon.
 
 ### 2. Substantial New Work Built During Hackathon Window (September 18 – September 26, 2026)
-All Monad-specific functionality was conceptualized, implemented, and refined during the official hackathon build window:
+All Monad-specific functionality was conceptualized, implemented, and deployed during the official hackathon build window:
 - **Mera Passkey Account Layer (`services/walletKit/evm/mera/`, `hooks/usePasskeyOnboarding.ts`, `app/login.tsx`):**
   Engineered PRF-derived secp256k1 EOA authentication using WebAuthn. Replaced all legacy seed-phrase onboarding with a single biometric "Continue with Face ID / Fingerprint" tap.
 - **Monad & AUSD Integration (`services/chains/evm/monad.ts`):**
   Added Monad Mainnet (`143`) and Testnet (`10143`) support, Agora AUSD token integration, deterministic gas cap rules for Monad execution, and balance feeds.
+- **TakumiPay 2.1.0 Monad Deployment (`TakumiPay.sol`):**
+  Deployed and initialized UUPS proxy contracts on both Monad Mainnet (`0x479B0843C3e0627f36551660506dEd5b349Fa968`) and Monad Testnet (`0x9EEC5aD4FC092fD468A8114007e541238F4Ba5ee`), allowlisting AUSD with sweep cap governance.
 - **Non-Blocking Settlement UI (`components/pay-merchant/PaymentProgressHero.tsx`, `services/nanopay/pathOnchainSettlement.ts`):**
   Built an optimistic settlement timeline (`Preparing` → `Confirming` → `Paid`) that displays immediate visual receipt upon transaction broadcast while asynchronously confirming on Monad.
 - **Consumer Error Sanitization (`services/errors/sendErrors.ts`, `services/nanopay/preflight.ts`):**
